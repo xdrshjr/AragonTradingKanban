@@ -1,6 +1,6 @@
 'use client';
 
-import { Search, Sparkles, Star } from 'lucide-react';
+import { Clock, Search, Sparkles, Star } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 
 import { cn } from '@/lib/cn';
@@ -17,6 +17,8 @@ export interface RailItem {
   last?: number | null;
   changePct?: number | null;
   hasReport?: boolean;
+  /** A4 / §18.4.5：这个标的有启用中的定时刷新（`schedules` 里 `enabled=1`）。 */
+  scheduled?: boolean;
 }
 
 export interface SymbolRailProps {
@@ -242,6 +244,9 @@ function RailRow({
             </span>
             {item.hasReport ? (
               <span aria-label="已有报告" className="size-1 rounded-full bg-[var(--accent)]/70" />
+            ) : null}
+            {item.scheduled ? (
+              <Clock aria-label={copy.schedule.railBadge} className="size-2.5 shrink-0 text-[var(--accent)]/80" />
             ) : null}
           </span>
           <span className="mono block truncate text-[10px] text-[var(--text-tertiary)]">

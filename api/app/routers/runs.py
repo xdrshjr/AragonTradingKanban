@@ -8,28 +8,23 @@ is empty the whole thing is a no-op — local-first is the default deployment.
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import hmac
 import json
-import time
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
 from ..db.session import get_db
 from ..errors import RunNotFound, Unauthorized
 from ..logging import get_logger
 from ..models import Run
 from ..schemas.run import CancelResponse, EventsTokenResponse, RunOut, RunUsage
 from ..services.run_manager import RunManager, get_manager, stream_events
+from ..services.sse_token import TOKEN_TTL_SEC, issue_sse_token, sign_sse_token, verify_sse_token
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 logger = get_logger("runs")
-
-TOKEN_TTL_SEC = 60
 
 
 def to_run_out(run: Run) -> RunOut:
@@ -62,25 +57,12 @@ def to_run_out(run: Run) -> RunOut:
 
 
 def sign_events_token(run_id: str, expires_at: int) -> str:
-    settings = get_settings()
-    secret = settings.api_token.encode("utf-8")
-    payload = f"{run_id}.{expires_at}".encode()
-    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+    """Kept as a thin alias — the only implementation is `services.sse_token`."""
+    return sign_sse_token(run_id, expires_at)
 
 
 def verify_events_token(run_id: str, token: str) -> bool:
-    """`<expiresAt>.<signature>` — checked once, never stored."""
-    settings = get_settings()
-    if not settings.api_token:
-        return True
-    try:
-        expires_raw, signature = token.split(".", 1)
-        expires_at = int(expires_raw)
-    except (ValueError, AttributeError):
-        return False
-    if expires_at < int(time.time()):
-        return False
-    return hmac.compare_digest(signature, sign_events_token(run_id, expires_at))
+    return verify_sse_token(run_id, token)
 
 
 def _load(db: Session, run_id: str) -> Run:
@@ -98,12 +80,8 @@ def get_run(run_id: str, db: Session = Depends(get_db)) -> RunOut:
 @router.post("/{run_id}/events-token", response_model=EventsTokenResponse)
 def events_token(run_id: str, db: Session = Depends(get_db)) -> EventsTokenResponse:
     _load(db, run_id)
-    settings = get_settings()
-    if not settings.api_token:
-        # No auth configured: hand back a token anyway so clients keep one code path.
-        return EventsTokenResponse(token=f"{int(time.time()) + TOKEN_TTL_SEC}.open", expiresIn=TOKEN_TTL_SEC)
-    expires_at = int(time.time()) + TOKEN_TTL_SEC
-    return EventsTokenResponse(token=f"{expires_at}.{sign_events_token(run_id, expires_at)}", expiresIn=TOKEN_TTL_SEC)
+    token, expires_in = issue_sse_token(run_id)
+    return EventsTokenResponse(token=token, expiresIn=expires_in or TOKEN_TTL_SEC)
 
 
 def _sse_frame(event: dict[str, object]) -> str:

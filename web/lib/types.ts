@@ -123,6 +123,11 @@ export interface Metric {
   value: string;
   deltaPct?: number | null;
   tone?: MetricTone | null;
+  /**
+   * ★V4-P1-1: which direction is *good* for this metric. Optional — an unlabelled
+   * metric is grey on purpose, never guessed green (AC-42).
+   */
+  polarity?: 'bullish' | 'bearish' | 'neutral' | null;
   sourceRefs?: string[];
 }
 
@@ -427,6 +432,159 @@ export interface ApiErrorBody {
     requestId: string;
     detail: Record<string, unknown>;
   };
+}
+
+/* ── ask / search / diff / schedule (mirrors api/app/schemas/*) ──────────── */
+
+export type AskMode = 'cite' | 'deep';
+export type AskStatus = 'queued' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
+export type MetricToneDirection = 'up' | 'down' | 'neutral';
+
+export interface Citation {
+  sourceId: string;
+  title?: string | null;
+  publisher?: string | null;
+}
+
+export interface AskHit {
+  /** `f"{sectionId}#{index}"` — the single derivation rule (see `lib/blocks.ts`). */
+  blockId: string;
+  sectionId: string;
+  sectionTitle: string;
+  blockType: string;
+  score: number;
+  excerpt: string;
+  citations: string[];
+}
+
+export interface AskAnswer {
+  answerText?: string | null;
+  hits: AskHit[];
+  citations: Citation[];
+  hint?: string | null;
+}
+
+export interface AskOut {
+  id: string;
+  reportId: string;
+  question: string;
+  mode: AskMode;
+  status: AskStatus;
+  grounded: boolean;
+  confidence?: number | null;
+  citationsDropped: number;
+  answer: AskAnswer;
+  costUsd?: number | null;
+  costKnown: boolean;
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  latencyMs?: number | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  finishedAt?: string | null;
+}
+
+export interface AskQueuedResponse {
+  id: string;
+  askId: string;
+  status: AskStatus;
+  streamUrl: string;
+}
+
+export interface AskListResponse {
+  items: AskOut[];
+  total: number;
+}
+
+export interface InstrumentHit {
+  symbol: string;
+  name: string;
+  market: Market;
+  currency: string;
+  score: number;
+  existing: boolean;
+}
+
+export interface ReportHit {
+  reportId: string;
+  symbol: string;
+  title: string;
+  sectionId: string;
+  sectionTitle: string;
+  blockId: string;
+  snippet: string;
+  score: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  instruments: InstrumentHit[];
+  reports: ReportHit[];
+  tookMs: number;
+  degraded: boolean;
+}
+
+export interface MetricDelta {
+  label: string;
+  before?: number | null;
+  after?: number | null;
+  deltaPct?: number | null;
+  direction: 'up' | 'down' | 'flat';
+  polarity: 'bullish' | 'bearish' | 'neutral';
+  /** Server-decided colour — the client never re-derives "PE 上升是坏事". */
+  tone: MetricToneDirection;
+}
+
+export interface BlockChange {
+  sectionId: string;
+  blockType: string;
+  change: 'added' | 'removed' | 'modified';
+  blockIdA?: string | null;
+  blockIdB?: string | null;
+}
+
+export interface RatingChange {
+  from: { stance?: Stance | null; target?: string | null };
+  to: { stance?: Stance | null; target?: string | null };
+}
+
+export interface DiffResult {
+  a: string;
+  b: string;
+  statusChanged?: { from?: string | null; to?: string | null } | null;
+  ratingChanged?: RatingChange | null;
+  metricsDelta: MetricDelta[];
+  sectionsAdded: string[];
+  sectionsRemoved: string[];
+  blocksChanged: BlockChange[];
+  summary: string;
+}
+
+export interface ScheduleOut {
+  id: string;
+  instrumentId: string;
+  symbol?: string | null;
+  cron: string;
+  enabled: boolean;
+  minAgeHours: number;
+  nextRunAt: string;
+  lastRunId?: string | null;
+  failureCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduleListResponse {
+  items: ScheduleOut[];
+  total: number;
+}
+
+export interface ScheduleCreate {
+  instrumentId: string;
+  cron: string;
+  enabled?: boolean;
+  minAgeHours?: number;
 }
 
 export interface HealthResponse {

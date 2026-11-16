@@ -127,6 +127,15 @@ def _row_to_instrument(session: Session, hit: SymbolHit) -> tuple[Instrument, bo
     )
     session.add(record)
     session.flush()
+    # ★ Keep `instrument_fts` in step with the row it indexes. Only the migration
+    # backfill used to call this, so every instrument looked up *after* the upgrade
+    # was invisible to the pinyin/name dimension forever.
+    try:
+        from . import search_index
+
+        search_index.reindex_instrument(session, record)
+    except Exception:  # pragma: no cover - search must never block a lookup
+        logger.exception("instrument_fts 写入失败 symbol=%s", hit.symbol)
     return record, True
 
 

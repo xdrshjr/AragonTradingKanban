@@ -30,7 +30,7 @@ def test_capabilities_shape(client) -> None:
     assert "available" in body["aragon"]
     assert isinstance(body["dataProviders"], list)
     assert body["features"]["pdf"] is False
-    assert body["features"]["ask"] is False
+    assert body["features"]["ask"] is True
     assert body["limits"]["maxConcurrentRuns"] == 2
 
 
@@ -234,10 +234,20 @@ def test_export_pdf_is_501_with_guidance(client, seeded_report) -> None:
     assert response.json()["error"]["code"] == "export_unsupported"
 
 
-def test_ask_endpoint_is_reserved_with_501(client, seeded_report) -> None:
-    response = client.post(f"/api/v1/reports/{seeded_report['second']}/ask")
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "ask_not_implemented"
+def test_ask_endpoint_answers_cite_inline(client, seeded_report) -> None:
+    """★v3 replaced the 501 placeholder: `cite` answers immediately, 200, no subprocess."""
+    response = client.post(
+        f"/api/v1/reports/{seeded_report['second']}/ask",
+        json={"question": "这份报告的核心逻辑是什么？", "mode": "cite"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "cite"
+    assert body["status"] == "done"
+    assert "hits" in body["answer"]
+    # A missing question is a validation error, not a crash.
+    empty = client.post(f"/api/v1/reports/{seeded_report['second']}/ask", json={"question": ""})
+    assert empty.status_code == 422
 
 
 # ── runs ─────────────────────────────────────────────────────────────────

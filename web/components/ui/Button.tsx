@@ -73,14 +73,13 @@ export function Spinner({ className }: { className?: string }) {
   );
 }
 
-export function IconButton({
-  label,
-  className,
-  children,
-  ...props
-}: ButtonProps & { label: string }) {
+export const IconButton = forwardRef<HTMLButtonElement, ButtonProps & { label: string }>(function IconButton(
+  { label, className, children, ...props },
+  ref,
+) {
   return (
     <Button
+      ref={ref}
       variant="ghost"
       size="sm"
       aria-label={label}
@@ -91,4 +90,4 @@ export function IconButton({
       {children}
     </Button>
   );
-}
+});

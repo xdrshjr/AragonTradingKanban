@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 
+import { ReportMeta } from '@/components/shell/ReportMeta';
+
 import { WorkspaceClient } from '@/components/shell/WorkspaceClient';
 import { api, ApiError } from '@/lib/api';
 import type { Capabilities, Instrument, ReportDetail, ReportListResponse, WatchlistEntry } from '@/lib/types';
@@ -68,18 +70,60 @@ export async function generateMetadata({ params }: { params: Promise<{ symbol: s
   return { title: '投研报告' };
 }
 
-export default async function WorkspacePage({ params }: { params: Promise<{ symbol: string }> }) {
+/**
+ * Deep-link parameters (§18.4.5, AC-39/AC-45).
+ *
+ * `?report=` opens a specific version, `?section=` / `?block=` land the reader on a
+ * search hit or an ask citation. They are read here (server side) so the first paint
+ * already shows the right version — no client round trip, no flash of the latest.
+ */
+type WorkspaceSearchParams = {
+  report?: string | string[];
+  section?: string | string[];
+  block?: string | string[];
+};
+
+function firstValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+export default async function WorkspacePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ symbol: string }>;
+  searchParams: Promise<WorkspaceSearchParams>;
+}) {
   const { symbol } = await params;
   const workspace = await loadWorkspace(symbol);
   if (!workspace) notFound();
 
+  const query = await searchParams;
+  const reportId = firstValue(query.report);
+  const section = firstValue(query.section);
+  const block = firstValue(query.block);
+
+  // A deep link may point at an older version; fetch it rather than trusting "latest".
+  let detail = workspace.detail;
+  if (reportId && reportId !== detail?.report.id) {
+    detail = await api.report(reportId).catch(() => detail);
+  }
+
   return (
-    <WorkspaceClient
-      initialInstrument={workspace.instrument}
-      initialReports={workspace.reports.items}
-      initialDetail={workspace.detail}
-      initialWatchlist={workspace.watchlist}
-      capabilities={workspace.capabilities}
-    />
+    <>
+      {/* A5: the only offline-time evidence. Without it no badge is shown. */}
+      <ReportMeta />
+      <WorkspaceClient
+        initialInstrument={workspace.instrument}
+        initialReports={workspace.reports.items}
+        initialDetail={detail}
+        initialWatchlist={workspace.watchlist}
+        capabilities={workspace.capabilities}
+        initialReportId={reportId}
+        initialSection={section}
+        initialBlockId={block}
+      />
+    </>
   );
 }

@@ -6,8 +6,8 @@ first three is violated:
 1. **Single-worker assertion** (★P1-5 / AC-23). Run orchestration is in-process;
    a second worker would put the task in process A and the SSE connection in
    process B, and the progress stream would simply spin forever.
-2. **Migrations** (★P1-2). Alembic is the only schema source — `create_all`
-   lives exclusively in `tests/conftest.py` (R-14).
+2. **Migrations** (★P1-2). Alembic is the only schema source — the ORM's
+   create-all helper lives exclusively in `tests/conftest.py` (R-14).
 3. **Recovery** (★P1-5). Anything left `queued`/`running`/`cancelling` is dead
    the moment this process starts, so it becomes `failed(interrupted)`.
 4. Housekeeping: expired run workspaces are removed.
@@ -28,11 +28,24 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .config import get_settings
-from .db.session import SessionLocal, engine
+from .db.session import SessionLocal, engine, fts_available
 from .errors import Unauthorized, register_exception_handlers
 from .logging import configure_logging, get_logger, request_id_var
-from .routers import capabilities, health, instruments, reports, runs, symbols, watchlist
+from .routers import (
+    asks,
+    capabilities,
+    health,
+    instruments,
+    reports,
+    runs,
+    schedules,
+    search,
+    symbols,
+    watchlist,
+)
+from .services import ask_service, search_index
 from .services.run_manager import get_manager
+from .services.scheduler_ticker import get_ticker
 
 logger = get_logger("main")
 
@@ -97,12 +110,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if recovered:
             logger.warning("启动恢复：%s 个中断的 run 已标记 failed(interrupted)", recovered)
         get_manager().cleanup_workspaces(session)
+        # ★V4-P1-5: an ask left `queued`/`running` by a killed process would otherwise
+        # keep its SSE stream polling forever and make cancel a silent no-op.
+        stale_asks = ask_service.recover_interrupted(session)
+        if stale_asks:
+            logger.warning("启动恢复：%s 个中断的追问已标记 failed(interrupted)", stale_asks)
+        # Ask rows and ask workspaces expire with the same retention window (V4-P2-9).
+        ask_service.cleanup_asks(session)
     finally:
         session.close()
 
     from .agent.preflight import check_aragon
 
     capability = check_aragon()
+    # ★V4-P1-8: say out loud whether this build can index at all, so a missing
+    # ENABLE_FTS5 shows up in the log instead of as "search finds nothing".
+    with engine.connect() as probe:
+        tables_ready = search_index.fts_ready(probe)
+    logger.info(
+        "full-text search: compile_options=%s tables=%s",
+        "fts5" if fts_available() else "no-fts5",
+        "ready" if tables_ready else "missing",
+    )
+    if settings.scheduler_enabled:
+        get_ticker().start()
+    else:
+        logger.info("scheduler disabled (SCHEDULER_ENABLED=0)")
+
     logger.info(
         "startup complete version=%s agent_mode=%s aragon=%s capable=%s",
         __version__,
@@ -112,10 +146,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     yield
 
-    # Shutdown: ask every live child to die so nothing is orphaned.
+    # Shutdown order matters: stop the trigger source first, then kill children, so
+    # no new run is created while we are sweeping (§18.9 M10 exit criterion).
+    await get_ticker().stop()
     manager = get_manager()
     for run_id in list(manager._tasks):  # noqa: SLF001 - deliberate shutdown sweep
         manager.cancel_now(run_id)
+    # Same sweep for `deep` asks: they live in their own registry (V4-P1-5), so the
+    # run sweep above cannot see them and their child processes would be orphaned.
+    from .services.ask_registry import get_ask_registry
+
+    for ask_id in get_ask_registry().active_ids():
+        get_ask_registry().cancel(ask_id)
     engine.dispose()
     logger.info("shutdown complete")
 
@@ -179,6 +221,9 @@ def create_app() -> FastAPI:
     app.include_router(instruments.router, prefix=api_prefix)
     app.include_router(reports.router, prefix=api_prefix)
     app.include_router(runs.router, prefix=api_prefix)
+    app.include_router(asks.router, prefix=api_prefix)
+    app.include_router(search.router, prefix=api_prefix)
+    app.include_router(schedules.router, prefix=api_prefix)
     app.include_router(watchlist.router, prefix=api_prefix)
 
     @app.get("/", include_in_schema=False)

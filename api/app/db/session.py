@@ -3,8 +3,8 @@
 ★P1-1: SQLite ignores foreign keys unless they are switched on **per
 connection**, so the PRAGMAs live in a ``connect`` event hook rather than in a
 one-shot startup statement. ★P1-2: schema is owned by Alembic — there is
-deliberately no ``init_db()``/``create_all()`` here (R-14: ``create_all`` is
-allowed only in ``tests/conftest.py``).
+deliberately no ORM `create-all` helper here (R-14: that helper is allowed only in
+``tests/conftest.py``).
 """
 
 from __future__ import annotations
@@ -69,3 +69,15 @@ def get_db() -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+def fts_available() -> bool:
+    """`PRAGMA compile_options` probe, cached per process (★V4-P1-8).
+
+    Kept here (not in `search_index`) so a caller that only has a database URL can
+    answer "can this build do full-text search at all?" without importing the whole
+    indexing stack.
+    """
+    from ..services.search_index import detect_fts
+
+    return detect_fts()

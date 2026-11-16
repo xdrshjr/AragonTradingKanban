@@ -80,15 +80,36 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
     body = capability_client()
     assert set(body) == {"aragon", "agentMode", "dataProviders", "features", "limits"}
     assert {"available", "version", "versionOk", "provider", "model", "ajv"} <= set(body["aragon"])
+    # ★V4-P2-4: `ask` is no longer a 501 placeholder, so the flags are the v4 set —
+    # and every one of them is a measurement, which is what the next test pins down.
     assert body["features"] == {
         "mock": True,
         "exportHtml": True,
         "exportMd": True,
         "pdf": False,
-        "ask": False,
+        "ask": True,
+        "askDeep": True,
+        "fullTextSearch": True,
+        "pinyinSearch": False,
+        # The suite runs with SCHEDULER_ENABLED=0 (the ticker is driven explicitly),
+        # so this flag proves the payload follows the setting rather than a constant.
+        "schedule": False,
+        "offline": True,
         "realtimeQuote": False,
         "semanticSearch": False,
     }
+    assert body["limits"]["askDailyLimit"] == 30
+
+
+def test_feature_flags_follow_measurements(capability_client, monkeypatch) -> None:
+    """The flags must be measured, not assumed: no FTS5 ⇒ `fullTextSearch=false`."""
+    from app.services import search_index
+
+    monkeypatch.setattr(search_index, "fts_ready", lambda *_args, **_kwargs: False)
+    body = capability_client()
+    assert body["features"]["fullTextSearch"] is False
+    # `cite` still works — it never touches the index or the CLI.
+    assert body["features"]["ask"] is True
 
 
 def test_data_providers_are_listed_with_availability(capability_client) -> None:

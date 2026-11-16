@@ -48,6 +48,10 @@ class Metric(StrictModel):
     value: str = Field(min_length=1, max_length=32)
     deltaPct: float | None = None
     tone: Literal["pos", "neg", "neutral"] | None = None
+    #: ★V4-P1-1: which way is *good* for this metric. Optional and defaulted to
+    #: `neutral` so historical documents stay valid — and so an unlabelled metric
+    #: renders grey instead of being guessed green.
+    polarity: Literal["bullish", "bearish", "neutral"] | None = None
     sourceRefs: list[str] = Field(default_factory=list, max_length=8)
 
 
@@ -304,5 +308,72 @@ class CreateReportRequest(BaseModel):
     reason: Literal["manual", "refresh"] = "manual"
     force: bool = False
 
+
+# ── version diff (§18.5.4) ──────────────────────────────────────────────────
+
+
+class MetricDelta(BaseModel):
+    label: str
+    before: float | None = None
+    after: float | None = None
+    deltaPct: float | None = None
+    direction: Literal["up", "down", "flat"] = "flat"
+    polarity: Literal["bullish", "bearish", "neutral"] = "neutral"
+    #: Server-decided semantic colour: `direction × polarity` (never guessed client-side).
+    tone: Literal["up", "down", "neutral"] = "neutral"
+
+
+class BlockChange(BaseModel):
+    sectionId: str
+    blockType: str
+    change: Literal["added", "removed", "modified"]
+    blockIdA: str | None = None
+    blockIdB: str | None = None
+
+
+class RatingSnapshot(BaseModel):
+    stance: Stance | None = None
+    target: str | None = None
+
+
+class RatingChange(BaseModel):
+    from_: RatingSnapshot = Field(alias="from")
+    to: RatingSnapshot
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class StatusChange(BaseModel):
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class DiffResult(BaseModel):
+    a: str
+    b: str
+    statusChanged: StatusChange | None = None
+    ratingChanged: RatingChange | None = None
+    metricsDelta: list[MetricDelta] = Field(default_factory=list)
+    sectionsAdded: list[str] = Field(default_factory=list)
+    sectionsRemoved: list[str] = Field(default_factory=list)
+    blocksChanged: list[BlockChange] = Field(default_factory=list)
+    summary: str = ""
+
+
+#: Only these three statuses describe **report quality**; `superseded` only says
+#: "a newer version exists", which is true for every adjacent pair and therefore
+#: says nothing. Diffing it would make `statusChanged` always non-null (§18.5.4).
+QUALITY_STATUSES = ("ready", "degraded", "provisional")
+
+#: What a status *means* for a version comparison: an incumbent that has been
+#: superseded was a normal (ready) report before the newer version arrived.
+QUALITY_STATUS_EQUIVALENT = {
+    "ready": "ready",
+    "superseded": "ready",
+    "degraded": "degraded",
+    "provisional": "provisional",
+}
 
 SECTION_IDS = ("thesis", "fundamentals", "valuation", "risks", "catalysts")

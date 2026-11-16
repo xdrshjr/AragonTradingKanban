@@ -17,6 +17,20 @@ const nextConfig: NextConfig = {
     if (process.env.ENABLE_PY_REWRITE !== '1') return [];
     return [{ source: '/py/:path*', destination: `${apiBase}/:path*` }];
   },
+  // The service worker must never be served stale: a cached `sw.js` would pin every
+  // visitor to an old cache name forever, and no amount of new deploys would fix it
+  // (A5 / §18.4.5).
+  async headers() {
+    return [
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+          { key: 'Service-Worker-Allowed', value: '/' },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

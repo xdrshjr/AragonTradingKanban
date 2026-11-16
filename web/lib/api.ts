@@ -8,9 +8,14 @@
 
 import type {
   ApiErrorBody,
+  AskListResponse,
+  AskMode,
+  AskOut,
+  AskQueuedResponse,
   BarsResponse,
   Capabilities,
   CreateRunResponse,
+  DiffResult,
   HealthResponse,
   Instrument,
   Quote,
@@ -19,6 +24,10 @@ import type {
   ReportSummary,
   ResolveResponse,
   RunOut,
+  ScheduleCreate,
+  ScheduleListResponse,
+  ScheduleOut,
+  SearchResponse,
   SymbolSearchHit,
   WatchlistEntry,
 } from './types';
@@ -45,6 +54,18 @@ export class ApiError extends Error {
 
   get isConflict(): boolean {
     return this.status === 409;
+  }
+
+  /** 429 payloads carry `detail.retryAfterMs` so the UI can say "多久之后". */
+  get retryAfterMs(): number | null {
+    const value = this.detail.retryAfterMs;
+    return typeof value === 'number' ? value : null;
+  }
+
+  /** `detail.suggestMode` — e.g. "改用引用式检索", shown, never applied silently. */
+  get suggestMode(): string | null {
+    const value = this.detail.suggestMode;
+    return typeof value === 'string' ? value : null;
   }
 }
 
@@ -196,6 +217,48 @@ export const api = {
 
   cancelRun: (runId: string) =>
     request<{ status: string; runId: string }>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
+
+  /* ── ask (A1) ────────────────────────────────────────────────────────── */
+
+  ask: (reportId: string, body: { question: string; mode?: AskMode }) =>
+    request<AskOut | AskQueuedResponse>(`/reports/${encodeURIComponent(reportId)}/ask`, {
+      method: 'POST',
+      body: { mode: 'cite', ...body },
+      // `cite` answers inline; `deep` returns 202 at once. This budget covers a
+      // cold API, never a generation.
+      timeoutMs: 20000,
+    }),
+
+  askById: (askId: string) => request<AskOut>(`/asks/${encodeURIComponent(askId)}`),
+
+  reportAsks: (reportId: string, limit = 20) =>
+    request<AskListResponse>(`/reports/${encodeURIComponent(reportId)}/asks?limit=${limit}`),
+
+  askEventsToken: (askId: string) =>
+    request<{ token: string; expiresIn: number }>(`/asks/${encodeURIComponent(askId)}/events-token`, {
+      method: 'POST',
+    }),
+
+  cancelAsk: (askId: string) =>
+    request<{ status: string; runId: string }>(`/asks/${encodeURIComponent(askId)}/cancel`, { method: 'POST' }),
+
+  /* ── search / diff / schedules (A2, A3, A4) ──────────────────────────── */
+
+  search: (query: string, limit = 20) =>
+    request<SearchResponse>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+
+  diff: (reportA: string, reportB: string) =>
+    request<DiffResult>(`/reports/${encodeURIComponent(reportA)}/diff/${encodeURIComponent(reportB)}`),
+
+  schedules: () => request<ScheduleListResponse>('/schedules'),
+
+  createSchedule: (body: ScheduleCreate) => request<ScheduleOut>('/schedules', { method: 'POST', body }),
+
+  patchSchedule: (scheduleId: string, body: { cron?: string; enabled?: boolean; minAgeHours?: number }) =>
+    request<ScheduleOut>(`/schedules/${encodeURIComponent(scheduleId)}`, { method: 'PATCH', body }),
+
+  deleteSchedule: (scheduleId: string) =>
+    request<void>(`/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' }),
 
   watchlist: () => request<{ items: WatchlistEntry[] }>('/watchlist'),
 

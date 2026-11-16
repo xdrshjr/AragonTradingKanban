@@ -16,6 +16,9 @@ Modes (`FAKE_ARAGON_MODE`):
   garbage      non-JSON lines interleaved, then a valid result (parser tolerance)
   hang         never exits                                    (timeout / cancel)
   error        exit 1 with an error line on stderr
+  ask_ok       a schema-valid ask answer citing a real source (v3 §18.3.2)
+  ask_denied   the same shape with `denied: true`  (「报告没写」must be sayable)
+  ask_badcite  cites a source id that does not exist (R-16 must drop it)
 """
 
 from __future__ import annotations
@@ -118,6 +121,36 @@ def handle_info() -> int:
     return 0
 
 
+ASK_MODES = {"ask_ok", "ask_denied", "ask_badcite"}
+
+
+def ask_payload(mode: str) -> dict:
+    """Three ask answers: grounded, explicitly denied, and citing a fake source."""
+    if mode == "ask_denied":
+        return {
+            "answer": "这份报告没有讨论卫星发射计划，它只覆盖了白酒主业与渠道结构。",
+            "citations": [],
+            "confidence": "low",
+            "denied": True,
+        }
+    if mode == "ask_badcite":
+        return {
+            "answer": "毛利率下滑主要来自渠道结构变化。",
+            "citations": [
+                {"sourceId": "S99", "claim": "渠道结构变化导致毛利率下降"},
+                {"sourceId": "S1", "claim": "毛利率 62.1%"},
+            ],
+            "confidence": "medium",
+            "denied": False,
+        }
+    return {
+        "answer": "毛利率下滑主要来自渠道结构与产品结构变化，公司给出的口径是同比 -3.4pct。",
+        "citations": [{"sourceId": "S1", "claim": "毛利率 62.1%，同比 -3.4pct"}],
+        "confidence": "high",
+        "denied": False,
+    }
+
+
 def handle_exec(argv: list[str]) -> int:
     argv_log(argv)
     mode = os.environ.get("FAKE_ARAGON_MODE", "ok")
@@ -130,6 +163,42 @@ def handle_exec(argv: list[str]) -> int:
     if mode == "usage":
         sys.stderr.write("error: unknown option '--bogus'\n")
         return 2
+
+    if mode in ASK_MODES:
+        emit({"type": "system", "text": "读报告"})
+        emit({"type": "tool_call", "name": "read_file", "input": {"path": "report.json"}})
+        emit(
+            {
+                "type": "tool_result",
+                "name": "read_file",
+                "input": {"path": "report.json"},
+                "output": '{"headline":"…"}',
+                "isError": False,
+                "durationMs": 8,
+            }
+        )
+        emit({"type": "text_delta", "delta": "毛利率"})
+        payload = ask_payload(mode)
+        emit(
+            {
+                "type": "result",
+                "isError": False,
+                "error": None,
+                "stopReason": "end_turn",
+                "exitCode": 0,
+                "text": payload["answer"],
+                "structured": {
+                    "value": payload,
+                    "schemaName": "ask.schema.json",
+                    "schemaBytes": 913,
+                    "attempts": 1,
+                    "acceptedAt": "2026-02-10T01:04:00Z",
+                },
+                "usage": {"inputTokens": 1200, "outputTokens": 240, "totalTokens": 1440},
+                "cost": {"amount": 0.004, "currency": "USD", "known": True},
+            }
+        )
+        return 0
 
     if mode == "budget":
         emit({"type": "system", "text": "starting"})

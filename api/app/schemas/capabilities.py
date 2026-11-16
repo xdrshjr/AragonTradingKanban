@@ -30,11 +30,28 @@ class DataProviderCapability(BaseModel):
 
 
 class FeaturesOut(BaseModel):
+    """★V4-P2-4: an out-of-date example here is how the ask entry point never shipped.
+
+    Every switch is filled from a *measurement*, never from a default:
+
+    * `ask` — the `cite`档 never touches the CLI, so it is always available;
+    * `askDeep` — needs `submit_result` + ajv, i.e. a genuinely capable engine;
+    * `fullTextSearch` — FTS5 detected **and** the virtual tables built;
+    * `pinyinSearch` — `pypinyin` importable;
+    * `schedule` — `SCHEDULER_ENABLED`;
+    * `offline` — the front end ships a service worker (production builds only).
+    """
+
     mock: bool = True
     exportHtml: bool = True
     exportMd: bool = True
     pdf: bool = False
-    ask: bool = False
+    ask: bool = True
+    askDeep: bool = False
+    fullTextSearch: bool = False
+    pinyinSearch: bool = False
+    schedule: bool = True
+    offline: bool = True
     realtimeQuote: bool = False
     semanticSearch: bool = False
 

@@ -8,6 +8,7 @@ import {
   saveIndicators,
 } from '@/components/chart/IndicatorToggles';
 import { ReportPanel } from '@/components/report/ReportPanel';
+import { SymbolRail } from '@/components/shell/SymbolRail';
 import { SourceDrawer } from '@/components/report/SourceDrawer';
 import { useUiStore } from '@/lib/store';
 import type { ReportDetail, ReportSummary, SourceRef } from '@/lib/types';
@@ -210,5 +211,42 @@ describe('report panel', () => {
     // The header button names the open report, so a stale `detail` cannot
     // silently export a different version than the one on screen.
     expect(onExport).toHaveBeenCalledWith('html', 'report-1');
+  });
+});
+
+
+/* ── A4：标列表上的「有定时刷新」角标（§18.4.5）────────────────────────────── */
+
+describe('symbol rail · 定时刷新角标', () => {
+  const railItem = (id: string, scheduled?: boolean) => ({
+    instrument: {
+      id,
+      symbol: id,
+      name: id,
+      market: 'CN' as const,
+      currency: 'CNY',
+      exchange: null,
+      sector: null,
+      tz: 'Asia/Shanghai',
+      createdAt: '2026-02-10T00:00:00Z',
+      updatedAt: '2026-02-10T00:00:00Z',
+    },
+    scheduled,
+  });
+
+  it('只给有启用中定时的标的画时钟', async () => {
+    render(
+      <SymbolRail
+        instruments={[railItem('CN:600519.SH', true), railItem('CN:000858.SZ', false)]}
+        watchlist={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        onResolved={() => {}}
+      />,
+    );
+
+    const badges = await screen.findAllByLabelText('有定时刷新');
+    // 两个标的、只有一个带角标：多画一个就是噪声，少画一个就是"看不出来"。
+    expect(badges).toHaveLength(1);
   });
 });

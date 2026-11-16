@@ -1,8 +1,9 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useQuery } from '@tanstack/react-query';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -26,6 +27,24 @@ import { CommandPalette } from './CommandPalette';
 import { RunStatusBadge } from './RunStatusBadge';
 import { SymbolRail, type RailItem } from './SymbolRail';
 
+/**
+ * ★A2/A3/A4 / AC-35: the three low-frequency panels are **not** first-load code.
+ *
+ * They are settings-or-occasional surfaces, so their JS is fetched the first time a
+ * reader asks for them — the only way the report page stays inside the 240 kB budget
+ * while still shipping three new panels (§18.3.6).
+ */
+const CompareView = dynamic(() => import('../report/CompareView').then((module) => module.CompareView), {
+  ssr: false,
+});
+const SearchDialog = dynamic(() => import('./SearchDialog').then((module) => module.SearchDialog), {
+  ssr: false,
+});
+const ScheduleDialog = dynamic(
+  () => import('../schedule/ScheduleDialog').then((module) => module.ScheduleDialog),
+  { ssr: false },
+);
+
 export interface AppShellProps {
   instruments: RailItem[];
   watchlist: WatchlistEntry[];
@@ -43,6 +62,27 @@ export interface AppShellProps {
   /** Owned by `WorkspaceClient` so the hotkeys and the header share one run. */
   generation: UseGenerationStreamResult;
   onToggleWatchlist?: (instrumentId: string, inWatchlist: boolean) => void;
+  /** `capabilities.features` — every A1/A3/A4 entry is gated on a measurement. */
+  features?: { askDeep?: boolean; schedule?: boolean; search?: boolean };
+  askDailyLimit?: number;
+  /** version comparison state, owned by `WorkspaceClient` (an A3 route state). */
+  compare?: {
+    diff: import('@/lib/types').DiffResult | null;
+    loading: boolean;
+    error?: string | null;
+    aVersion?: number;
+    bVersion?: number;
+    open: boolean;
+    onOpen: () => void;
+    onClose: () => void;
+    diffCount?: number;
+  };
+  /** deep-link params (`?section=&block=`) threaded down to the report panel. */
+  focusSection?: string | null;
+  focusBlockId?: string | null;
+  /** `CompareView` jump target: owned by `WorkspaceClient`, which owns the focus state. */
+  onReportJump?: (blockId: string, sectionId: string) => void;
+  onOpenSearchResult?: (target: { symbol: string; reportId: string; sectionId: string; blockId: string }) => void;
   children?: React.ReactNode;
 }
 
@@ -69,11 +109,42 @@ export function AppShell({
   onExport,
   onToggleWatchlist,
   generation,
+  features,
+  askDailyLimit = 30,
+  compare,
+  focusSection,
+  focusBlockId,
+  onReportJump,
+  onOpenSearchResult,
 }: AppShellProps) {
   const layout = useUiStore((state) => state.layout);
   const hydrateLayout = useUiStore((state) => state.hydrateLayout);
   const { resetLayout, handleRailDelta, handleChartDelta } = useSplitterHandlers();
   const [viewportWidth, setViewportWidth] = useState(1440);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  // A `next/dynamic` chunk is downloaded when the component *renders*, so mounting
+  // these dialogs eagerly would defeat the split. They are mounted on first open and
+  // then kept mounted, so focus return and close animations keep working.
+  const [searchMounted, setSearchMounted] = useState(false);
+  const [scheduleMounted, setScheduleMounted] = useState(false);
+
+  useEffect(() => {
+    if (searchOpen) setSearchMounted(true);
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (scheduleOpen) setScheduleMounted(true);
+  }, [scheduleOpen]);
+  const compareTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // Filled by `ReportPanel` on demand: comparing jumps into the document, and the
+  // panel owns the scroll container (R-22 keeps diff logic out of `ReportPanel`).
+  // The compare panel is a `next/dynamic` child, so the handler is kept in a ref:
+  // a new identity on every render must not re-mount it.
+  const onReportJumpRef = useRef(onReportJump);
+  useEffect(() => {
+    onReportJumpRef.current = onReportJump;
+  }, [onReportJump]);
   const klineDrawerOpen = useUiStore((state) => state.klineDrawerOpen);
   const setKlineDrawer = useUiStore((state) => state.setKlineDrawer);
   const setSelectedInstrument = useUiStore((state) => state.setSelectedInstrument);
@@ -233,6 +304,15 @@ export function AppShell({
             onToggleArchive={onToggleArchive}
             onDelete={onDelete}
             onExport={onExport}
+            deepAvailable={features?.askDeep ?? false}
+            askDailyLimit={askDailyLimit}
+            diffCount={compare?.diffCount}
+            onCompare={compare ? compare.onOpen : undefined}
+            initialSection={focusSection}
+            initialBlockId={focusBlockId}
+            compareTriggerRef={compareTriggerRef}
+            scheduleEnabled={features?.schedule === true}
+            onOpenSchedule={() => setScheduleOpen(true)}
           />
         </div>
 
@@ -273,7 +353,61 @@ export function AppShell({
         }}
         onExport={onExport}
         onToggleChart={() => setKlineDrawer(!klineDrawerOpen)}
+        onOpenSearch={features?.search === false ? undefined : () => setSearchOpen(true)}
       />
+
+      {/* A2: one search surface for the rail and ⌘K; mounted on demand. */}
+      {features?.search === false || !searchMounted ? null : (
+        <SearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        onSelectSymbol={(symbol) => {
+          setSearchOpen(false);
+          onSelectInstrument(symbol);
+        }}
+        onSelectHit={(hit) => {
+          setSearchOpen(false);
+          if (onOpenSearchResult) {
+            onOpenSearchResult({
+              symbol: hit.symbol,
+              reportId: hit.reportId,
+              sectionId: hit.sectionId,
+              blockId: hit.blockId,
+            });
+            return;
+          }
+          onSelectInstrument(hit.symbol);
+        }}
+      />
+      )}
+
+      {/* A4: a low-frequency setting, so it is a dialog, not a page. */}
+      {features?.schedule === true && activeInstrument && scheduleMounted ? (
+        <ScheduleDialog
+          open={scheduleOpen}
+          onOpenChange={setScheduleOpen}
+          instrumentId={activeInstrument.id}
+          symbol={activeInstrument.symbol}
+          enabled
+        />
+      ) : null}
+
+      {/* A3: route state (`?compare=`), so it is a panel rather than a page. */}
+      {compare?.open ? (
+        <CompareView
+        diff={compare.diff}
+        loading={compare.loading}
+        error={compare.error ?? null}
+        aVersion={compare.aVersion}
+        bVersion={compare.bVersion}
+        onJumpToBlock={(blockId, sectionId) => {
+          compare.onClose();
+          if (blockId) onReportJumpRef.current?.(blockId, sectionId);
+        }}
+        onClose={compare.onClose}
+        triggerRef={compareTriggerRef}
+      />
+        ) : null}
     </div>
   );
 }

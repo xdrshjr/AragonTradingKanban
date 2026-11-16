@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from ..logging import get_logger
 from ..models import Instrument, Report, Run
 from ..schemas.report import ReportQuality, ReportSummary
+from . import search_index
 
 logger = get_logger("report_service")
 
@@ -152,6 +153,19 @@ def create_version(
     session.add(report)
     session.flush()
 
+    # ★V4-P0-1 / O-4: the index rows are written in this very transaction, so
+    # "生成完即可搜到" is a transaction property instead of a background race.
+    # The projection itself lives in `search_index` (block-level, section+block ids).
+    # A savepoint is what makes the promise below真实: catching the exception without
+    # one leaves the connection in an aborted-transaction state, so the *report*
+    # commit would then raise `PendingRollbackError` — "search never blocks a
+    # generation" would be a comment, not a property.
+    try:
+        with session.begin_nested():
+            search_index.reindex_report_payload(session, report.id, payload, title)
+    except Exception:  # pragma: no cover - search must never block a generation
+        logger.exception("FTS 索引写入失败 report=%s（报告本身仍会落库）", report.id)
+
     if run_id:
         session.execute(update(Run).where(Run.id == run_id).values(report_id=report.id))
     session.commit()
@@ -195,6 +209,7 @@ def _trim_versions(session: Session, instrument_id: str, keep: int | None = None
     removed = 0
     for row in rows[limit:]:
         session.execute(update(Run).where(Run.report_id == row.id).values(report_id=None))
+        search_index.delete_report_index(session, row.id)
         session.delete(row)
         removed += 1
     if removed:
@@ -311,6 +326,9 @@ def soft_delete(session: Session, report: Report) -> None:
     report.deleted_at = _iso()
     was_latest = bool(report.is_latest)
     report.is_latest = False
+    # Same transaction as the flag change: a soft-deleted report must stop being
+    # findable *immediately* (AC-33).
+    search_index.delete_report_index(session, report.id)
     session.flush()
 
     if was_latest:

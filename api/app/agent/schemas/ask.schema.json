@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Aragon Research Ask Answer v1",
+  "description": "报告内深度追问的一次性回答。只允许依据 cwd 下的 report.json / sources.md 作答。",
+  "type": "object",
+  "required": ["answer", "citations", "confidence", "denied"],
+  "additionalProperties": false,
+  "properties": {
+    "answer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "citations": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["sourceId", "claim"],
+        "additionalProperties": false,
+        "properties": {
+          "sourceId": { "type": "string", "maxLength": 32 },
+          "claim": { "type": "string", "maxLength": 200 }
+        }
+      }
+    },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "denied": { "type": "boolean" }
+  }
+}

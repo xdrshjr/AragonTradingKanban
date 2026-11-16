@@ -1,22 +1,34 @@
 'use client';
 
-import { ArrowUpRight, Download, ListTree, RefreshCw } from 'lucide-react';
+import { ArrowUpRight, Clock, Download, ListTree, MessageCircleQuestion, RefreshCw } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
+import { blockIdOf } from '@/lib/blocks';
 import { copy } from '@/lib/copy';
 import { costLabel, dateTime, relativeTime } from '@/lib/format';
 import { useUiStore } from '@/lib/store';
-import type { ReportDetail, ReportSummary, Section, SourceRef } from '@/lib/types';
+import type { ReportDetail, ReportSummary, SourceRef } from '@/lib/types';
 
 import { Badge, Tag } from '../ui/Badge';
 import { IconButton } from '../ui/Button';
 import { EmptyReportState } from './EmptyReportState';
+import { DiffBadge } from './DiffBadge';
 import { ReportRenderer } from './ReportRenderer';
 import { SourceDrawer } from './SourceDrawer';
 import { VersionSwitcher } from './VersionSwitcher';
 import { MetricGrid } from './blocks/MetricsBlock';
 import { GenerateButton } from '../generation/GenerateButton';
+
+/**
+ * ★A1 / AC-35: the ask drawer never enters the first-load chunk. Readers who never
+ * ask never download it (§18.3.6).
+ */
+const AskPanel = dynamic(() => import('../ask/AskPanel').then((module) => module.AskPanel), {
+  ssr: false,
+  loading: () => null,
+});
 
 export interface ReportPanelProps {
   instrumentName: string;
@@ -31,6 +43,21 @@ export interface ReportPanelProps {
   onToggleArchive?: (reportId: string, archived: boolean) => void;
   onDelete?: (reportId: string) => void;
   onExport: (format: 'html' | 'md', reportId?: string) => void;
+  /** `capabilities.features.askDeep` — false in mock mode, so `deep` is hidden. */
+  deepAvailable?: boolean;
+  /** `capabilities.limits.askDailyLimit` */
+  askDailyLimit?: number;
+  /** structural changes vs the previous version; undefined hides the badge */
+  diffCount?: number;
+  onCompare?: () => void;
+  /** `capabilities.features.schedule` — false hides the 定时刷新 entry entirely. */
+  scheduleEnabled?: boolean;
+  onOpenSchedule?: () => void;
+  /** deep link: open on this section and scroll to this block */
+  initialSection?: string | null;
+  initialBlockId?: string | null;
+  /** AC-36: `CompareView` returns focus here when it closes. */
+  compareTriggerRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 /**
@@ -51,13 +78,30 @@ export function ReportPanel({
   onToggleArchive,
   onDelete,
   onExport,
+  deepAvailable = false,
+  askDailyLimit = 30,
+  diffCount,
+  onCompare,
+  scheduleEnabled = false,
+  onOpenSchedule,
+  initialSection,
+  initialBlockId,
+  compareTriggerRef,
 }: ReportPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabsRef = useRef<HTMLDivElement | null>(null);
+  const askTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [activeSection, setActiveSection] = useState<string>('all');
   const [showToc, setShowToc] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askMounted, setAskMounted] = useState(false);
+  const [highlightBlockId, setHighlightBlockId] = useState<string | null>(null);
   const openSourceDrawer = useUiStore((state) => state.openSourceDrawer);
   const sources = useMemo<SourceRef[]>(() => detail?.doc.sources ?? [], [detail]);
+
+  useEffect(() => {
+    if (askOpen) setAskMounted(true);
+  }, [askOpen]);
 
   const doc = detail?.doc ?? null;
   const summary = detail?.report ?? null;
@@ -67,16 +111,87 @@ export function ReportPanel({
     return doc.sections.map((section) => ({ id: section.id, title: section.title, blocks: section.blocks }));
   }, [doc]);
 
+
+  /**
+   * Block-level jump targets (★V4-P1-2, AC-41).
+   *
+   * `blockIds` must stay aligned with the **original** block list, so filtering a
+   * redundant heading keeps the derived `sectionId#index` honest. The ids come from
+   * `lib/blocks.ts`, which mirrors the backend's `block_ids()`; they are never
+   * re-derived here.
+   *
+   * A heading whose text equals its section title is dropped: the panel already
+   * prints that title as the section's own `<h2>`, so the block would render twice.
+   */
+  const sectionsWithBlocks = useMemo(
+    () =>
+      sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        items: section.blocks
+          .map((block, index) => ({ block, blockId: blockIdOf(section.id, index) }))
+          .filter(({ block }) => !(block.type === 'heading' && block.text.trim() === section.title.trim())),
+      })),
+    [sections],
+  );
+
   // Reset the section tab when the report changes.
   useEffect(() => {
     setActiveSection('all');
     scrollRef.current?.scrollTo({ top: 0 });
   }, [detail?.report.id]);
 
-  const visibleSections = activeSection === 'all' ? sections : sections.filter((section) => section.id === activeSection);
+  const visibleSections =
+    activeSection === 'all'
+      ? sectionsWithBlocks
+      : sectionsWithBlocks.filter((section) => section.id === activeSection);
 
   const stance = doc?.rating.stance ?? 'watch';
   const stanceTone = stance === 'buy' ? 'up' : stance === 'sell' ? 'down' : 'neutral';
+
+  const jumpToBlock = useCallback(
+    (blockId: string | null, sectionId: string) => {
+      // Section tabs collapse everything else, so open the matching tab first.
+      if (sectionId && activeSection !== 'all' && activeSection !== sectionId) {
+        setActiveSection(sectionId);
+      }
+      setHighlightBlockId(blockId);
+      if (!blockId) return;
+      // Wait for the tab switch to paint before scrolling.
+      requestAnimationFrame(() => {
+        const target = scrollRef.current?.querySelector<HTMLElement>(
+          `[data-block-id="${CSS.escape(blockId)}"]`,
+        );
+        target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+    },
+    [activeSection],
+  );
+
+  // The highlight is a flash, not a state: clear it so a later jump is visible.
+  useEffect(() => {
+    if (!highlightBlockId) return;
+    const node = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-block-id="${CSS.escape(highlightBlockId)}"]`,
+    );
+    node?.setAttribute('data-highlighted', 'true');
+    const timer = setTimeout(() => node?.removeAttribute('data-highlighted'), 2400);
+    return () => clearTimeout(timer);
+  }, [highlightBlockId, activeSection]);
+
+  // Deep link (`?section=&block=`): open the right tab and jump once, on arrival.
+  useEffect(() => {
+    if (!initialSection && !initialBlockId) return;
+    if (initialSection) setActiveSection(initialSection);
+    if (!initialBlockId) return;
+    setHighlightBlockId(initialBlockId);
+    const timer = setTimeout(() => {
+      scrollRef.current
+        ?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(initialBlockId)}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [initialBlockId, initialSection]);
 
   const handleExportMenu = useCallback(
     (format: 'html' | 'md', reportId?: string) => {
@@ -123,17 +238,10 @@ export function ReportPanel({
    * When every section is shown, the panel already prints `section.title` as an
    * `<h2>`. A model (and, before this fix, the mock generator) may also start the
    * section with a heading of the same text, which rendered the title twice.
+   *
+   * The filter now lives in `sectionsWithBlocks`, where the block ids are derived —
+   * so the ids stay aligned with the **document**, not with the filtered list.
    */
-  const withoutRepeatedTitle = (section: Pick<Section, 'title' | 'blocks'>) => {
-    if (activeSection !== 'all') return section.blocks;
-    // Any heading whose text is the section title is redundant here: the panel
-    // prints that title as the section's own `<h2>`. It is not necessarily the
-    // first block (a lead callout usually comes before it), so filter them all.
-    return section.blocks.filter(
-      (block) => !(block.type === 'heading' && block.text.trim() === section.title.trim()),
-    );
-  };
-
   if (!doc) {
     return (
       <section aria-label="投研报告" className="flex h-full min-w-0 flex-col bg-[var(--bg-canvas)]">
@@ -193,8 +301,25 @@ export function ReportPanel({
               onExport={handleExportMenu}
               disabled={generating}
             />
+            {scheduleEnabled && onOpenSchedule ? (
+              <IconButton label={copy.schedule.open} onClick={onOpenSchedule}>
+                <Clock className="size-3.5" />
+              </IconButton>
+            ) : null}
+            {diffCount !== undefined && diffCount > 0 && onCompare ? (
+              <DiffBadge count={diffCount} onClick={onCompare} triggerRef={compareTriggerRef} />
+            ) : null}
             <IconButton label={copy.report.exportHtml} onClick={() => handleExportMenu('html', summary?.id)}>
               <Download className="size-3.5" />
+            </IconButton>
+            {/* A1: the ask entry. Lazy panel; this button is its focus-return target. */}
+            <IconButton
+              ref={askTriggerRef}
+              label={copy.ask.open}
+              aria-expanded={askOpen}
+              onClick={() => setAskOpen((value) => !value)}
+            >
+              <MessageCircleQuestion className="size-3.5" />
             </IconButton>
             <GenerateButton
               onGenerate={onGenerate}
@@ -307,7 +432,11 @@ export function ReportPanel({
                     {section.title}
                   </h2>
                 ) : null}
-                <ReportRenderer blocks={withoutRepeatedTitle(section)} sources={sources} />
+                                  <ReportRenderer
+                    blocks={section.items.map((item) => item.block)}
+                    blockIds={section.items.map((item) => item.blockId)}
+                    sources={sources}
+                  />
               </section>
             ))}
           </div>
@@ -355,6 +484,21 @@ export function ReportPanel({
           </footer>
         </article>
       </div>
+
+      {/* Mounted on first open: the chunk must not be fetched just because a
+          report is on screen (AC-35 is a runtime promise, not only a build one). */}
+      {summary && askMounted ? (
+        <AskPanel
+          reportId={summary.id}
+          open={askOpen}
+          onOpenChange={setAskOpen}
+          deepAvailable={deepAvailable}
+          dailyLimit={askDailyLimit}
+          onJumpToBlock={jumpToBlock}
+          onJumpToSource={openSourceDrawer}
+          triggerRef={askTriggerRef}
+        />
+      ) : null}
 
       <SourceDrawer sources={sources} />
     </section>

@@ -200,6 +200,14 @@
             null
           ]
         },
+        "polarity": {
+          "enum": [
+            "bullish",
+            "bearish",
+            "neutral",
+            null
+          ]
+        },
         "sourceRefs": {
           "$ref": "#/$defs/refs"
         }

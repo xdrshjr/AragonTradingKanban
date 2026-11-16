@@ -20,6 +20,8 @@ export interface CommandPaletteProps {
   onGenerate: () => void;
   onExport: (format: 'html' | 'md', reportId?: string) => void;
   onToggleChart: () => void;
+  /** A2: opens the unified search dialog. Omitted when full-text search is off. */
+  onOpenSearch?: () => void;
 }
 
 interface CommandItem {
@@ -39,6 +41,7 @@ export function CommandPalette({
   onGenerate,
   onExport,
   onToggleChart,
+  onOpenSearch,
 }: CommandPaletteProps) {
   const open = useUiStore((state) => state.commandPaletteOpen);
   const toggle = useUiStore((state) => state.toggleCommandPalette);
@@ -80,7 +83,23 @@ export function CommandPalette({
       },
     }));
 
+    const searchItem: CommandItem[] = onOpenSearch
+      ? [
+          {
+            id: 'search',
+            label: copy.command.actions.search,
+            hint: copy.search.placeholder,
+            group: copy.command.groups.actions,
+            run: () => {
+              toggle(false);
+              onOpenSearch();
+            },
+          },
+        ]
+      : [];
+
     const actionItems: CommandItem[] = [
+      ...searchItem,
       {
         id: 'generate',
         label: copy.command.actions.generate,
@@ -142,6 +161,7 @@ export function CommandPalette({
     instruments,
     onExport,
     onGenerate,
+    onOpenSearch,
     onSelectInstrument,
     onSelectVersion,
     onToggleChart,

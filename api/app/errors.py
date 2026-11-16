@@ -138,6 +138,61 @@ class Unauthorized(AppError):
     message = "缺少或无效的凭据"
 
 
+class InvalidQuestion(AppError):
+    """§7.3: empty / too long / control characters — never a 500."""
+
+    code = "invalid_question"
+    status_code = 422
+    message = "问题不合法（1–500 字符，且不能包含控制字符）"
+
+
+class InvalidCron(AppError):
+    code = "invalid_cron"
+    status_code = 422
+    message = "cron 表达式不合法（需 5 个字段，且各字段在取值范围内）"
+
+
+class DiffSameReport(AppError):
+    code = "diff_same_report"
+    status_code = 422
+    message = "同两个版本不能比较"
+
+
+class ReportNotReady(Conflict):
+    """`deep` needs a grounded baseline; provisional/degraded has none (§7.3)."""
+
+    code = "report_not_ready"
+    message = "这份报告是临时版或降级版，请先重新生成再深度追问"
+
+
+class AskNotActive(Conflict):
+    code = "ask_not_active"
+    message = "该追问已结束，无法取消"
+
+
+class DuplicateSchedule(Conflict):
+    code = "duplicate_schedule"
+    message = "该标的已有启用中的定时刷新"
+
+
+class TooManyAsks(AppError):
+    code = "too_many_asks"
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    message = "今日深度追问额度已用完"
+
+
+class AskDeepUnavailable(Conflict):
+    """★ 实施补充：`features.askDeep=false` 时的显式拒绝，不做静默降级。
+
+    The design expresses this state as a capability flag; §7.3's table has no code
+    for it. A 409 with an explicit code beats a `cite` answer pretending to be a
+    `deep` one (see `## 实施过程发现的方案缺陷` in the spec).
+    """
+
+    code = "ask_deep_unavailable"
+    message = "当前生成引擎不可用，深度追问已关闭（引用式检索仍可用）"
+
+
 class NotImplementedFeature(AppError):
     code = "not_implemented"
     status_code = status.HTTP_501_NOT_IMPLEMENTED

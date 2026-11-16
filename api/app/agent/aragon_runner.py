@@ -150,6 +150,43 @@ def _preview(value: Any, limit: int = 400) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label: str = "-") -> None:
+    """★P1-09, reusable (★V4-P1-5): kill the tree, not just the shim.
+
+    `aragon.CMD` on Windows is a cmd.exe shim, so `proc.kill()` leaves the node
+    child running and the run never finishes cancelling. `AskRegistry` needs the
+    very same semantics for `deep` asks, so this lives at module level instead of
+    inside `AragonRunner.cancel()`.
+    """
+    if process is None or process.returncode is not None:
+        return
+    pid = process.pid
+    if sys.platform == "win32":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/T",
+                "/F",
+                "/PID",
+                str(pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        except OSError as exc:  # pragma: no cover - non-Windows CI
+            logger.warning("taskkill failed (%s), falling back to kill()", exc)
+            process.kill()
+    else:
+        try:
+            os.killpg(os.getpgid(pid), 15)
+        except (OSError, ProcessLookupError):
+            process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=CANCEL_GRACE_SEC)
+    except TimeoutError:
+        logger.warning("cancel_timeout %s pid=%s", label, pid)
+
+
 class AragonRunner:
     """Spawns `aragon exec`, forwards NDJSON as `AgentEvent`s, never hangs."""
 
@@ -179,35 +216,7 @@ class AragonRunner:
     async def cancel(self) -> None:
         """★P1-09: kill the process *tree*, not just the shim."""
         self._cancelled = True
-        process = self._process
-        if process is None or process.returncode is not None:
-            return
-        pid = process.pid
-        if sys.platform == "win32":
-            # `aragon.CMD` is a cmd.exe shim: proc.kill() leaves node running.
-            try:
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill",
-                    "/T",
-                    "/F",
-                    "/PID",
-                    str(pid),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await killer.wait()
-            except OSError as exc:  # pragma: no cover - non-Windows CI
-                logger.warning("taskkill failed (%s), falling back to kill()", exc)
-                process.kill()
-        else:
-            try:
-                os.killpg(os.getpgid(pid), 15)
-            except (OSError, ProcessLookupError):
-                process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=CANCEL_GRACE_SEC)
-        except TimeoutError:
-            logger.warning("cancel_timeout run=%s pid=%s", self._run_id, pid)
+        await kill_process_tree(self._process, label=f"run={self._run_id}")
 
     # ── streaming core ───────────────────────────────────────────────────
     async def stream(

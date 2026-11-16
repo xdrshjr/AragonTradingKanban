@@ -78,6 +78,24 @@ class Settings(BaseSettings):
     run_retention_days: int = 14
     log_level: str = "INFO"
 
+    # ── Ask (A1 / §18.3.2) ───────────────────────────────────────────────
+    #: `cite` is free and unlimited; `deep` is the paid档 and gets a per-report
+    #: daily quota. The quota is a *refusal*, never a silent downgrade (§7.3).
+    ask_daily_limit: int = 30
+    ask_deep_max_turns: int = 12
+    ask_deep_max_duration_ms: int = 180_000
+    ask_max_question_chars: int = 500
+    ask_top_k: int = 5
+
+    # ── Search / scheduler (A2, A4) ──────────────────────────────────────
+    search_fts: bool = True
+    #: `auto` → use pypinyin when importable; `on` → require it; `off` → skip it.
+    search_pinyin: str = "auto"
+    scheduler_enabled: bool = True
+    scheduler_tick_seconds: int = 30
+    scheduler_lease_seconds: int = 120
+    scheduler_batch_size: int = 5
+
     # ── Web (read-only mirror, handy for capability payloads) ────────────
     next_public_api_base: str = "http://127.0.0.1:8000"
     enable_py_rewrite: bool = False
@@ -118,6 +136,11 @@ class Settings(BaseSettings):
         return self.workspace_dir / "runs"
 
     @property
+    def asks_dir(self) -> Path:
+        """Ask workspaces live beside run workspaces and expire the same way."""
+        return self.workspace_dir / "asks"
+
+    @property
     def data_dir(self) -> Path:
         return API_DIR / "data"
 
@@ -139,5 +162,6 @@ def get_settings() -> Settings:
     settings = Settings()  # type: ignore[call-arg]  # values come from env/.env
     # Make sure the runtime directories exist before anything writes to them.
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
+    settings.asks_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     return settings

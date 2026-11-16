@@ -20,6 +20,8 @@ api/data/*.db
 api/data/*.db-*
 api/workspace/runs/*
 !api/workspace/runs/.gitkeep
+# `deep` ask workspaces (rebuilt from `reports.doc_json`, V4-P1-6) — runtime, not product
+api/workspace/asks/*
 api/workspace/.tmp/
 
 # env (keep the example)

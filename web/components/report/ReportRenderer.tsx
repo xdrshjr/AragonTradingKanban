@@ -24,6 +24,19 @@ export interface ReportRendererProps {
   blocks: Block[];
   sources?: SourceRef[];
   onUnknown?: (type: string) => void;
+  /**
+   * Optional `blockId` per block, aligned with `blocks` (★V4-P1-2 / AC-41).
+   *
+   * The id itself is derived on the backend and mirrored in `lib/blocks.ts`; the
+   * renderer only stamps it onto the DOM so a search hit or an ask citation can
+   * scroll to it. Passing `null` means "no target" (e.g. a heading the panel hides).
+   */
+  blockIds?: (string | null)[];
+}
+
+/** DOM-safe id for a block: `business#3` → `block-business-3`. */
+export function blockDomId(blockId: string): string {
+  return `block-${blockId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 }
 
 const HEADING_CLASS: Record<number, string> = {
@@ -111,12 +124,26 @@ function BlockView({ block, sources }: { block: Block; sources: SourceRef[] }) {
   }
 }
 
-export const ReportRenderer = memo(function ReportRenderer({ blocks, sources = [] }: ReportRendererProps) {
+export const ReportRenderer = memo(function ReportRenderer({
+  blocks,
+  sources = [],
+  blockIds,
+}: ReportRendererProps) {
   return (
     <div className="report-prose space-y-3">
-      {blocks.map((block, index) => (
-        <BlockView key={index} block={block} sources={sources} />
-      ))}
+      {blocks.map((block, index) => {
+        const blockId = blockIds?.[index] ?? null;
+        return (
+          <div
+            key={index}
+            id={blockId ? blockDomId(blockId) : undefined}
+            data-block-id={blockId ?? undefined}
+            className="scroll-mt-4 rounded-[var(--radius-sm)] transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
+          >
+            <BlockView block={block} sources={sources} />
+          </div>
+        );
+      })}
     </div>
   );
 });

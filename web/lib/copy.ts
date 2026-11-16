@@ -171,6 +171,7 @@ export const copy = {
       theme: '外观',
     },
     actions: {
+      search: '搜索标的或报告内容',
       generate: '生成最新版本',
       exportHtml: '导出 HTML',
       exportMarkdown: '导出 Markdown',
@@ -187,10 +188,150 @@ export const copy = {
     railNav: '标的列表',
     reportNav: '报告章节',
     liveRegion: '生成进度',
+    askLiveRegion: '追问结果',
+    onlineStatus: '网络状态',
     dragRail: '调整标的列表宽度',
     dragChart: '调整 K 线与报告宽度',
     resetByDoubleClick: '双击复位',
   },
+
+  /* ── A1 追问 ───────────────────────────────────────────────────────────── */
+  ask: {
+    title: '追问这份报告',
+    open: '追问',
+    close: '收起追问',
+    placeholder: '例如：毛利率下滑的主因是什么？',
+    /** 追问输入框的可访问名（占位符是示例，不能当标签）。 */
+    questionLabel: '追问内容',
+    /** 模式切换（引用检索 / 深度追问）整组的可访问名。 */
+    modeGroup: '追问模式',
+    hint: '默认「引用检索」：直接取报告原文，不调用模型、不花钱',
+    submit: '提问',
+    deepSubmit: '深度追问',
+    deepHint: '深度追问会调用一次 AI（约 20–60 秒），每日额度 {limit} 次',
+    deepRemaining: '今日剩余深度追问 {remaining} 次',
+    modeCite: '引用检索',
+    modeDeep: '深度追问',
+    counting: '{count}/{limit}',
+    empty: '还没有追问记录，试着问一个和数字有关的问题',
+    searching: '正在检索报告…',
+    thinking: '正在组织答案…',
+    hitsTitle: '命中 {count} 处（点击定位）',
+    answerTitle: '深度回答',
+    citationsTitle: '引用',
+    droppedNotice: '{count} 处引用未能在来源清单中找到，已丢弃',
+    notGrounded: '报告未涉及该问题',
+    citeFallbackTitle: '深度追问不可用',
+    quotaTitle: '今日深度追问额度已用完（{limit}/{limit}）',
+    quotaBody: '是否改用引用式检索？它不消耗额度，也不会调用模型。',
+    quotaAccept: '改用引用检索',
+    quotaDecline: '取消',
+    deepUnavailable: '当前生成引擎不可用，深度追问已关闭；引用式检索仍可用',
+    provisionalHint: '这是一份临时版报告，没有来源清单，无法给出引用依据',
+    cancel: '取消追问',
+    cancelling: '正在取消…',
+    cancelled: '追问已取消',
+    failed: '追问失败',
+    retry: '重试',
+    costUnknown: '成本未知',
+    latency: '耗时 {ms} ms',
+    confidence: { high: '高置信', medium: '中置信', low: '低置信' },
+  },
+
+  /* ── A2 检索 ───────────────────────────────────────────────────────────── */
+  search: {
+    title: '搜索',
+    placeholder: '搜索标的或报告内容（⌘K）',
+    instruments: '标的',
+    reports: '报告内容',
+    noInstruments: '没有匹配的标的',
+    emptyQuery: '输入代码、名称、拼音首字母，或报告里出现过的词',
+    searching: '正在搜索…',
+    degraded: '全文索引不可用，本次为文本扫描结果',
+    tookMs: '{ms} ms',
+    openSymbol: '打开标的',
+    openSection: '定位到该段落',
+    recent: '最近',
+    hint: '↑↓ 选择 · 回车打开 · Esc 关闭',
+    error: '搜索失败',
+  },
+
+  /* ── A3 版本比较 ───────────────────────────────────────────────────────── */
+  compare: {
+    title: '版本比较',
+    open: '与上一版比较',
+    close: '退出比较',
+    left: '旧版 {version}',
+    right: '新版 {version}',
+    ratingChanged: '评级变化',
+    metricsDelta: '指标变化',
+    sectionsAdded: '新增章节',
+    sectionsRemoved: '移除章节',
+    blocksChanged: '内容变化',
+    noChanges: '两个版本没有结构性差异',
+    noBaseline: '这是第一个版本，没有可比对象',
+    loadFailed: '版本比较加载失败',
+    statusChanged: '状态变化',
+    blocksCount: '{count} 处',
+    tone: { up: '利好', down: '利空', neutral: '中性' },
+    change: { added: '新增', removed: '删除', modified: '修改' },
+    compareWith: '选择比较对象',
+  },
+
+  /* ── A4 定时刷新 ───────────────────────────────────────────────────────── */
+  schedule: {
+    title: '定时刷新',
+    open: '定时刷新',
+    create: '创建定时刷新',
+    save: '保存',
+    saving: '保存中…',
+    delete: '删除定时刷新',
+    deleteConfirm: '删除后不再自动生成，已生成的报告不受影响。',
+    cron: '触发时间（cron，UTC）',
+    cronPlaceholder: '0 9 * * 1-5',
+    cronHint: '5 个字段：分 时 日 月 周；工作日 9 点写作 0 9 * * 1-5',
+    cronInvalid: 'cron 表达式不合法',
+    nextRunAt: '下次触发',
+    preview: '预览',
+    minAgeHours: '最小报告龄（小时）',
+    minAgeHint: '报告比这个时间新就不再重复生成',
+    enabled: '启用',
+    disabled: '已停用',
+    /** 标列表上的小时钟角标：这个标的有启用中的定时刷新（§18.4.5）。 */
+    railBadge: '有定时刷新',
+    empty: '这个标的还没有定时刷新',
+    duplicate: '该标的已有启用中的定时刷新',
+    failures: '连续失败 {count} 次',
+    disabledAfterFailures: '连续失败已达上限，已自动停用',
+    badge: '有定时刷新',
+    timezoneNote: '按本地时区展示，服务端一律 UTC',
+    loadFailed: '定时刷新加载失败',
+  },
+
+  /* ── A5 离线 ───────────────────────────────────────────────────────────── */
+  offline: {
+    badge: '离线副本',
+    badgeWithTime: '离线副本 · 生成于 {time}',
+    bannerTitle: '当前离线',
+    bannerBody: '已读过的报告仍可查看；生成、追问与检索需要联网。',
+    generateBlocked: '当前离线，无法生成',
+    unreadTitle: '这份报告还没有离线副本',
+    unreadBody: '联网后打开过一次，就会自动缓存到本地。',
+    retryWhenOnline: '联网后重试',
+    online: '已恢复联网',
+  },
 } as const;
 
 export type Copy = typeof copy;
+
+/**
+ * Minimal `{key}` interpolation for the strings above.
+ *
+ * Kept deliberately tiny: no i18n library, no template surgery, one call site shape
+ * (`fill(tpl, { count })`) that stays greppable when the copy changes.
+ */
+export function fill(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+    key in values ? String(values[key]) : match,
+  );
+}

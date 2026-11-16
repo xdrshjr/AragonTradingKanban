@@ -23,13 +23,18 @@ _TMP_DIR = Path(tempfile.mkdtemp(prefix="aragon-test-"))
 _DB_PATH = _TMP_DIR / "test.db"
 _WORKSPACE = _TMP_DIR / "workspace"
 
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{_DB_PATH.as_posix()}")
-os.environ.setdefault("WORKSPACE_ROOT", str(_WORKSPACE))
-os.environ.setdefault("AGENT_MODE", "mock")
-os.environ.setdefault("DATA_PROVIDERS", "synthetic")
-os.environ.setdefault("ALLOW_SYNTHETIC", "1")
-os.environ.setdefault("API_TOKEN", "")
-os.environ.setdefault("LOG_LEVEL", "WARNING")
+# Assigned, not `setdefault`: the ambient shell may already export
+# `AGENT_MODE=auto` (the `.env` default), and `setdefault` would then let the suite
+# spawn a *paid* `aragon exec`. Tests must be deterministic and offline (AC-15);
+# the tests that need a real/fake CLI build their own runner explicitly.
+os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH.as_posix()}"
+os.environ["WORKSPACE_ROOT"] = str(_WORKSPACE)
+os.environ["AGENT_MODE"] = "mock"
+os.environ["DATA_PROVIDERS"] = "synthetic"
+os.environ["ALLOW_SYNTHETIC"] = "1"
+os.environ["API_TOKEN"] = ""
+os.environ["LOG_LEVEL"] = "WARNING"
+os.environ["SCHEDULER_ENABLED"] = "0"  # the ticker is driven explicitly in tests
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import build_engine  # noqa: E402
@@ -69,11 +74,23 @@ def sample_report() -> dict:
 
 @pytest.fixture()
 def engine():
-    """A fresh schema per test — `create_all` is a test-only convenience."""
+    """A fresh schema per test — `create_all` is a test-only convenience.
+
+    ★V4-P1-7: `create_all` cannot build an FTS5 virtual table, so the shared
+    `ensure_fts_schema()` runs right after it. Without this the whole search test
+    layer would be silently indexing into nothing (AC-33 would be permanently false).
+    """
+    from app.services.search_index import drop_fts_schema, ensure_fts_schema
+
     test_engine = build_engine(f"sqlite:///{_DB_PATH.as_posix()}")
     Base.metadata.drop_all(test_engine)
-    Base.metadata.create_all(test_engine)
+    with test_engine.begin() as connection:
+        drop_fts_schema(connection)  # virtual tables are invisible to drop_all
+        Base.metadata.create_all(connection)
+        ensure_fts_schema(connection)
     yield test_engine
+    with test_engine.begin() as connection:
+        drop_fts_schema(connection)
     Base.metadata.drop_all(test_engine)
     test_engine.dispose()
 

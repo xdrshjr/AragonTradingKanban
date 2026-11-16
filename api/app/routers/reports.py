@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import select
@@ -13,7 +11,9 @@ from ..db.session import get_db
 from ..errors import InstrumentNotFound, ReportNotFound
 from ..models import Instrument
 from ..schemas.report import (
+    QUALITY_STATUS_EQUIVALENT,
     CreateReportRequest,
+    DiffResult,
     ReportDetail,
     ReportListResponse,
     ReportPatch,
@@ -149,26 +149,39 @@ def export_report(
     )
 
 
-@router.post("/reports/{report_id}/ask", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-def ask_report(report_id: str, db: Session = Depends(get_db)) -> Response:
-    """Reserved contract (§2.2): conversational Q&A over a report is out of scope."""
-    if report_service.get(db, report_id) is None:
+@router.get("/reports/{report_id}/diff/{other_id}", response_model=DiffResult)
+def diff_reports(report_id: str, other_id: str, db: Session = Depends(get_db)) -> DiffResult:
+    """Structural diff, `a` = old version, `b` = new version (§18.5.4).
+
+    `tone` is computed server-side (`direction × polarity`) so no component has to
+    re-guess that "PE 上升是坏事".
+    """
+    from ..errors import DiffSameReport
+    from ..services.report_diff import diff_docs
+
+    if report_id == other_id:
+        raise DiffSameReport()
+    left = report_service.get(db, report_id)
+    right = report_service.get(db, other_id)
+    if left is None or right is None:
         raise ReportNotFound()
-    return Response(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        content=json.dumps(
-            {
-                "error": {
-                    "code": "ask_not_implemented",
-                    "message": "报告内自由问答不在本期范围，接口契约已预留。",
-                    "requestId": "-",
-                    "detail": {},
-                }
-            },
-            ensure_ascii=False,
-        ),
-        media_type="application/json; charset=utf-8",
-    )
+
+    doc_a = left.doc
+    doc_b = right.doc
+    doc_a["_reportId"] = left.id
+    doc_b["_reportId"] = right.id
+    payload = diff_docs(doc_a, doc_b)
+    # `superseded` only says "a newer version exists" — true for every adjacent pair,
+    # so diffing it verbatim returned a meaningless change on every comparison. The
+    # field is about **quality** (§18.5.4 illustrates `ready → degraded`), so an older
+    # version is read as the ready report it was.
+    status_changed = None
+    before = QUALITY_STATUS_EQUIVALENT.get(left.status)
+    after = QUALITY_STATUS_EQUIVALENT.get(right.status)
+    if before and after and before != after:
+        status_changed = {"from": before, "to": after}
+    payload["statusChanged"] = status_changed
+    return DiffResult.model_validate(payload)
 
 
 @router.get("/instruments/{instrument_id}/runs", response_model=list[RunOut])

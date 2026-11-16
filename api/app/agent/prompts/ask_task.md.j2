@@ -1,0 +1,45 @@
+# 读者的问题
+
+{{ question }}
+
+# 报告信息
+
+{{ report.title }}（{{ report.symbol }} {{ report.instrument_name }} · v{{ report.version }}）
+as-of: {{ report.as_of }} · status: {{ report.status }}
+
+# 你可以读到的资料（只读，全部在本目录，路径相对于当前工作目录）
+
+{% for item in available_files %}
+- `{{ item }}` —— {{ descriptions[item] }}
+{% endfor %}
+
+# 报告的章节索引（用于定位答案属于哪一部分）
+
+{% for section in sections %}
+- `{{ section.id }}` · {{ section.title }}
+{% endfor %}
+
+# 可用的来源 id 白名单（`citations[].sourceId` 只能取这些值）
+
+{% if source_ids %}
+{{ source_ids | join('、') }}
+{% else %}
+（这份报告没有来源清单：任何引用都不合法。这种情况应把 `denied` 置为 true 并说明"临时版没有来源清单"。）
+{% endif %}
+
+{% if key_metrics %}
+# 报告里已经给出的关键指标（可直接引用，不要改写口径）
+
+{% for metric in key_metrics %}
+- {{ metric.label }}: {{ metric.value }}
+{% endfor %}
+{% endif %}
+
+# 硬性约束
+
+1. `report.json` 是这份报告的结构化原文（章节 / 块 / 来源）。**答案的证据必须能在其中找到。**
+2. 只能使用白名单里的 sourceId；白名单为空时一律 `denied=true`。
+3. 报告未涉及该问题时 `denied=true`、`citations=[]`，并说明缺的是哪个维度。
+4. `confidence` 取 `high`（报告有直接表述）、`medium`（需跨章节拼接）、`low`（只有间接旁证）。
+5. 中文作答，结论先行，不要复述问题。
+6. 结束时必须且只能调用一次 `submit_result`，不要写文件。

@@ -13,6 +13,8 @@ import html
 import re
 from typing import Any
 
+from .block_text import CITATION_RE
+
 SVG_WIDTH = 640
 SVG_HEIGHT = 260
 SVG_PADDING = {"top": 28, "right": 16, "bottom": 34, "left": 52}
@@ -22,7 +24,9 @@ SEVERITY_LABEL = {"low": "低", "medium": "中", "high": "高"}
 SCENARIO_LABEL = {"bear": "悲观", "base": "中性", "bull": "乐观"}
 TONE_LABEL = {"info": "说明", "warn": "注意", "insight": "洞察"}
 
-CITATION_RE = re.compile(r"\[(S\d+(?:\s*,\s*S\d+)*)\]")
+#: `CITATION_RE` is **imported**, never re-declared (★V4-P1-3): export links `[S1]`
+#: and `ask` grounds on `[S1]`, so the two must read the same regex or "点得进去"
+#: and "答得出来" drift apart. `services/block_text` is the one definition.
 
 
 # ── helpers ───────────────────────────────────────────────────────────────

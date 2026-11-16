@@ -117,7 +117,16 @@ npm run dev
 | `MAX_REPORT_COST_USD` | `0.60` | 仅在成本已知时告警，不阻断 |
 | `DATA_PROVIDERS` | `akshare,yfinance,synthetic` | 数据源链，逐个降级 |
 | `ALLOW_SYNTHETIC` | `1` | 是否允许合成数据兜底 |
-| `RUN_RETENTION_DAYS` | `14` | 工作区清理 |
+| `RUN_RETENTION_DAYS` | `14` | 工作区与 `report_asks` 的保留期（同一窗口） |
+| `ASK_DAILY_LIMIT` | `30` | 单报告 24h 内 `deep` 追问上限；超过 → `429 too_many_asks` |
+| `ASK_DEEP_MAX_TURNS` / `ASK_DEEP_MAX_DURATION_MS` | `12` / `180000` | `deep` 的独立预算（与生成预算分开） |
+| `ASK_MAX_QUESTION_CHARS` | `500` | 问题长度上限（`422 invalid_question`） |
+| `ASK_TOP_K` | `5` | `cite` 档返回的命中块数 |
+| `SEARCH_FTS` | `1` | `0` 时强制走 `LIKE` 兜底（无 FTS5 的构建自动如此） |
+| `SEARCH_PINYIN` | `auto` | `auto` 按 `pypinyin` 是否可 import 决定；`off` 关闭拼音维度 |
+| `SCHEDULER_ENABLED` | `1` | 调度 ticker 总开关；`0` 时 `features.schedule=false` |
+| `SCHEDULER_TICK_SECONDS` | `30` | tick 间隔 |
+| `SCHEDULER_LEASE_SECONDS` | `120` | 租约过期时间（进程崩溃后的回收窗口） |
 | `NEXT_PUBLIC_API_BASE` | `http://127.0.0.1:8000` | 前端直连 API |
 | `ENABLE_PY_REWRITE` | `0` | `1` 时走 Next 同源改写 |
 
@@ -161,19 +170,95 @@ python -m alembic revision --autogenerate -m "change description"
 
 ---
 
-## 本期不包含（与设计方案 §15.1 逐条对齐）
+## 本期包含（v4：A 层 + B 层）
 
-明确**不做**，并且在代码里留下 501 或 TODO，不留半成品：
+Iteration 2 在「生成 → 阅读 → 引用联动 → 版本切换 → 导出」之上补了四块能力。
+每一块的开关都来自 `/capabilities.features` 的**实测值**，不是硬编码的常量。
+
+| 能力 | 入口 | 关键设计 | 验收 |
+| --- | --- | --- | --- |
+| **追问（A1）** | 报告头「追问」按钮 | `cite` 档零 token：BM25 + 中文 bigram 检索报告自己的块，返回原文与**校验过的**引用；`deep` 档才 spawn 一次 `aragon exec`，按日额度 30 次 | AC-25/26/27/28/40/44 |
+| **全文检索（A2）** | 标列表搜索框 / `⌘K` → 「搜索标的或报告内容」 | FTS5 **一块一行**（带 `section_id`/`block_id`）；摘要由服务层从块原文切片生成，不用 `snippet()`；无 FTS5 时降级 `LIKE` 且 `degraded=true` | AC-32/33/39 |
+| **版本比较（A3）** | 报告头版本变化角标 | 结构 diff（章节/块/指标），`tone = direction × polarity` **只在服务端算一次**；`polarity` 缺省即灰色，绝不猜 | AC-34/42 |
+| **定时刷新（A4）** | 报告头「定时刷新」 | 只做触发源：`tick_claim()` 在 `to_thread` 里只做 DB 抢租约，`start()/schedule()` 回事件循环；容量不足时**让位**给手动生成 | AC-29/30/31/43 |
+| **离线只读（A5）** | 自动 | service worker 只缓存**同源导航文档**（整页 HTML 已含报告）+ `/_next/static/*`；跨源 API 一律放行不拦截；「离线副本 · 生成于 …」的日期取自页面 `<meta>` | AC-37/45 |
+
+### 追问为什么默认不调模型
+
+「问一句就要一次完整生成」在成本和延迟上都不可接受，而且引入第二个幻觉面。所以默认档是**抽取式**的：
+
+```
+POST /reports/{id}/ask {question, mode:"cite"}
+  → 中文 bigram 切词 → BM25（k1=1.2, b=0.75）
+  → 章节标题命中 ×1.6 / 结构化块 ×1.3
+  → top_k=5，且 ≥ 0.15×top1 才保留
+  → 答案 = 命中块的**原文**；citations = sourceRefs ∪ 正文行内 [S1]
+  → 逐条校验 ∈ doc.sources，非法条目丢弃并计入 citationsDropped
+```
+
+没有生成步骤，就没有幻觉路径。`deep` 档是用户显式点的那一下，写入 `report_asks` + `ask_events`，
+**不建 `runs` 行**（C-12：ask 有自己的 `AskRegistry` 与 `POST /asks/{id}/events-token`）。
+
+### 离线副本必须自证年龄
+
+断网打开一份读过的报告时，页面会显示「离线副本 · 生成于 …」。这个时间**只能**来自
+`<meta name="aragon-report-generated-at">`——没有它就不显示徽标，而不是显示一个可能是今天的日期。
+过期数据不许冒充最新（R-19）。
+
+---
+
+## 新增端点（v3/v4）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/reports/{id}/ask` | `mode=cite` → 200 同步；`mode=deep` → 202 `{askId, streamUrl}` |
+| GET | `/reports/{id}/asks?limit=20` | 该报告的追问历史 |
+| GET | `/asks/{askId}` | 单次追问详情 |
+| GET | `/asks/{askId}/events?token=` | `ask.stage/delta/usage/done/error`（复用 §7.4 帧格式） |
+| POST | `/asks/{askId}/events-token` | 绑定 **askId** 的 60 秒短签名 |
+| POST | `/asks/{askId}/cancel` | `202 cancelling`，已结束则 `409 ask_not_active` |
+| GET | `/search?q=&limit=20` | 标的 + 报告块；每条命中带 `sectionId`/`blockId`/`snippet` |
+| GET | `/reports/{a}/diff/{b}` | 结构 diff；`a === b` → `422 diff_same_report` |
+| GET/POST/PATCH/DELETE | `/schedules[/{id}]` | cron 刷新；cron 非法 → `422 invalid_cron`，重复启用 → `409 duplicate_schedule` |
+
+新增错误码：`report_not_ready`（临时版不接受 deep）、`invalid_question`、`too_many_asks`
+（带 `detail.suggestMode`，前端**显式询问**才降级）、`ask_not_active`、`invalid_cron`、
+`duplicate_schedule`、`diff_same_report`、`ask_deep_unavailable`（引擎不支持结构化时）。
+
+`/capabilities.features` 现在是 `mock, exportHtml, exportMd, pdf, ask, askDeep, fullTextSearch,
+pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增加
+`askDailyLimit / askMaxQuestionChars / schedulerTickSeconds`。
+
+---
+
+## 本期不包含（与设计方案 §18.2 的 C 层逐条对齐）
+
+明确**不做**，并且代码里没有悬挂分支：不留半成品开关、不留"以后实现"的空接口。
 
 | 项 | 现状 |
 | --- | --- |
-| `POST /reports/{id}/ask`（与报告对话） | 契约已预留，返回 `501 ask_not_implemented` |
-| PDF 导出 | `501 export_unsupported` 并提示"用浏览器打印"（打印样式已完整适配） |
-| 自动定时批量生成全市场报告 | 未实现调度器；`runs` 表字段已预留 |
-| 多用户账号 / 团队协作 / 评论批注 | 本期为单用户本地优先，仅保留可选 Bearer 门禁 |
+| PDF 导出（C1） | `501 export_unsupported` 并提示「用浏览器打印」（打印样式已完整适配）。需 headless Chromium +200MB，不做 |
+| 多用户账号 / 团队协作 / 评论批注（C2） | 单用户本地优先，仅保留可选 Bearer 门禁。账号会污染所有 ACL 路径 |
+| 向量检索 / embedding 服务（C3） | 不做。单份报告 ~40 块，BM25 + bigram 召回足够，且 `cite` 档的可行性不依赖向量 |
+| 全市场爬取式定时生成（C4） | 不做。调度对象只能是显式配置的标的，否则数据源限流会变成常态故障 |
+| 报告正文 i18n（C5） | 不做。模型直出中文；文案已集中于 `web/lib/copy.ts` |
 | 实时行情推送 / Level-2 / 交易下单 | 非目标（属于后续 Kanban 阶段） |
-| `chart` 块的 scatter / waterfall 导出 SVG | 导出时降级为数据表（Python 侧无 ECharts），界面内正常渲染 |
-| 报告内自由问答、英文报告（i18n） | 文案已集中于 `web/lib/copy.ts`，但报告正文为模型直出中文 |
+| `chart` 块 scatter / waterfall 导出 SVG | 导出时降级为数据表（Python 侧无 ECharts），界面内正常渲染 |
+| **Postgres 上的全文检索** | FTS5 是 SQLite 专有。Postgres 上迁移**照常完成**（只跳过 FTS 段并记 `fts_available=0`），`/search` 走 `LIKE` 兜底、`features.fullTextSearch=false`。**不是 `raise`**——那会让非 FTS 的表也建不出来 |
+
+---
+
+## 常见的「看起来像坏了」其实是设计
+
+| 现象 | 原因 |
+| --- | --- |
+| 追问默认只给「命中段落 + 原文」 | `cite` 档不生成自然语言。读者要的是**依据**，不是转述 |
+| 临时版（`provisional`）上追问什么都没找到 | 临时版的 `doc.sources` 是空数组，任何引用都不合法。界面会明确提示「没有来源清单」，而不是显示空白 |
+| 「1 处引用未能在来源清单中找到，已丢弃」 | 模型引用了不存在的 sourceId。服务端丢弃并计数，`grounded` 置 false——宁可说没找到，不装作找到了 |
+| 深度追问按钮是灰的 | `features.askDeep=false`：CLI 缺 `submit_result` / ajv / Key。`cite` 档始终可用 |
+| 版本比较里 PE 上涨是绿色（利好）？ | 若显示为绿，说明该指标的 `polarity` 是 `bullish`。`polarity` 缺省时**一律中性灰**，不猜 |
+| `/search` 返回 `degraded: true` | 当前构建没有 `ENABLE_FTS5`，走的是文本扫描兜底。不 500，但 `features.fullTextSearch=false` |
+| 定时刷新没在整点触发 | ticker 默认 30s 一轮（`SCHEDULER_TICK_SECONDS`），且容量不足时会顺延 5 分钟让位给手动生成 |
 
 ---
 
@@ -198,16 +283,27 @@ python -m alembic revision --autogenerate -m "change description"
 ```
 api/app/
   agent/            preflight（能力预检）· aragon_runner（子进程契约）
-                    mock_runner（离线确定性生成）· prompts/ · schemas/
+                    ask_runner（追问复用同一套 argv 契约）· mock_runner
+                    prompts/（research_* + ask_*）· schemas/（report_doc + ask）
   services/         snapshot（事实底座）· report_validator（结构+接地）
                     report_service（版本化）· exporter（自包含 HTML/MD）
                     run_manager（六阶段 + SSE + 取消）· indicators · market_data/
+                    block_text（块→文本 / 块 id / 引用抽取的唯一真源）
+                    ask_service（cite 检索 + deep 编排）· ask_registry
+                    search_index（FTS5 DDL 与逐块索引）· search_service · search_fallback
+                    report_diff（结构 diff + 语义色）· cron · scheduler · scheduler_ticker
+                    sse_token（run 与 ask 共用的短签名）
   routers/          health · capabilities · symbols · instruments · reports · runs · watchlist
+                    asks · search · schedules
   db/               session（WAL + 外键）· models/ · migrations/（唯一 schema 真源）
 web/
-  app/              落地页 · [symbol] 工作台（RSC 直出）
-  components/       shell（三栏）· chart（K 线）· report（12 种块）· generation（SSE）· ui/
+  app/              落地页 · [symbol] 工作台（RSC 直出 + ?report&section&block 深链）
+  components/       shell（三栏 · SearchDialog）· chart（K 线）· report（12 种块 · CompareView）
+                    ask（追问抽屉 + SSE）· schedule（cron 表单）· generation（SSE）· ui/
   lib/              api · types（镜像后端 schema）· layout（15/34/51 单一真源）· sse · copy
+                    blocks（块 id 镜像）· focus（焦点归还）· offline（SW 注册 + 离线徽标）
+  public/sw.js      手写 service worker：同源导航文档 + /_next/static，跨源一律放行
+  scripts/          check-bundle.mjs（AC-35：首屏预算与懒加载边界）
 ```
 
 > **与 spec §6.3 的文件粒度差异（有意为之，非遗漏）**：方案里按块拆出的
@@ -218,7 +314,7 @@ web/
 > 并入 `ReportPanel`（Tab 与其键盘交互本来共享同一份 state）。12 种块、章节
 > 导航、日期→K 线联动这些**能力**一个不少，只是文件更少、state 更集中。
 
-测试：`api/tests`（277 项，包含 argv 契约断言与 fake CLI 的全部失败剧本）、`web/tests`（64 项 + Playwright）。
+测试：`api/tests`（500 项，含 argv 契约、fake CLI 的全部失败剧本、cron 表驱动、租约并发、依赖方向守卫）、`web/tests`（132 项 + Playwright）。首屏预算由 `web/scripts/check-bundle.mjs` 机器化断言（237.2 kB / 240 kB，四块面板均不在首屏 chunk）。
 
 ---
 

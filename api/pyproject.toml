@@ -17,6 +17,11 @@ dependencies = [
   "alembic>=1.13,<2",
   "jsonschema>=4.20,<5",
   "Jinja2>=3.1,<4",
+  # ★V4-P2-5: pinyin search is a *default* capability, not an extra. Measured on
+  # this machine, "optional" meant "absent", which silently disabled the only
+  # dimension that makes a large instrument list navigable. ~1MB, pure Python, and
+  # `search_index.pinyin_available()` still degrades softly if it is missing.
+  "pypinyin>=0.51",
 ]
 
 [project.optional-dependencies]
