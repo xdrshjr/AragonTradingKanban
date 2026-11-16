@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import select
@@ -10,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..db.session import get_db
 from ..errors import InstrumentNotFound, ReportNotFound
 from ..models import Instrument
+from ..schemas.blocks import BlockRangeResponse
 from ..schemas.report import (
     QUALITY_STATUS_EQUIVALENT,
     CreateReportRequest,
@@ -20,7 +23,7 @@ from ..schemas.report import (
     ReportSummary,
 )
 from ..schemas.run import RunOut
-from ..services import report_service
+from ..services import cost_service, report_service
 from ..services.exporter import export_filename, render_html, render_markdown
 from ..services.run_manager import RunManager, get_manager
 from .runs import to_run_out
@@ -72,7 +75,14 @@ def get_latest(instrument_id: str, db: Session = Depends(get_db)) -> ReportDetai
 @router.post("/instruments/{instrument_id}/reports", status_code=status.HTTP_202_ACCEPTED)
 async def create_report(
     instrument_id: str,
+    response: Response,
     payload: CreateReportRequest | None = None,
+    override: int = Query(
+        default=0,
+        ge=0,
+        le=1,
+        description="★v6 G3：1 = 明确越过月度预算闸门（留痕到 runs.reason）",
+    ),
     db: Session = Depends(get_db),
     manager: RunManager = Depends(get_manager),
 ) -> dict[str, object]:
@@ -80,12 +90,33 @@ async def create_report(
 
     Must be `async`: `manager.schedule` needs a running event loop, and that loop
     must be the one that also serves the SSE stream.
+
+    ★v6（V6-P0-1）：这是**唯一**的生成创建入口，所以预算闸门挂在这里。
+    优先级写死：`409 run_conflict`（同标冲突）与 `429 too_many_runs`（并发满）
+    **先于** `402 monthly_budget_exceeded`——402 说的是"你本月花超了"，
+    而 409/429 说的是"现在不能开"；在一个本来也开不了的请求上说预算，
+    用户会去改预算（无效动作），而不是等两分钟（AC-62）。
     """
     instrument = _instrument(db, instrument_id)
     body = payload or CreateReportRequest()
-    run = manager.start(db, instrument, reason=body.reason, force=body.force)
+    run = manager.start(
+        db,
+        instrument,
+        reason=body.reason,
+        force=body.force,
+        override_budget=bool(override),
+    )
     manager.schedule(run.id, force=body.force)
-    return {"runId": run.id, "status": "queued", "instrumentId": instrument.id}
+    estimate_usd = cost_service.estimate(db, instrument.symbol, "run").get("estimatedUsd")
+    if run.reason == "budget_override":
+        # 响应的 202 体**不改名**，只追加 `estimateUsd`（★V6-P1-8：没有 streamUrl）。
+        response.headers["X-Budget-Overridden"] = "1"
+    return {
+        "runId": run.id,
+        "status": "queued",
+        "instrumentId": instrument.id,
+        "estimateUsd": estimate_usd,
+    }
 
 
 @router.patch("/reports/{report_id}", response_model=ReportSummary)
@@ -149,6 +180,86 @@ def export_report(
     )
 
 
+@router.get("/reports/{report_id}/blocks", response_model=BlockRangeResponse)
+def report_blocks(
+    report_id: str,
+    from_: str = Query(alias="from", description="YYYY-MM-DD，闭区间下界"),
+    to: str = Query(description="YYYY-MM-DD，闭区间上界"),
+    limit: int = Query(default=50),
+    db: Session = Depends(get_db),
+) -> BlockRangeResponse:
+    """区间反查：这段时间被报告里的哪几段讲到（spec §19.3.3）。
+
+    三个刻意的选择：
+
+    * `limit` **夹到 200** 而不是 422 —— 越界是"要太多"，不是"参数错了"。
+    * `provisional` 报告返回 `items: []` + `reason` —— 临时版没有结构化章节，
+      明确说"没有"好过让人以为功能坏了。
+    * 相对期间锚在 `doc.asOf` 上（`as_of` 由报告自己给），所以同一份报告的
+      反查结果**永久可复现**（O-8）。`date.today()` 在这里一次都没出现。
+    """
+    from ..errors import InvalidRange, RangeTooWide, ReportNotReady
+    from ..schemas.blocks import BlockHit, BlockRangeResponse, RangeWindow
+    from ..services import block_dates
+
+    report = report_service.get(db, report_id)
+    if report is None:
+        raise ReportNotFound()
+
+    try:
+        lo = date.fromisoformat(from_)
+        hi = date.fromisoformat(to)
+    except (TypeError, ValueError) as exc:
+        raise InvalidRange(detail={"from": from_, "to": to}) from exc
+    if lo > hi:
+        raise InvalidRange(detail={"from": from_, "to": to, "hint": "from 不能晚于 to"})
+    if block_dates.max_range_years(lo, hi):
+        raise RangeTooWide(detail={"from": from_, "to": to, "maxYears": block_dates.MAX_RANGE_YEARS})
+    if report.status in ("queued", "running"):
+        # 只有"正在生成"才 409；`degraded` 仍是可读的报告，照常反查。
+        raise ReportNotReady("报告仍在生成中，暂无可反查的内容")
+
+    window = RangeWindow.model_validate({"from": lo.isoformat(), "to": hi.isoformat()})
+    doc = report.doc
+    if report.status == "provisional" or doc.get("provisional") is True:
+        return BlockRangeResponse(
+            reportId=report.id,
+            range=window,
+            items=[],
+            total=0,
+            truncated=False,
+            asOf=str(doc.get("asOf") or report.as_of or ""),
+            reason="provisional_no_dates",
+        )
+
+    cap = max(1, min(int(limit or 50), 200))
+    items: list[BlockHit] = []
+    total = 0
+    for block_id, section_id, section_title, kind, days, match_kind, text in block_dates.iter_block_hits(doc, lo, hi):
+        total += 1
+        if len(items) >= cap:
+            continue
+        items.append(
+            BlockHit(
+                blockId=block_id,
+                sectionId=section_id,
+                sectionTitle=section_title,
+                kind=kind,
+                overlapDays=days,
+                matchKind=match_kind,
+                text=text,
+            )
+        )
+    return BlockRangeResponse(
+        reportId=report.id,
+        range=window,
+        items=items,
+        total=total,
+        truncated=total > len(items),
+        asOf=str(doc.get("asOf") or report.as_of or ""),
+    )
+
+
 @router.get("/reports/{report_id}/diff/{other_id}", response_model=DiffResult)
 def diff_reports(report_id: str, other_id: str, db: Session = Depends(get_db)) -> DiffResult:
     """Structural diff, `a` = old version, `b` = new version (§18.5.4).
@@ -170,7 +281,10 @@ def diff_reports(report_id: str, other_id: str, db: Session = Depends(get_db)) -
     doc_b = right.doc
     doc_a["_reportId"] = left.id
     doc_b["_reportId"] = right.id
-    payload = diff_docs(doc_a, doc_b)
+    # ★v6 G4：模型名取两版报告的 `model` **列**（权威），不是 `quality.engine`。
+    doc_a["_model"] = left.model or ""
+    doc_b["_model"] = right.model or ""
+    payload = diff_docs(doc_a, doc_b, quality_a=left.quality, quality_b=right.quality)
     # `superseded` only says "a newer version exists" — true for every adjacent pair,
     # so diffing it verbatim returned a meaningless change on every comparison. The
     # field is about **quality** (§18.5.4 illustrates `ready → degraded`), so an older

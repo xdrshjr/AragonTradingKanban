@@ -34,6 +34,7 @@ from .logging import configure_logging, get_logger, request_id_var
 from .routers import (
     asks,
     capabilities,
+    cost,
     health,
     instruments,
     reports,
@@ -224,6 +225,8 @@ def create_app() -> FastAPI:
     app.include_router(asks.router, prefix=api_prefix)
     app.include_router(search.router, prefix=api_prefix)
     app.include_router(schedules.router, prefix=api_prefix)
+    # ★v6 G3：成本面板的读侧（`/cost/summary` / `/cost/entries` / `/cost/budget`）。
+    app.include_router(cost.router, prefix=api_prefix)
     app.include_router(watchlist.router, prefix=api_prefix)
 
     @app.get("/", include_in_schema=False)

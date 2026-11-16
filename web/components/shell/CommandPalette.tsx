@@ -22,6 +22,8 @@ export interface CommandPaletteProps {
   onToggleChart: () => void;
   /** A2: opens the unified search dialog. Omitted when full-text search is off. */
   onOpenSearch?: () => void;
+  /** ★v6 G3: opens the cost panel. Omitted when `features.costLedger` is false. */
+  onOpenCost?: () => void;
 }
 
 interface CommandItem {
@@ -42,6 +44,7 @@ export function CommandPalette({
   onExport,
   onToggleChart,
   onOpenSearch,
+  onOpenCost,
 }: CommandPaletteProps) {
   const open = useUiStore((state) => state.commandPaletteOpen);
   const toggle = useUiStore((state) => state.toggleCommandPalette);
@@ -127,6 +130,22 @@ export function CommandPalette({
           toggle(false);
         },
       },
+      // ★v6 G3：成本是『我这一年花了多少钱』的入口，所以它属于命令面板而不是某个角落。
+      // `onOpenCost` 缺席 = `features.costLedger === false`，此时**不出现**该命令（无悬挂分支）。
+      ...(onOpenCost
+        ? [
+            {
+              id: 'cost',
+              label: copy.cost.open,
+              hint: copy.cost.title,
+              group: copy.command.groups.actions,
+              run: () => {
+                toggle(false);
+                onOpenCost();
+              },
+            },
+          ]
+        : []),
       {
         id: 'toggle-chart',
         label: copy.command.actions.toggleChart,
@@ -161,6 +180,7 @@ export function CommandPalette({
     instruments,
     onExport,
     onGenerate,
+    onOpenCost,
     onOpenSearch,
     onSelectInstrument,
     onSelectVersion,

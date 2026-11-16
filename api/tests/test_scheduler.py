@@ -564,3 +564,45 @@ def test_patch_unknown_schedule_is_404(client) -> None:
     """§18.5.5：改不存在的 schedule → 404。"""
     response = client.patch("/api/v1/schedules/sch_missing", json={"enabled": False})
     assert response.status_code == 404
+
+
+# ── ★v6 G3：预算闸门对定时刷新是暂停，不是失败 ─────────────
+
+
+def test_budget_gate_pauses_a_scheduled_run_without_counting_a_failure(
+    session, engine, instrument, monkeypatch, clean_services
+) -> None:
+    """★I-52：`MonthlyBudgetExceeded` 不能走 `record_failure`。
+
+    闸门被插进 `RunManager.start()` 之后，402 会从定时触发路径上冒出来。如果它落进
+    下面那个「万能的」`except Exception`，`record_failure` 会把 3 次超限累成
+    `enabled = 0` —— 用户只是这个月花超了，却把一年的自动刷新永久关掉了。
+    语义同 409/429：现在开不了，晚点再说，所以只 `defer`、不计失败。
+    """
+    from app.db import session as session_module
+    from app.errors import MonthlyBudgetExceeded
+    from app.services.run_manager import RunManager
+
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(session_module, "SessionLocal", factory)
+
+    schedule = _make_schedule(
+        session, instrument, next_run_at=_iso(datetime.now(UTC) - timedelta(minutes=30))
+    )
+
+    def _blocked(self, *_args, **_kwargs):
+        raise MonthlyBudgetExceeded(detail={"spentUsd": 25.0, "budgetUsd": 25.0, "override": True})
+
+    monkeypatch.setattr(RunManager, "start", _blocked)
+
+    async def scenario() -> int:
+        return await SchedulerTicker(tick_seconds=3600).tick_once()
+
+    assert asyncio.run(scenario()) == 0
+
+    session.expire_all()
+    row = session.get(Schedule, schedule.id)
+    assert row.enabled == 1, "预算超限不能把定时刷新永久关掉"
+    assert row.failure_count == 0, "暂停不是失败：3 次就 enabled=0"
+    assert row.claimed_by is None, "defer 必须释放租约"
+    assert session.execute(select(Run)).scalars().all() == [], "被拦下的 tick 不能留 run 行"

@@ -1,9 +1,10 @@
 'use client';
 
 import { AlertTriangle } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import { memo } from 'react';
 
-import type { Block, SourceRef } from '@/lib/types';
+import type { Block, GroundingQuality, SourceRef } from '@/lib/types';
 
 import { RichText } from './CitationChip';
 import { CalloutCard } from './blocks/CalloutBlock';
@@ -13,11 +14,27 @@ import { MetricGrid } from './blocks/MetricsBlock';
 import { DataTable } from './blocks/TableBlock';
 
 /**
+ * ★v6 G1：块脚注是**可选层**，所以它单独一个 async chunk。
+ *
+ * 没有 `quality.grounding` 的报告（早期版本、临时版、mock）永远不会渲染它，
+ * 而这些报告本就不需要为可信度层付首屏成本（AC-35 / AC-52）。
+ */
+const BlockFootnote = dynamic(() => import('./BlockFootnote').then((module) => module.BlockFootnote), {
+  ssr: false,
+  loading: () => null,
+});
+
+/**
  * Block dispatcher (spec §5.3 / §6.3).
  *
  * `switch` on `type` with an exhaustive never-check, plus a runtime fallback for
  * unknown types so a future schema addition renders a labelled card instead of
  * crashing the page (§5.2 "未知块 → 通用降级卡片").
+ *
+ * ★v6（O-7）：数字溯源的呈现**不新增任何分派分支**。块外层包一层 `BlockFootnote`
+ * （正文块的块脚注），`metrics` / `table` 两种**已有**结构化组件内部各自多一个
+ * `GroundingDot`。12 种块的分派键一个没变 —— 所以 `?block=` 深链语义与 Tab/全文
+ * 两种容器都自动共用同一套渲染。
  */
 
 export interface ReportRendererProps {
@@ -32,6 +49,13 @@ export interface ReportRendererProps {
    * scroll to it. Passing `null` means "no target" (e.g. a heading the panel hides).
    */
   blockIds?: (string | null)[];
+  /**
+   * ★v6 G1：`quality.grounding`。**缺席即不渲染任何可信度痕迹**（降级永不上抛）——
+   * 早期报告没有这个键，界面上就该什么都没有，而不是"0 个未接地"的假安心。
+   */
+  quality?: GroundingQuality | null;
+  /** 块脚注里点一条样本 → 跳到该块（通常等同于"就在这里"，但读屏与键盘需要它）。 */
+  onJumpToBlock?: (blockId: string) => void;
 }
 
 /** DOM-safe id for a block: `business#3` → `block-business-3`. */
@@ -77,7 +101,17 @@ export function UnknownBlock({ type }: { type: string }) {
   );
 }
 
-function BlockView({ block, sources }: { block: Block; sources: SourceRef[] }) {
+function BlockView({
+  block,
+  sources,
+  quality,
+  blockId,
+}: {
+  block: Block;
+  sources: SourceRef[];
+  quality?: GroundingQuality | null;
+  blockId: string | null;
+}) {
   switch (block.type) {
     case 'paragraph':
       return (
@@ -99,9 +133,9 @@ function BlockView({ block, sources }: { block: Block; sources: SourceRef[] }) {
         />
       );
     case 'metrics':
-      return <MetricGrid items={block.items} compact />;
+      return <MetricGrid items={block.items} compact quality={quality} blockId={blockId} />;
     case 'table':
-      return <DataTable block={block} />;
+      return <DataTable block={block} quality={quality} blockId={blockId} />;
     case 'chart':
       return <ChartView chart={block.chart} />;
     case 'quote':
@@ -128,6 +162,8 @@ export const ReportRenderer = memo(function ReportRenderer({
   blocks,
   sources = [],
   blockIds,
+  quality,
+  onJumpToBlock,
 }: ReportRendererProps) {
   return (
     <div className="report-prose space-y-3">
@@ -140,7 +176,12 @@ export const ReportRenderer = memo(function ReportRenderer({
             data-block-id={blockId ?? undefined}
             className="scroll-mt-4 rounded-[var(--radius-sm)] transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
           >
-            <BlockView block={block} sources={sources} />
+            <BlockView block={block} sources={sources} quality={quality} blockId={blockId} />
+            {/* 包在块**外层**（O-7）：分派表不动，12 种块一个分支都不加。
+                只有该块真的有未接地样本时 `BlockFootnote` 自己返回 null。 */}
+            {blockId ? (
+              <BlockFootnote quality={quality} blockId={blockId} onJump={onJumpToBlock} />
+            ) : null}
           </div>
         );
       })}

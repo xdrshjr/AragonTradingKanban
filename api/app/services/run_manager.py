@@ -34,7 +34,7 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models import Instrument, Run, RunEvent
 from ..schemas.run import ACTIVE, STAGE_BOUNDS, STAGE_ORDER, STAGE_START, stage_end_pct, stage_label
-from . import report_service, report_validator
+from . import cost_service, report_service, report_validator
 from . import snapshot as snapshot_service
 
 logger = get_logger("run_manager")
@@ -152,10 +152,29 @@ class RunManager:
         ]
 
     # ── start ────────────────────────────────────────────────────────────
-    def start(self, session: Session, instrument: Instrument, *, reason: str = "manual", force: bool = False) -> Run:
+    def start(
+        self,
+        session: Session,
+        instrument: Instrument,
+        *,
+        reason: str = "manual",
+        force: bool = False,
+        override_budget: bool = False,
+    ) -> Run:
         """Create the run row and schedule the orchestration task.
 
-        Raises `RunConflict`/`TooManyRuns` before any row is written.
+        Raises `RunConflict`/`TooManyRuns`/`MonthlyBudgetExceeded` before any row
+        is written.
+
+        ★v6（V6-P1-7）**插位写死**：`active_run_for()` → `count_active_runs()` →
+        `can_start()` → `workspace.mkdir()`。三个理由，少一个都不行：
+
+        * 放在两个既有冲突检查**之后**，才不会把"同标已有运行中"从 409 翻成 402
+          （既有契约被静默改写）；
+        * 放在 `mkdir()` **之前**，否则每次 402 都在磁盘上留一个孤儿工作区目录，
+          而 `RUN_RETENTION_DAYS` 只清理**有 run 行**的目录，等于永久垃圾；
+        * 它是**同步**方法、没有 asyncio.Lock，"临界区"由事务 + `ux_runs_active`
+          承担，所以闸门只读账本、不改任何锁结构（O-9）。
         """
         active = report_service.active_run_for(session, instrument.id)
         if active is not None:
@@ -166,6 +185,16 @@ class RunManager:
             from ..errors import TooManyRuns
 
             raise TooManyRuns(detail={"retryAfterMs": 15000, "limit": MAX_CONCURRENT_RUNS})
+
+        estimate_usd = cost_service.estimate(session, instrument.symbol, "run").get("estimatedUsd")
+        decision = cost_service.can_start(session, "run", estimate_usd=estimate_usd)
+        if not decision.allowed:
+            if not override_budget:
+                from ..errors import MonthlyBudgetExceeded
+
+                raise MonthlyBudgetExceeded(detail=decision.detail)
+            # 留痕：`String(16)`，15 个字符放得下（§19.5.3）。
+            reason = "budget_override"
 
         settings = get_settings()
         run_id = uuid.uuid4().hex
@@ -350,6 +379,7 @@ class RunManager:
             bundle.snapshot,
             mock=result.source == "mock",
             source=result.source,
+            engine=self._engine_quality(),
         )
         for repair in outcome.repairs[:6]:
             self._record(session, run, "run.log", {"level": "info", "message": f"结构修补：{repair}"}, touch_run=False)
@@ -411,6 +441,17 @@ class RunManager:
         )
         self._check_cost(session, run, result)
         logger.info("run succeeded id=%s report=%s v%s", run.id, report.id, report.version)
+
+    def _engine_quality(self) -> dict[str, Any] | None:
+        """★v6 G4：`quality.engine` 的四元组，拿不到指纹时返回 **None**。
+
+        `None` 不是失败——它让老报告与新报告在同一套读路径下都能正确渲染
+        （`comparability.same = null`），而不是伪造一份"看起来一样"的指纹（O-13）。
+        """
+        from ..agent.fingerprint import current_fingerprint
+
+        fingerprint = current_fingerprint(schema_bytes=report_validator.schema_bytes())
+        return None if fingerprint is None else fingerprint.as_quality()
 
     def _advance(self, session: Session, run: Run, stage: str) -> None:
         """Emit `run.stage` with a monotonic pct (§7.4)."""

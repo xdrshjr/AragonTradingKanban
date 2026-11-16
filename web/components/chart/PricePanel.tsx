@@ -56,6 +56,10 @@ export interface PricePanelProps {
   lastPrice?: number | null;
   changePct?: number | null;
   onCloseDrawer?: () => void;
+  /** ★v6 G2a：当前框选的区间（来自 URL），用于提示条与再框一次替换的语义。 */
+  brushRange?: { from: string; to: string } | null;
+  /** 框选完成 → 上行给 `WorkspaceClient`（它写 URL，`ReportPanel` 消费）。 */
+  onBrushRange?: (range: { from: string; to: string } | null) => void;
 }
 
 export function PricePanel({
@@ -67,6 +71,8 @@ export function PricePanel({
   lastPrice,
   changePct,
   onCloseDrawer,
+  brushRange = null,
+  onBrushRange,
 }: PricePanelProps) {
   const [timeframe, setTimeframe] = useState<TimeframeValue>('1d');
   const [range, setRange] = useState<RangeValue>('1y');
@@ -187,8 +193,21 @@ export function PricePanel({
             showVolume={indicatorState.volume}
             showBoll={indicatorState.boll}
             showMa={{ ma5: indicatorState.ma5, ma10: indicatorState.ma10, ma20: indicatorState.ma20, ma60: indicatorState.ma60 }}
+            brushEnabled={Boolean(onBrushRange)}
+            onBrushRange={onBrushRange}
           />
         )}
+      </div>
+
+      {/* ★v6 G2a：框选提示。区间反查的**结果**在报告头下方（`RangeHint`），
+          这里只负责说你可以框一段、以及当前框的是哪一段 —— 两者不重复。 */}
+      <div className="flex shrink-0 items-center gap-1.5 border-t border-[var(--border-subtle)] px-3 py-1 text-[10px] text-[var(--text-tertiary)]">
+        <span>{copy.range.brushHint}</span>
+        {brushRange ? (
+          <span className="num truncate text-[var(--accent)]">
+            {brushRange.from} ~ {brushRange.to}
+          </span>
+        ) : null}
       </div>
 
       <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-[var(--border-subtle)] px-3 py-1.5 text-[10px] text-[var(--text-tertiary)]">

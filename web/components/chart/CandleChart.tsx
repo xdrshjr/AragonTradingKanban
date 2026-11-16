@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ColorType,
   CrosshairMode,
@@ -26,7 +26,14 @@ export interface CandleChartProps {
   showVolume?: boolean;
   showBoll?: boolean;
   showMa?: { ma5: boolean; ma10: boolean; ma20: boolean; ma60: boolean };
+  /** ★v6 G2a：开启框选（`?range=` 反查的输入端）。 */
+  brushEnabled?: boolean;
+  /** 框选完成 → `{from, to}`（ISO 日期，闭区间）；只是点一下不算框选 → `null`。 */
+  onBrushRange?: (range: { from: string; to: string } | null) => void;
 }
+
+/** 小于这个宽度（px）的拖动视为点击，不产生区间（否则每次悬停都变成一次查询）。 */
+const BRUSH_MIN_PX = 8;
 
 const MA_KEYS = ['ma5', 'ma10', 'ma20', 'ma60'] as const;
 const MA_COLORS: Record<(typeof MA_KEYS)[number], string> = {
@@ -52,8 +59,13 @@ export function CandleChart({
   showVolume = true,
   showBoll = false,
   showMa = { ma5: true, ma10: false, ma20: true, ma60: false },
+  brushEnabled = false,
+  onBrushRange,
 }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  /** 框选的几何状态（屏幕坐标，仅用于画矩形，不参与取数）。 */
+  const [brush, setBrush] = useState<{ from: number; to: number } | null>(null);
+  const brushStartRef = useRef<number | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null);
@@ -303,9 +315,101 @@ export function CandleChart({
 
   const summary = useMemo(() => bars.slice(-5), [bars]);
 
+  /**
+   * ★v6 G2a：框选交互层。
+   *
+   * 为什么用容器上的 pointer 事件而不是盖一层遮罩：遮罩会挡住 lightweight-charts
+   * 的十字光标与拖拽平移——图表的核心交互被一个可选功能废掉是不可接受的。矩形本身
+   * 是 `pointer-events-none` 的绝对定位 div，永远不截获事件。
+   *
+   * 坐标 → 时间用 `timeScale().coordinateToTime()`（图表自己的换算），所以缩放/平移后
+   * 框选依然对准眼睛看到的那几根蜡烛。取不到时间（拖到空白区）就不发请求。
+   */
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      // 必须 `Shift + 拖拽` 才是框选。图表自己的 `handleScroll.pressedMouseMove`
+      // 也绑在左键拖拽上（平移），两者都认普通拖动就变成"一边平移一边画框"：
+      // 松手那一刻 `coordinateToTime()` 换算的是**已经被平移改过**的坐标，于是
+      // 框出来的是另一段行情，还顺手在 URL 里留下一个假区间。Shift 是这套 UI
+      // 里唯一空闲的修饰键（`Ctrl/⌘` 归浏览器，`Alt` 归系统菜单）。
+      if (!brushEnabled || !event.shiftKey) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      brushStartRef.current = event.clientX - rect.left;
+      // 捕获指针：不捕获时，拖到图表外面再松手 **收不到** `pointerup`，
+      // `brushStartRef` 就永远留着 → 之后每一次掠过图表都在画框，而松手时
+      // 又用上一次的起点算出一个用户没框过的区间。
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      setBrush(null);
+    },
+    [brushEnabled],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!brushEnabled || brushStartRef.current === null) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const current = event.clientX - rect.left;
+      const start = brushStartRef.current;
+      setBrush({ from: Math.min(start, current), to: Math.max(start, current) });
+    },
+    [brushEnabled],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!brushEnabled) return;
+      const start = brushStartRef.current;
+      brushStartRef.current = null;
+      setBrush(null);
+      // 与 `setPointerCapture` 配对：不释放的话，这个指针的后续事件会一直投递到本元素。
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+      const chart = chartRef.current;
+      if (start === null || !chart) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const end = event.clientX - rect.left;
+      if (Math.abs(end - start) < BRUSH_MIN_PX) {
+        // 一次点击不是区间：清掉旧区间，别让读者以为他框了什么。
+        onBrushRange?.(null);
+        return;
+      }
+      const scale = chart.timeScale();
+      const leftTime = scale.coordinateToTime(Math.min(start, end));
+      const rightTime = scale.coordinateToTime(Math.max(start, end));
+      if (leftTime === null || rightTime === null) return;
+      const from = new Date(Number(leftTime) * 1000).toISOString().slice(0, 10);
+      const to = new Date(Number(rightTime) * 1000).toISOString().slice(0, 10);
+      onBrushRange?.(from <= to ? { from, to } : { from: to, to: from });
+    },
+    [brushEnabled, onBrushRange],
+  );
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={containerRef} className="min-h-[220px] w-full flex-1" data-testid="candle-chart" />
+      <div className="relative min-h-[220px] w-full flex-1">
+        <div
+          ref={containerRef}
+          className="absolute inset-0"
+          data-testid="candle-chart"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={() => {
+            brushStartRef.current = null;
+            setBrush(null);
+          }}
+        />
+        {/* 框选矩形：`pointer-events-none`，只负责让读者看见自己框了哪一段。 */}
+        {brush ? (
+          <div
+            aria-hidden="true"
+            data-testid="chart-brush"
+            className="pointer-events-none absolute inset-y-0 border-x border-[var(--accent)] bg-[var(--accent)]/10"
+            style={{ left: brush.from, width: Math.max(1, brush.to - brush.from) }}
+          />
+        ) : null}
+      </div>
 
       {/* Chart has a text alternative (§11.1): last five bars as a table. */}
       <details className="border-t border-[var(--border-subtle)] px-2 py-1 text-[10.5px] text-[var(--text-tertiary)]">

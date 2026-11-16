@@ -81,11 +81,28 @@ type WorkspaceSearchParams = {
   report?: string | string[];
   section?: string | string[];
   block?: string | string[];
+  /** ★v6 G2b: `?view=full` — 全文视图；缺省 `tabs`（既有行为一行不改）。 */
+  view?: string | string[];
+  /** ★v6 G2a: `?range=2025-03-01..2025-04-15` — K 线 brush 生成的区间。 */
+  range?: string | string[];
 };
 
 function firstValue(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+/**
+ * `?range=A..B` → `{from, to}`。**非法即丢弃**（返回 null，不做任何猜测）：
+ * URL 是用户可手改的地方，不能让它成为 500 的入口（§19.5.7 / AC-64）。
+ */
+function parseRangeParam(value: string | null | undefined): { from: string; to: string } | null {
+  if (!value) return null;
+  const [from, to] = value.split('..');
+  if (!from || !to) return null;
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (!iso.test(from) || !iso.test(to) || from > to) return null;
+  return { from, to };
 }
 
 export default async function WorkspacePage({
@@ -123,6 +140,8 @@ export default async function WorkspacePage({
         initialReportId={reportId}
         initialSection={section}
         initialBlockId={block}
+        initialView={firstValue(query.view) === 'full' ? 'full' : 'tabs'}
+        initialRange={parseRangeParam(firstValue(query.range))}
       />
     </>
   );

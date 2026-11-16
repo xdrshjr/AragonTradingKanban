@@ -250,6 +250,46 @@ class ReportDoc(StrictModel):
 # ── API-facing wrappers ───────────────────────────────────────────────────
 
 
+class GroundingSample(BaseModel):
+    """一个未接地的数字，带可跳转的坐标（AC-48：`blockId` 必须能用于 `?block=`）。"""
+
+    blockId: str
+    path: str
+    raw: str
+    text: str = ""
+
+
+class GroundingQuality(BaseModel):
+    """★v6 G1：`groundedRatio` 背后的可定位报告（`numeric_claims.GroundingReport`）。
+
+    `skipped == "insufficient_sample"` **优先于** `ratio >= 0.9`（★V6-P2-8）：
+    一份只有 3 个数字的报告不该被展示成"已核验 3/3"，那是虚假的安心。
+    """
+
+    factClaims: int = 0
+    factMissing: int = 0
+    #: 全量未接地数；`samples` 只放前 20 个块（R-22）。
+    totalMissing: int = 0
+    projectionClaims: int = 0
+    derivedClaims: int = 0
+    identifierClaims: int = 0
+    skipped: str | None = None
+    samples: list[GroundingSample] = Field(default_factory=list)
+
+
+class EngineInfo(BaseModel):
+    """★v6 G4：`quality.engine` —— **只有四项**。
+
+    `model` / `provider` 的权威是 `reports.model|provider` 列与
+    `capabilities.aragon.*`；写第三份副本必然漂移（V6-P1-3 / O-13）。
+    """
+
+    fingerprint: str
+    cliVersion: str | None = None
+    allowTools: list[str] = Field(default_factory=list)
+    schemaBytes: int = 0
+
+
 class ReportQuality(BaseModel):
     groundedRatio: float = 1.0
     missingSections: list[str] = Field(default_factory=list)
@@ -258,6 +298,9 @@ class ReportQuality(BaseModel):
     #: 4 requires the UI to say "N 处数字未能在快照中找到来源").
     ungroundedCount: int = 0
     source: Literal["aragon", "mock", "aragon-text"] = "aragon"
+    #: ★v6: both optional —老报告没有它们，读路径必须按"可缺失"处理（不回填）。
+    grounding: GroundingQuality | None = None
+    engine: EngineInfo | None = None
 
 
 class ReportSummary(BaseModel):
@@ -350,6 +393,20 @@ class StatusChange(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class Comparability(BaseModel):
+    """★v6 G4：两版的引擎指纹是否可比。
+
+    `same` 三态：`true`（同指纹）/ `false`（不同）/ `null`（至少一方缺指纹，**不猜**）。
+    `deltaUnaffected` 是给 UI 与测试看的显式承诺：横幅只是提示，不改变任何 delta
+    （O-10 / AC-58 —— 这条必须靠测试证明，不能靠字段自证）。
+    """
+
+    same: bool | None = None
+    changed: list[str] = Field(default_factory=list)
+    deltaUnaffected: bool = True
+    note: str = ""
+
+
 class DiffResult(BaseModel):
     a: str
     b: str
@@ -360,6 +417,8 @@ class DiffResult(BaseModel):
     sectionsRemoved: list[str] = Field(default_factory=list)
     blocksChanged: list[BlockChange] = Field(default_factory=list)
     summary: str = ""
+    #: ★v6：**追加键**。`a` / `b` / `summary: str` 一个都不改名（改名会让 /diff 直接 500）。
+    comparability: Comparability | None = None
 
 
 #: Only these three statuses describe **report quality**; `superseded` only says

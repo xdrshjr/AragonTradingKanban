@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api, ApiError } from '@/lib/api';
+import { copy } from '@/lib/copy';
 import { exportFilenameHint, triggerDownload } from '@/lib/download';
 import { modifierLabel, useHotkeys } from '@/lib/keyboard';
 import {
@@ -30,6 +31,28 @@ import { notify } from '../ui/Toast';
 import { AppShell } from './AppShell';
 import type { RailItem } from './SymbolRail';
 
+import type { ReadingMode } from '../report/ReportPanel';
+import dynamic from 'next/dynamic';
+
+/**
+ * ★v6 G3：成本面板与预算闸门弹窗都只在需要时下载（AC-35 预算不变）。
+ */
+const CostPanel = dynamic(() => import('../cost/CostPanel').then((module) => module.CostPanel), {
+  ssr: false,
+  loading: () => null,
+});
+const BudgetGateDialog = dynamic(
+  () => import('../cost/CostPanel').then((module) => module.BudgetGateDialog),
+  { ssr: false, loading: () => null },
+);
+
+/** ★v6 G3：402 带回来的字段 —— 够弹窗说清"花了多少 / 还剩多少 / 这次预估多少"。 */
+export interface BudgetGateState {
+  spentUsd: number;
+  budgetUsd: number;
+  estimateUsd: number | null;
+}
+
 export interface WorkspaceClientProps {
   initialInstrument: Instrument;
   initialReports: ReportSummary[];
@@ -41,6 +64,10 @@ export interface WorkspaceClientProps {
   /** `?section=` / `?block=` — deep-link target inside the report. */
   initialSection?: string | null;
   initialBlockId?: string | null;
+  /** ★v6 G2b：`?view=`（`tabs` 为既有行为）。 */
+  initialView?: ReadingMode;
+  /** ★v6 G2a：`?range=`（`from > to` 或格式不对时由服务端丢弃）。 */
+  initialRange?: { from: string; to: string } | null;
 }
 
 /**
@@ -57,6 +84,8 @@ export function WorkspaceClient({
   initialReportId,
   initialSection,
   initialBlockId,
+  initialView = 'tabs',
+  initialRange = null,
 }: WorkspaceClientProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -78,6 +107,15 @@ export function WorkspaceClient({
   const [offlineBadge, setOfflineBadge] = useState<string | null>(null);
   const [instrument, setInstrument] = useState<Instrument>(initialInstrument);
   const [reports, setReports] = useState<ReportSummary[]>(initialReports);
+  /** ★v6 G3：成本面板 + 预算闸门弹窗。 */
+  const [costOpen, setCostOpen] = useState(false);
+  const [budgetGate, setBudgetGate] = useState<BudgetGateState | null>(null);
+  /**
+   * ★v6 G2b / AC-64：`view` 与 `range` **各自独立**，互不改变对方。
+   * 两者都用 `router.replace` 写回 URL —— 来回切阅读模式不该污染后退栈。
+   */
+  const [view, setViewState] = useState<ReadingMode>(initialView);
+  const [range, setRangeState] = useState<{ from: string; to: string } | null>(initialRange);
 
   const selectedReportId = activeReportId ?? initialReportId ?? initialDetail?.report.id ?? null;
 
@@ -180,6 +218,45 @@ export function WorkspaceClient({
   // §6.3 wants 现价 + 涨跌 on every rail row; the quotes are fetched here rather
   // than plumbed through the page, so the rail stays self-sufficient.
   const railItems = useRailQuotes(baseRailItems);
+
+  /**
+   * 把 `view` / `range` 写回 URL（`router.replace`，不新增历史条目）。
+   *
+   * 规则只有一条：**只改自己那一个参数，其余原样保留**。所以切模式不会丢掉
+   * `range`，清 brush 也不会把 `view` 打回 `tabs`（AC-64 的两条独立性）。
+   */
+  const syncUrl = useCallback(
+    (next: { view?: ReadingMode; range?: { from: string; to: string } | null }) => {
+      const params = new URLSearchParams(window.location.search);
+      if (next.view !== undefined) {
+        if (next.view === 'tabs') params.delete('view');
+        else params.set('view', next.view);
+      }
+      if (next.range !== undefined) {
+        if (next.range === null) params.delete('range');
+        else params.set('range', `${next.range.from}..${next.range.to}`);
+      }
+      const query = params.toString();
+      router.replace(query ? `?${query}` : '?', { scroll: false });
+    },
+    [router],
+  );
+
+  const changeView = useCallback(
+    (next: ReadingMode) => {
+      setViewState(next);
+      syncUrl({ view: next });
+    },
+    [syncUrl],
+  );
+
+  const changeRange = useCallback(
+    (next: { from: string; to: string } | null) => {
+      setRangeState(next);
+      syncUrl({ range: next });
+    },
+    [syncUrl],
+  );
 
   const selectInstrument = useCallback(
     (instrumentId: string) => {
@@ -343,10 +420,19 @@ export function WorkspaceClient({
   const generation = useGenerationStream({
     onDone: (reportId) => selectVersion(reportId),
     onError: (code, message) => notify.error(`${message}（${code}）`),
+    // ★v6 G3 / R-25：402 走弹窗而不是红条 —— 主按钮就是「仍然生成」。
+    onBudgetBlocked: (detail) => {
+      const asNumber = (value: unknown): number => (typeof value === 'number' ? value : 0);
+      setBudgetGate({
+        spentUsd: asNumber(detail.spentUsd),
+        budgetUsd: asNumber(detail.budgetUsd),
+        estimateUsd: typeof detail.estimateUsd === 'number' ? detail.estimateUsd : null,
+      });
+    },
   });
 
   const requestGeneration = useCallback(
-    (options: { force?: boolean } = {}) => {
+    (options: { force?: boolean; override?: boolean } = {}) => {
       if (generation.isActive) {
         notify.info('已有一次生成在进行中');
         return;
@@ -456,6 +542,16 @@ export function WorkspaceClient({
           onClose: () => setCompareOpen(false),
           diffCount,
         }}
+        reading={{
+          view,
+          onViewChange: changeView,
+          range,
+          onClearRange: () => changeRange(null),
+          onBrushRange: changeRange,
+        }}
+        groundingEnabled={capabilities.features.grounding === true}
+        onOpenCost={() => setCostOpen(true)}
+        costEnabled={capabilities.features.costLedger === true}
         focusSection={focusTarget.section}
         focusBlockId={focusTarget.block}
         onReportJump={(blockId, sectionId) => {
@@ -474,6 +570,22 @@ export function WorkspaceClient({
           );
         }}
       />
+
+      {costOpen ? <CostPanel open={costOpen} onOpenChange={setCostOpen} /> : null}
+      {budgetGate ? (
+        <BudgetGateDialog
+          open
+          spentUsd={budgetGate.spentUsd}
+          budgetUsd={budgetGate.budgetUsd}
+          estimateUsd={budgetGate.estimateUsd}
+          onCancel={() => setBudgetGate(null)}
+          onOverride={() => {
+            setBudgetGate(null);
+            notify.info(copy.cost.overridden);
+            requestGeneration({ override: true });
+          }}
+        />
+      ) : null}
 
       {offlineBadge ? (
         <div

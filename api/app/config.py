@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     scheduler_lease_seconds: int = 120
     scheduler_batch_size: int = 5
 
+    # ── Cost governance (G3 / §19.3.5) ───────────────────────────────────
+    #: `0` means **unlimited** and is the default: a product must not lock a user
+    #: out because of a default value. Read through `get_settings()` on every gate
+    #: check so changing it in the cost panel takes effect immediately.
+    budget_monthly_usd: float = 0.0
+    #: The ledger must outlive `RUN_RETENTION_DAYS` (14) — otherwise "本月花了多少"
+    #: silently shrinks on the 15th of every month (§19.3.5).
+    cost_ledger_keep_days: int = 730
+
     # ── Web (read-only mirror, handy for capability payloads) ────────────
     next_public_api_base: str = "http://127.0.0.1:8000"
     enable_py_rewrite: bool = False

@@ -23,7 +23,6 @@ import type { UseGenerationStreamResult } from '../generation/useGenerationStrea
 import { ReportPanel } from '../report/ReportPanel';
 import { IconButton } from '../ui/Button';
 import { Splitter, useSplitterHandlers } from '../ui/Splitter';
-import { CommandPalette } from './CommandPalette';
 import { RunStatusBadge } from './RunStatusBadge';
 import { SymbolRail, type RailItem } from './SymbolRail';
 
@@ -44,6 +43,15 @@ const ScheduleDialog = dynamic(
   () => import('../schedule/ScheduleDialog').then((module) => module.ScheduleDialog),
   { ssr: false },
 );
+/**
+ * ★v6：命令面板同样只在 ⌘K 时出现，所以它也不该在首屏 chunk 里。
+ *
+ * v4 漏掉了它（它是唯一一个从 v1 就存在、却一直静态打包的浮层），首屏为此多付了
+ * 2–3 kB；这一轮把「浮层一律懒加载」这条口径补齐，而不是把预算调大。
+ */
+const CommandPalette = dynamic(() => import('./CommandPalette').then((module) => module.CommandPalette), {
+  ssr: false,
+});
 
 export interface AppShellProps {
   instruments: RailItem[];
@@ -82,6 +90,23 @@ export interface AppShellProps {
   focusBlockId?: string | null;
   /** `CompareView` jump target: owned by `WorkspaceClient`, which owns the focus state. */
   onReportJump?: (blockId: string, sectionId: string) => void;
+  /**
+   * ★v6 G2：`view` 与 `range` 由 `WorkspaceClient` 拥有（它写 URL），这里只做转发。
+   * `onBrushRange` 从 K 线一侧上行，`ReportPanel` 一侧消费 —— 两条路径共用一个 state，
+   * 因为「框选」和「联动条清除」改的是同一个 URL 参数（AC-64）。
+   */
+  reading?: {
+    view: 'tabs' | 'full';
+    onViewChange: (view: 'tabs' | 'full') => void;
+    range: { from: string; to: string } | null;
+    onClearRange: () => void;
+    onBrushRange: (range: { from: string; to: string } | null) => void;
+  };
+  /** ★v6 G1：`capabilities.features.grounding`。 */
+  groundingEnabled?: boolean;
+  /** ★v6 G3：成本面板入口（命令面板的「成本…」）。 */
+  onOpenCost?: () => void;
+  costEnabled?: boolean;
   onOpenSearchResult?: (target: { symbol: string; reportId: string; sectionId: string; blockId: string }) => void;
   children?: React.ReactNode;
 }
@@ -116,6 +141,10 @@ export function AppShell({
   focusBlockId,
   onReportJump,
   onOpenSearchResult,
+  reading,
+  groundingEnabled = false,
+  onOpenCost,
+  costEnabled = false,
 }: AppShellProps) {
   const layout = useUiStore((state) => state.layout);
   const hydrateLayout = useUiStore((state) => state.hydrateLayout);
@@ -275,6 +304,8 @@ export function AppShell({
                 timezone={activeInstrument.tz}
                 lastPrice={quoteQuery.data?.last}
                 changePct={quoteQuery.data?.changePct}
+                brushRange={reading?.range ?? null}
+                onBrushRange={reading?.onBrushRange}
               />
             </div>
             <Splitter
@@ -313,6 +344,11 @@ export function AppShell({
             compareTriggerRef={compareTriggerRef}
             scheduleEnabled={features?.schedule === true}
             onOpenSchedule={() => setScheduleOpen(true)}
+            view={reading?.view ?? 'tabs'}
+            onViewChange={reading?.onViewChange}
+            range={reading?.range ?? null}
+            onClearRange={reading?.onClearRange}
+            groundingEnabled={groundingEnabled}
           />
         </div>
 
@@ -354,6 +390,7 @@ export function AppShell({
         onExport={onExport}
         onToggleChart={() => setKlineDrawer(!klineDrawerOpen)}
         onOpenSearch={features?.search === false ? undefined : () => setSearchOpen(true)}
+        onOpenCost={costEnabled ? onOpenCost : undefined}
       />
 
       {/* A2: one search surface for the rail and ⌘K; mounted on demand. */}

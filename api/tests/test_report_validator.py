@@ -139,10 +139,24 @@ def test_quality_payload_shape(sample_report: dict, snapshot_payload: dict) -> N
     quality = outcome.quality
     # `ungroundedCount` is what lets the UI say "N 处数字未能在快照中找到来源"
     # (§16 verdict 4) — it is part of the stored record, not a UI-only guess.
-    assert set(quality) == {"groundedRatio", "missingSections", "prunedBlocks", "ungroundedCount", "source"}
+    #
+    # ★v6：本用例按 §19.3.2 扩了一个键（`grounding`）。这是**唯一**允许改既有测试的
+    # 理由：形状本身变了（只加字段，v2 的五个键一个不少），审核记录见 spec.md
+    # 「实施过程发现的方案缺陷」。`engine` 不在这里出现，因为它由调用方注入——
+    # 没有指纹时该键必须缺席，而不是伪造一份（O-13）。
+    assert set(quality) == {
+        "groundedRatio",
+        "missingSections",
+        "prunedBlocks",
+        "ungroundedCount",
+        "source",
+        "grounding",
+    }
     assert 0.0 <= quality["groundedRatio"] <= 1.0
     assert quality["ungroundedCount"] == outcome.ungrounded_places
     assert quality["source"] == "aragon"
+    # AC-61：两个字段是同一条事实，不是两次计算。
+    assert quality["ungroundedCount"] == quality["grounding"]["factMissing"]
     assert validator.validate_doc(_doc(sample_report), snapshot_payload, mock=True).quality["source"] == "mock"
 
 

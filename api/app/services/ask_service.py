@@ -42,7 +42,7 @@ from ..logging import get_logger
 from ..models import Instrument, Report, ReportAsk
 from ..models.ask import ASK_ACTIVE_STATUSES, ASK_TERMINAL_STATUSES, AskEvent
 from ..schemas.ask import AskAnswer, AskHit, AskOut, Citation
-from . import block_text, search_index
+from . import block_text, cost_service, search_index
 from .ask_registry import get_ask_registry
 
 logger = get_logger("ask_service")
@@ -720,6 +720,17 @@ def _finalize_success(session: Session, ask: ReportAsk, report: Report, payload:
     if ask.latency_ms is None:
         ask.latency_ms = 0
     session.commit()
+    # ★v6 G3：深度追问同样进账本，写在自己 savepoint 里（失败不回滚答案）。
+    cost_service.record(
+        session,
+        kind="ask_deep",
+        ref_id=ask.id,
+        symbol=(report.doc.get("instrument") or {}).get("symbol"),
+        report_id=report.id,
+        model=get_settings().aragon_model or None,
+        usd=ask.cost_usd,
+        known=bool(ask.cost_known),
+    )
     record_event(
         session,
         ask.id,

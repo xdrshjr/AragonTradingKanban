@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from ..logging import get_logger
 from ..models import Instrument, Report, Run
 from ..schemas.report import ReportQuality, ReportSummary
-from . import search_index
+from . import cost_service, search_index
 
 logger = get_logger("report_service")
 
@@ -66,6 +66,10 @@ def summarize(report: Report) -> ReportSummary:
             prunedBlocks=quality_payload.get("prunedBlocks") or 0,
             ungroundedCount=quality_payload.get("ungroundedCount") or 0,
             source=quality_payload.get("source") or "aragon",
+            # ★v6: an absent key stays absent (old reports render without a badge,
+            # and `comparability.same` becomes null rather than a guess).
+            grounding=quality_payload.get("grounding"),
+            engine=quality_payload.get("engine"),
         ),
         provider=report.provider,
         model=report.model,
@@ -165,6 +169,21 @@ def create_version(
             search_index.reindex_report_payload(session, report.id, payload, title)
     except Exception:  # pragma: no cover - search must never block a generation
         logger.exception("FTS 索引写入失败 report=%s（报告本身仍会落库）", report.id)
+
+    # ★v6 G3 / O-4: the ledger row is projected in this very transaction, and the
+    # write is guarded by its own savepoint (`cost_service.record`), so "账本失败
+    # 不得回滚报告" is a property of the code rather than a comment. Not a second
+    # `begin_nested()` around this call — the template above is already the shape.
+    cost_service.record(
+        session,
+        kind="run",
+        ref_id=run_id or report.id,
+        symbol=instrument.symbol,
+        report_id=report.id,
+        model=model,
+        usd=cost_usd,
+        known=bool(cost_known),
+    )
 
     if run_id:
         session.execute(update(Run).where(Run.id == run_id).values(report_id=report.id))

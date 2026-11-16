@@ -41,6 +41,15 @@ export function blockIdOf(sectionId: string, index: number): string {
 }
 
 /**
+ * 顶层 `doc.keyMetrics[]` 的 blockId（镜像 `numeric_claims` 里写死的那个字符串）。
+ *
+ * 它**不是**块：`keyMetrics` 挂在文档根上，没有 `sectionId#index`。后端给这两个门面
+ * 数字的未接地样本用的就是这个 id，所以前端必须有同一个常量——两边各写一个字符串
+ * 就是第二份真源，改一边就静默失去"点样本跳回门面卡"的路径（I-33 的教训）。
+ */
+export const KEY_METRICS_BLOCK_ID = 'keyMetrics';
+
+/**
  * 按文档顺序展开全部块：`[{ blockId, sectionId, block }]`。镜像 `block_text.block_ids()`。
  *
  * 与后端一致：跳过非对象章节；`blocks` 缺失等价于空数组（**空章节照样不产出任何项**，

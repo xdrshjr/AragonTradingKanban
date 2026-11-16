@@ -110,8 +110,76 @@ def _group(section: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return grouped
 
 
-def diff_docs(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
-    """Pure function: two report documents in, one `DiffResult` out."""
+def compare_engine_quality(
+    quality_a: dict[str, Any] | None,
+    quality_b: dict[str, Any] | None,
+    *,
+    model_a: str | None = None,
+    model_b: str | None = None,
+) -> dict[str, Any]:
+    """纯函数：两版 `quality.engine` → `comparability`（★v6 G4 / AC-58）。
+
+    `same` 三态：同指纹 → `true`；指纹不同 → `false`；**任一方缺指纹 → `None`**
+    （老报告没有引擎记录，回填会伪造数据，所以"不知道"就明说不确定）。
+
+    `changed` 的取值是**指纹的组成项**（`cliVersion / provider / model /
+    allowTools / schemaBytes`）。模型名与 provider 取两版报告的 `model` / `provider`
+    列——不读 `quality.engine` 里的副本，因为它根本不存在（V6-P1-3）。
+
+    `deltaUnaffected` 永远是 `true`：这个函数不碰任何 delta（O-10）。它是承诺，
+    证明它的责任在 `test_report_diff.py`，不在这个字段上。
+    """
+    engine_a = (quality_a or {}).get("engine") or None
+    engine_b = (quality_b or {}).get("engine") or None
+    if not engine_a or not engine_b:
+        return {
+            "same": None,
+            "changed": [],
+            "deltaUnaffected": True,
+            "note": "其中一版没有引擎指纹（早期报告）",
+        }
+
+    changed: list[str] = []
+    if (engine_a.get("cliVersion") or "") != (engine_b.get("cliVersion") or ""):
+        changed.append("cliVersion")
+    if (model_a or "") != (model_b or ""):
+        changed.append("model")
+    left_tools = list(engine_a.get("allowTools") or [])
+    right_tools = list(engine_b.get("allowTools") or [])
+    if left_tools != right_tools:
+        changed.append("allowTools")
+    if int(engine_a.get("schemaBytes") or 0) != int(engine_b.get("schemaBytes") or 0):
+        changed.append("schemaBytes")
+
+    same = str(engine_a.get("fingerprint") or "") == str(engine_b.get("fingerprint") or "")
+    if same and not changed:
+        return {"same": True, "changed": [], "deltaUnaffected": True, "note": ""}
+
+    hint = ""
+    if model_a and model_b and model_a != model_b:
+        hint = f"（{model_a} → {model_b}）"
+    note = "两版由不同引擎生成" + hint + "，差异可能来自模型更换而非观点变化"
+    return {
+        "same": same,
+        "changed": changed,
+        "deltaUnaffected": True,
+        "note": note,
+    }
+
+
+def diff_docs(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    *,
+    quality_a: dict[str, Any] | None = None,
+    quality_b: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Pure function: two report documents in, one `DiffResult` out.
+
+    ★v6：`comparability` 是**追加键**，既有 `a` / `b` / `summary`（字符串）/
+    `metricsDelta` / `blocksChanged` / `sectionsAdded` / `sectionsRemoved` 全部不动。
+    改名或换成对象会让 `DiffResult` 校验失败、`/diff` 直接 500（V6-P1-2）。
+    """
     sections_a = {str(s.get("id")): s for s in a.get("sections") or [] if isinstance(s, dict)}
     sections_b = {str(s.get("id")): s for s in b.get("sections") or [] if isinstance(s, dict)}
     added = [sections_b[key].get("title") or key for key in sections_b if key not in sections_a]
@@ -177,6 +245,12 @@ def diff_docs(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         "sectionsRemoved": removed,
         "blocksChanged": blocks_changed,
         "summary": _summary(rating_changed, metrics_delta, added, removed),
+        "comparability": compare_engine_quality(
+            quality_a,
+            quality_b,
+            model_a=str(a.get("_model") or "") or None,
+            model_b=str(b.get("_model") or "") or None,
+        ),
     }
     return result
 
@@ -250,4 +324,4 @@ def _summary(
     return "，".join(parts) if parts else "两个版本没有结构性差异"
 
 
-__all__ = ["diff_docs", "parse_number", "tone_for"]
+__all__ = ["compare_engine_quality", "diff_docs", "parse_number", "tone_for"]

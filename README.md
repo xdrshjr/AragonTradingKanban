@@ -158,7 +158,7 @@ npm run dev
 | `npm test` | 后端 pytest + 前端 vitest |
 | `npm run ci` | ruff + pytest + typecheck + eslint + vitest |
 | `npm run typecheck` / `npm run lint` / `npm run build` | 前端单项 |
-| `npm run test:e2e` | Playwright（自动以 `AGENT_MODE=mock` 启动）；首次需 `npx playwright install chromium` |
+| `npm run test:e2e` | Playwright + **零依赖 fake API**（不需要 Python / aragon / 数据库）；没有 chromium 时输出 skip 并**退出码 0**，`PW_REQUIRED=1` 才变成失败 |
 
 数据库迁移：
 
@@ -170,7 +170,31 @@ python -m alembic revision --autogenerate -m "change description"
 
 ---
 
-## 本期包含（v4：A 层 + B 层）
+## 本期包含（v6：D 层 D1–D7）
+
+Iteration 3 补的不是功能数量，而是**「凭什么是可信的」**：三个真实的投研读者问题——
+「这个 1234.5 亿是从哪来的」「这份报告整体在说什么」「我这一年花了多少钱」——
+在这一版里各自有了一条能走回去的路径。
+
+| 能力 | 入口 | 关键设计 | 验收 |
+| --- | --- | --- | --- |
+| **数字溯源（D1/D2）** | 报告头「已核验 48/51」徽标 · 表格与指标卡上的小圆点 · 块脚注 | 数字**先分类、后比对**：`fact / projection / identifier / derived` 四类，同业估值与目标价是无条件 `projection`（不进展业分母，也不设「模型自证」的升格通道）；未接地的数字定位到**块 id**，可点、可跳 | AC-46~AC-50 / AC-60 / AC-61 / AC-66 |
+| **区间反查（D3）** | 在 K 线上 **Shift + 拖拽**框一段 | 每个块算出「它说的是哪段时间」（7 种模式，锚在 `doc.asOf`，**不用 `today()`**），框选 → `GET /reports/{id}/blocks` → 报告头下方联动条列出相关段落；普通拖拽仍是图表平移——两者不能抢同一个手势 | AC-53 / AC-54 / AC-64 |
+| **全文视图（D4）** | 报告头 `章节 \| 全文` 分段 | 换**容器**不换**渲染器**：`ReportRenderer` 与 12 种块一行不改，大纲用 `↑↓/Home/End`（**不碰** `j/k`，那是切标的），阅读进度线尊重「减少动画」偏好 | AC-51 / AC-52 / AC-64 / AC-65 |
+| **成本治理（D5）** | `⌘K` →「成本…」 | 只追加的 `cost_ledger`（活过 14 天的 run 保留期）；`NULL ≠ 0`（未知成本单列「另有 4 次成本未知」）；月度预算默认**不设限**，设了也只在超限时 402 并允许**显式覆盖**（留痕到 `runs.reason`） | AC-55~AC-57 / AC-62 / AC-63 |
+| **引擎指纹（D6）** | 版本比较顶部横幅 | `sha1(版本\|provider\|模型\|allow\|schema)` 写进 `quality.engine`；两版不同时只提示「差异可能来自模型更换而非观点变化」，**不改变任何 delta**（O-10） | AC-58 |
+| **e2e 脱钩（D7）** | `npm run test:e2e` | 零依赖 fake API（`web/tests/e2e/fixtures/fake-api.mjs`）顶掉 Python；没有浏览器时**显式 skip + 退出码 0**，`PW_REQUIRED=1` 才变失败 | AC-59 |
+
+> **这一轮最重要的两条**：①未接地的数字**只标不改**（改数比标错更危险）；②老报告不做回填
+> （回填会伪造数据）——没有 `quality.grounding` / `quality.engine` 就按缺失渲染，界面明示「早期版本」。
+
+### 为什么同业 PE 不再拉低接地率
+
+v4 把 `comparables.peers[].pe/pb/growthPct` 和散文里的数字塞进同一个分母，于是「模型给了同业估值」
+会当场把一份诚实报告判成 `degraded`，模型学到的策略就是**不给同业估值**——恰好抹掉投研里最有用的一块。
+现在这些数字是 `projection` 类：**计次、展示、不进分母**（AC-47 断言「删掉整个 comparables 块，ratio 完全相等」）。
+
+## 上一期（v4：A 层 + B 层）
 
 Iteration 2 在「生成 → 阅读 → 引用联动 → 版本切换 → 导出」之上补了四块能力。
 每一块的开关都来自 `/capabilities.features` 的**实测值**，不是硬编码的常量。
@@ -225,6 +249,28 @@ POST /reports/{id}/ask {question, mode:"cite"}
 （带 `detail.suggestMode`，前端**显式询问**才降级）、`ask_not_active`、`invalid_cron`、
 `duplicate_schedule`、`diff_same_report`、`ask_deep_unavailable`（引擎不支持结构化时）。
 
+## 新增端点（v6）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/reports/{id}/blocks?from=&to=&limit=` | 区间反查：这段时间被报告里的哪几段讲到（`limit` 夹到 200） |
+| GET | `/cost/summary?window=30d` | 窗口汇总；`spentUsd` **只含已知**，未知次数单列 `unknownRuns` |
+| GET | `/cost/entries?limit=50` | 账本明细（只追加表，`(kind, ref_id)` 唯一） |
+| POST | `/cost/budget` | `{monthlyUsd}`；`0` = 不设限，改完即时生效（无缓存） |
+| POST | `/runs/estimate` | `{symbol, kind}` → `{estimatedUsd}` 或 `{estimatedUsd: null, reason}` |
+| POST | `/instruments/{id}/reports?override=1` | **既有唯一创建入口**上新增 `?override=1`；超限无 override → **402 `monthly_budget_exceeded`** |
+
+v6 新增错误码：`monthly_budget_exceeded`（402）、`invalid_range`（422）、`range_too_wide`（422）。
+
+> ⚠️ **既有码一个字都没改**：`budget_exceeded`（409，语义是 turns/duration 超预算）与
+> `run_conflict`（409）保持原样。`POST /api/v1/runs` **仍然不存在**（405）——生成只有
+> `POST /instruments/{id}/reports` 一个入口，第二个入口等于第二个并发真源。
+
+`/capabilities` 新增 5 个实测布尔（`grounding / rangeQuery / readingMode / costLedger /
+engineFingerprint`，默认 `false`）与一个**新的**顶层 `engine { fingerprint, drift,
+schemaBytes, allowTools }`，`limits` 增加 `monthlyBudgetUsd / minFactClaims /
+maxBlockRangeYears / maxBlockRangeDays`。
+
 `/capabilities.features` 现在是 `mock, exportHtml, exportMd, pdf, ask, askDeep, fullTextSearch,
 pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增加
 `askDailyLimit / askMaxQuestionChars / schedulerTickSeconds`。
@@ -273,6 +319,11 @@ pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增�
 | 数据带"合成数据"标记 | 真实数据源全挂，降级到 synthetic | 检查网络/依赖；`DATA_PROVIDERS` 调整顺序 |
 | 成本显示"成本未知" | CLI 返回 `cost.known=false` | 正常现象——未知不会被伪装成 $0.00 |
 | K 线空白 | 该标的无行情数据 | 面板底部会标注数据来源与根数 |
+| 报告头出现「3 个数字未找到依据」 | 有三个数字在快照里找不到出处 | 点开徽标 → 每条样本都带 `blockId`，点一下跳到那一格。**不会**自动替换数字 |
+| 报告头出现「数字太少，未评估」 | `factClaims < 5` | 短报告不判分：3 个数字里错 1 个就是 0.67，判 `degraded` 只会让所有短报告变黄条 |
+| 版本比较顶部有琥珀横幅 | 两版的引擎指纹不同 | 只是提示「差异可能来自模型更换而非观点变化」，**不改变任何 delta 数值** |
+| 点「生成最新版本」弹出「本月预算已用完」 | 你在成本面板里设了月度预算 | 主按钮是「仍然生成」——覆盖会留痕到 `runs.reason`，账本照常记 |
+| 全文视图里按 `j` 把标的切走了 | 设计如此 | `j/k` 一直是「下一个/上一个标的」。大纲导航是 `↑↓/Home/End` |
 
 每个 run 的完整审计材料在 `api/workspace/runs/<runId>/`：`argv.json`（实际命令行）、`aragon.ndjson`（逐行原始事件）、`aragon.stderr.log`、`snapshot.json`（事实底座）、`prompt.md`、`result.json`、`report.json`。
 
@@ -283,6 +334,7 @@ pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增�
 ```
 api/app/
   agent/            preflight（能力预检）· aragon_runner（子进程契约）
+                    fingerprint（引擎指纹）· pricing（模型单价表）
                     ask_runner（追问复用同一套 argv 契约）· mock_runner
                     prompts/（research_* + ask_*）· schemas/（report_doc + ask）
   services/         snapshot（事实底座）· report_validator（结构+接地）
@@ -293,8 +345,10 @@ api/app/
                     search_index（FTS5 DDL 与逐块索引）· search_service · search_fallback
                     report_diff（结构 diff + 语义色）· cron · scheduler · scheduler_ticker
                     sse_token（run 与 ask 共用的短签名）
+                    numeric_claims（数字分类与接地的唯一真源）· block_dates（区间抽取）
+                    cost_service（账本 / 预估 / 预算闸门）
   routers/          health · capabilities · symbols · instruments · reports · runs · watchlist
-                    asks · search · schedules
+                    asks · search · schedules · cost（v6）
   db/               session（WAL + 外键）· models/ · migrations/（唯一 schema 真源）
 web/
   app/              落地页 · [symbol] 工作台（RSC 直出 + ?report&section&block 深链）
@@ -302,6 +356,7 @@ web/
                     ask（追问抽屉 + SSE）· schedule（cron 表单）· generation（SSE）· ui/
   lib/              api · types（镜像后端 schema）· layout（15/34/51 单一真源）· sse · copy
                     blocks（块 id 镜像）· focus（焦点归还）· offline（SW 注册 + 离线徽标）
+                    grounding（三态判定的唯一实现 + 样本索引，v6）
   public/sw.js      手写 service worker：同源导航文档 + /_next/static，跨源一律放行
   scripts/          check-bundle.mjs（AC-35：首屏预算与懒加载边界）
 ```
@@ -314,7 +369,9 @@ web/
 > 并入 `ReportPanel`（Tab 与其键盘交互本来共享同一份 state）。12 种块、章节
 > 导航、日期→K 线联动这些**能力**一个不少，只是文件更少、state 更集中。
 
-测试：`api/tests`（500 项，含 argv 契约、fake CLI 的全部失败剧本、cron 表驱动、租约并发、依赖方向守卫）、`web/tests`（132 项 + Playwright）。首屏预算由 `web/scripts/check-bundle.mjs` 机器化断言（237.2 kB / 240 kB，四块面板均不在首屏 chunk）。
+测试：`api/tests`（含 argv 契约、fake CLI 的全部失败剧本、cron 表驱动、租约并发、依赖方向守卫、v6 的数字分类表与导入无环）、`web/tests`（含 `grounding` / `reading-view` / `range-hint` / `cost-panel` 四套新用例 + Playwright）。首屏预算由 `web/scripts/check-bundle.mjs` 机器化断言（**238.5 kB / 240 kB**，八个面板均不在首屏 chunk，且 `ReadingView` / `RangeHint` / `CostPanel` 必须能在 `react-loadable-manifest.json` 里被证明住在 async chunk —— AC-52 的双向判据）。
+
+> 判据不是某个固定数字（`504` 会随重构上下浮动），而是「`pytest --collect-only` 的实测数量**不得低于**改动前」。
 
 ---
 

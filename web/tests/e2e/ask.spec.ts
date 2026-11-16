@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+import { SKIP_REASON, browserAvailable, failIfBrowserRequired } from './fixtures/browser';
+
 /**
  * 报告内追问（A1 / AC-27 / AC-40），端到端。
  *
@@ -9,7 +11,14 @@ import { expect, test } from '@playwright/test';
  *
  * 所有定位都用可访问名（`copy.ts` 里的字符串），不用 CSS 结构——那才是读者/键盘
  * 用户实际"看到"的界面。
+ *
+ * ★v6（§19.3.7 / AC-59）：接口来自 `tests/e2e/fixtures/fake-api.mjs`（`POST
+ * /reports/{id}/ask` 返回固定的 cite 答案，命中块 id 由 fixture 文档数出来），
+ * 因此不再需要 Python 侧起来。
  */
+
+failIfBrowserRequired();
+test.skip(!browserAvailable, SKIP_REASON);
 
 const SYMBOL = '/CN:600519.SH';
 

@@ -11,7 +11,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,9 @@ from ..db.session import get_db
 from ..errors import RunNotFound, Unauthorized
 from ..logging import get_logger
 from ..models import Run
+from ..schemas.cost import EstimateRequest, EstimateResponse
 from ..schemas.run import CancelResponse, EventsTokenResponse, RunOut, RunUsage
+from ..services import cost_service
 from ..services.run_manager import RunManager, get_manager, stream_events
 from ..services.sse_token import TOKEN_TTL_SEC, issue_sse_token, sign_sse_token, verify_sse_token
 
@@ -70,6 +72,35 @@ def _load(db: Session, run_id: str) -> Run:
     if run is None:
         raise RunNotFound()
     return run
+
+
+@router.post("", include_in_schema=False)
+def runs_root_is_not_a_creation_entry() -> Response:
+    """★v6（V6-P0-1 / C-13 / AC-56）：`POST /api/v1/runs` 显式为 **405**。
+
+    生成只能从 `POST /api/v1/instruments/{id}/reports` 发起（那里才有
+    `active_run_for()` / `MAX_CONCURRENT_RUNS` / `ux_runs_active` 三道并发保证）。
+    
+    为什么要写这一个不做事的路由：没有它时，`/runs` 根路径根本不存在，
+    调用方拿到的是 **404 not_found** —— “地址写错了”的语义。而这里真正要说的是
+    “地址对了，但这个动作不允许”：那些想“顺手补一个 POST /runs”的人，
+    应该在第一秒就被告知该去哪里写，而不是发现“原来没有这个接口”然后自己造一个。（R-31）
+    """
+    raise HTTPException(
+        status_code=405,
+        detail="生成只能从 POST /api/v1/instruments/{instrument_id}/reports 发起（唯一创建入口）",
+    )
+
+
+@router.post("/estimate", response_model=EstimateResponse)
+def estimate_run(payload: EstimateRequest, db: Session = Depends(get_db)) -> EstimateResponse:
+    """★v6（V6-P0-1）：**新增子路径**，不是第二个创建入口。
+
+    与既有的 `POST /{run_id}/events-token` 段数不同，二者不冲突。
+    `estimatedUsd: null` 是合法的 200 —— "无法预估"是一个答案，不是错误。
+    """
+    payload_dict = cost_service.estimate(db, payload.symbol, payload.kind)
+    return EstimateResponse.model_validate(payload_dict)
 
 
 @router.get("/{run_id}", response_model=RunOut)

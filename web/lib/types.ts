@@ -320,6 +320,143 @@ export interface ReportQuality {
   /** Prose numerals that could not be traced into the snapshot (§16 verdict 4). */
   ungroundedCount?: number;
   source: 'aragon' | 'mock' | 'aragon-text';
+  /**
+   * ★v6 G1: the locatable half of `groundedRatio`. Absent on reports generated
+   * before v5 — and an absent key means "don't render the badge", never "0 issues".
+   */
+  grounding?: GroundingQuality | null;
+  /** ★v6 G4: the engine that produced this version. No `model`/`provider` here. */
+  engine?: EngineInfo | null;
+}
+
+/** One un-traceable number, with the coordinates needed to jump to it. */
+export interface GroundingSample {
+  /** `blockId` from the single derivation rule (`lib/blocks.ts`). */
+  blockId: string;
+  path: string;
+  raw: string;
+  text: string;
+}
+
+/** Mirrors `api/app/services/numeric_claims.py::GroundingReport.as_payload()`. */
+export interface GroundingQuality {
+  factClaims: number;
+  factMissing: number;
+  /** Every un-traceable number; `samples` only carries the first 20 blocks. */
+  totalMissing: number;
+  projectionClaims: number;
+  derivedClaims: number;
+  identifierClaims: number;
+  /** `'insufficient_sample'` wins over a pretty 1.0 (★V6-P2-8). */
+  skipped: string | null;
+  samples: GroundingSample[];
+}
+
+/** Mirrors `QualityEngineOut` — four fields, on purpose (★V6-P1-3). */
+export interface EngineInfo {
+  fingerprint: string;
+  cliVersion?: string | null;
+  allowTools: string[];
+  schemaBytes: number;
+}
+
+/** `GET /capabilities.engine` — a new object, not a field on `aragon`. */
+export interface EngineCapability {
+  fingerprint?: string | null;
+  drift: boolean;
+  schemaBytes: number;
+  allowTools: string[];
+}
+
+/** ★v6 G4: "these two versions came from different engines". Never changes a delta. */
+export interface Comparability {
+  /** `null` means "at least one side has no fingerprint" — we do not guess. */
+  same: boolean | null;
+  changed: string[];
+  deltaUnaffected: boolean;
+  note: string;
+}
+
+export type BudgetState = 'ok' | 'near' | 'exceeded' | 'unlimited';
+
+export interface CostBudget {
+  monthlyUsd: number;
+  /** `null` when the budget is unlimited (`monthlyUsd === 0`). */
+  remainingUsd: number | null;
+  resetAt: string | null;
+  state: BudgetState;
+}
+
+export interface CostModelRow {
+  model: string;
+  usd: number;
+  runs: number;
+}
+
+/** Mirrors `api/app/schemas/cost.py::CostSummary`. */
+export interface CostSummary {
+  window: string;
+  from: string;
+  to: string;
+  /** Known spend only — unknown runs are counted separately, never as $0.00. */
+  spentUsd: number;
+  knownRuns: number;
+  unknownRuns: number;
+  byKind: Record<string, number>;
+  byModel: CostModelRow[];
+  budget: CostBudget;
+  /** Ledger rows lost to a savepoint (report still landed) — R-26. */
+  ledgerGap: number;
+}
+
+export interface CostEntry {
+  id: number;
+  kind: string;
+  refId: string;
+  symbol?: string | null;
+  reportId?: string | null;
+  model?: string | null;
+  usd?: number | null;
+  known: boolean;
+  createdAt: string;
+}
+
+export interface CostEntriesResponse {
+  items: CostEntry[];
+  total: number;
+}
+
+export interface EstimateResponse {
+  estimatedUsd: number | null;
+  reason?: 'no_history' | 'no_price' | null;
+  basis?: {
+    samples: number;
+    medianTokens: number;
+    model: string;
+    priceVersion?: string | null;
+  } | null;
+}
+
+/** Mirrors `api/app/schemas/blocks.py::BlockHit`. */
+export interface BlockHit {
+  blockId: string;
+  sectionId: string;
+  sectionTitle: string;
+  kind: string;
+  overlapDays: number;
+  matchKind: string;
+  text: string;
+}
+
+/** Mirrors `api/app/schemas/blocks.py::BlockRangeResponse`. */
+export interface BlockRangeResponse {
+  reportId: string;
+  range: { from: string; to: string };
+  items: BlockHit[];
+  total: number;
+  truncated: boolean;
+  asOf: string;
+  reason?: string | null;
 }
 
 export interface ReportSummary {
@@ -391,6 +528,8 @@ export interface CreateRunResponse {
   runId: string;
   status: string;
   instrumentId: string;
+  /** ★v6: may be `null` — "无法预估" is an answer, never a fake 0. */
+  estimateUsd?: number | null;
 }
 
 export interface AragonCapability {
@@ -416,6 +555,8 @@ export interface Capabilities {
   dataProviders: { id: string; available: boolean }[];
   features: Record<string, boolean>;
   limits: Record<string, unknown>;
+  /** ★v6 G4: a new top-level object (model/provider stay in `aragon`). */
+  engine?: EngineCapability | null;
 }
 
 export interface WatchlistEntry {
@@ -559,6 +700,8 @@ export interface DiffResult {
   sectionsRemoved: string[];
   blocksChanged: BlockChange[];
   summary: string;
+  /** ★v6 G4: appended key. The server never renames `a`/`b`/`summary`. */
+  comparability?: Comparability | null;
 }
 
 export interface ScheduleOut {

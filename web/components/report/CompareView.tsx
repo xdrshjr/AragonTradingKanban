@@ -163,6 +163,23 @@ export function CompareView({
         </IconButton>
       </header>
 
+      {/* ★v6 G4：引擎可比性横幅。`same === true` 不渲染（不加噪音），
+          `same === null` 用灰色（早期报告没有指纹，我们不知道，不猜），
+          `same === false` 用琥珀。它**不改变任何 delta 的值**（O-10）。 */}
+      {diff?.comparability && diff.comparability.same !== true ? (
+        <p
+          role="note"
+          className={cn(
+            'mx-3 mt-2 shrink-0 rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-[11.5px] leading-relaxed',
+            diff.comparability.same === false
+              ? 'border-[var(--warn)]/35 bg-[var(--warn-weak)] text-[var(--warn)]'
+              : 'border-[var(--border-subtle)] bg-[var(--bg-surface-2)] text-[var(--text-tertiary)]',
+          )}
+        >
+          {diff.comparability.note}
+        </p>
+      ) : null}
+
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {loading ? <LoadingRows /> : null}
 

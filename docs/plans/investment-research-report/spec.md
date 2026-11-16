@@ -1,16 +1,21 @@
-# Aragon Research Terminal · 投研报告工作台 — 设计方案 v4
+# Aragon Research Terminal · 投研报告工作台 — 设计方案 v6
 
 > 特性 slug：`investment-research-report`
-> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ **Subtask #1 设计评审（Iteration 2/3）修订（本节点）**
+> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ **Subtask #1 设计评审（Iteration 3/3）修订（本节点）**
 > 交付物：`web/`（Next.js 阅读器）+ `api/`（FastAPI + `aragon exec` 生成器）+ 工程脚手架
-> 文档状态：**v4 · Iteration 2 增量设计 + 评审修订**（v3 主体保留；本节点只做三件事：把 v3 的 **2 处 P0 / 12 处 P1** 就地修成"照行施工就能跑"的规格、补 **AC-39~AC-45** 把新修法机器化、把与代码现状不符的断言改成事实）
+> 文档状态：**v6 · Iteration 3 增量设计 + 评审修订**（v5 主体保留；本节点只做三件事：把 v5 的 **3 处 P0 / 8 处 P1** 就地修成"照行施工就能跑"的规格、补 **AC-60~AC-66** 把新修法机器化、把与代码现状不符的断言改成事实）
 >
-> **v3 的两条纪律（v4 继续遵守）**
+> **版本号口径（避免误读）**：任务书的"bump 到 v2"以被评审文档为基准，而本图每个迭代的评审节点各推进一个主版本号（v1→v2→v3→v4→v5→**v6**）。本节点评审对象是 **v5**，因此本次提升为 **v6**。历史对应关系见 §0 的版本表。
+>
+> **v3 的两条纪律（v4/v5/v6 继续遵守）**
 > 1. **不重复已交付的工作**：v2 §1–§17 描述的一切在 Iteration 1 已实现并提交（`756426a`，163 文件，276 pytest / 52 vitest / tsc / eslint / ruff 全绿，真实 aragon 生成 3 次留档）。后续轮次**不再重写**它们，只在发现文档与代码已不一致处就地改口径。
-> 2. **设计节点不写源码**（§18.0）。新增内容集中在 §18，下游节点按 §18.4 的文件表落到代码。
+> 2. **设计节点不写源码**（§18.0）。新增内容集中在 §18 / §19，下游节点按 §18.4 / §19.4 的文件表落到代码。
 >
-> **v4 的第三条纪律（本轮新增）**
-> 3. **凡是"这样写就能跑"的机制，必须能被实测反驳。** v3 有 4 处规格按字面实现不出来，其中 3 处是"文档说某字段/某能力已存在，实际不存在"（`polarity`、块级 `blockId`、`store.ts::lastFocused`）——这类错误最有欺骗性：下游照着写、测试全绿，直到接真实运行时才炸（I-1 的先例）。因此本轮的评审方法是**把 v3 的每条关键断言拿本机实测**，证据表见下一篇 `## 评审记录（Review Notes · Iteration 2）`。
+> **v4 的第三条纪律（v6 继续执行）**
+> 3. **凡是"这样写就能跑"的机制，必须能被实测反驳。** v3 有 4 处规格按字面实现不出来，其中 3 处是"文档说某字段/某能力已存在，实际不存在"（`polarity`、块级 `blockId`、`store.ts::lastFocused`）——这类错误最有欺骗性：下游照着写、测试全绿，直到接真实运行时才炸（I-1 的先例）。因此每一轮评审的方法是**把关键断言拿本机实测**，证据表见 `## 评审记录（Review Notes · Iteration 2 / Iteration 3）`。
+>
+> **v6 的第四条纪律（本轮新增）**
+> 4. **"新端点"必须先证明它真的不存在，"既有行为"必须先引一次源码。** 本轮 3 处 P0 全部同型：v5 把一个**从未存在**的 `POST /api/v1/runs` 当成既有端点来"扩展"（真实入口是 `POST /instruments/{id}/reports`），并给 402 闸门选了一个**已被 409 占用**的错误码 `budget_exceeded`，还让"正则单一真源"规则与"`numeric_claims` 需要 `block_text.block_id`"形成**循环 import**。三者都不是文风问题，是"按字面施工会在第一小时就卡住"的机制问题。
 
 ## 0. 文档版本与评审记录
 
@@ -20,8 +25,94 @@
 | v2 | 2026-02（Iteration 1） | Subtask #1 设计评审 | 修复 P0-1（strict 模式缺 `submit_result` 导致结构化结果无法提交）与 P1-1~P1-11：六阶段自洽、外键与软删、SSE 鉴权、单 worker 约束、capability 预检、成本未知、取消杀进程树、系统提示词注入、失败可读兜底、MVP 范围切割；新增 AC-18~AC-24、R-12~R-14、§17 | **有条件通过** |
 | v3 | 2026-02（Iteration 2） | 方案设计（本轮节点） | **增量设计，不重写 v2**。就地修正 9 处已过时口径（追问与调度器从非目标提为必做、`ask` 的 501 契约改为真实契约、错误码表补 8 条、AC 表补 14 条、风险表补 6 条、§15.1 加 v3 指路）；新增 **§18**：追问（检索优先 / 生成兜底）、全文检索（FTS5 + 中文 bigram 预切分）、版本结构 diff、cron 租约调度器、离线只读、bundle 与 a11y 收口；新增 AC-25~AC-38、R-15~R-23、里程碑 M7–M12、oracle 断言 O-1~O-5 | 待下游实现验证（本轮只出设计）→ 经 v4 评审为 **有条件通过** |
 | v4 | 2026-02（Iteration 2） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v3**。用本机实测复核 v3 的每条"机器契约/已存在"断言（20 条证据，见下一篇），就地修复 **P0×2**（FTS 索引结构不可产出摘要与 `sectionId`、调度器在工作线程里 `create_task` 必崩）与 **P1×12**（`polarity`/`blockId` 实际不存在、正文引用漏抽、ask 的 SSE 签发端点与子进程注册表、deep 的 cwd 会被清理、测试夹具建不出 FTS5、迁移与降级冲突、离线方案与跨源默认配置冲突、`block_text` 双源、性能预算自相矛盾、引用合法集合冲突），并补 **AC-39~AC-45** 与 10 条 P2 口径修正 | **有条件通过**（条件 C-8~C-12） |
+| v5 | 2026-02（Iteration 3） | Subtask #0 方案设计 | **增量设计，不重写 v0–v18**。定位从"功能补齐"转为"可托付"：新增 **§19**——G1 数字分类与接地报告（`fact/projection/identifier/derived` 四分类，修掉"同业估值被当事实比对"的口径不一致，未接地样本可定位到块）、G2 全文视图（`?view=full` + 大纲 + 阅读进度，与 Tab 模式共享渲染器）与区间反查（K 线 brush → `/reports/{id}/blocks`）、G3 成本账本与预算闸门（迁移 0003 · 只追加表 · `NULL ≠ 0` · 可覆盖留痕）、G4 引擎指纹与可比性提示、D7 e2e 脱钩 Python（fake API）。新增 **AC-46~AC-59**、**R-21~R-30**、里程碑 **M13–M18**、oracle 断言 **O-6~O-10**、裁决清单 18 条。本轮只写 `spec.md`，未改任何源码 | 待下游实现验证（本轮只出设计）→ 经 v6 评审为 **有条件通过** |
+| v6 | 2026-02（Iteration 3） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v5**。把 §19 的每条"端点/字段/既有行为"断言拿本机实测复核（18 条证据 E-21~E-38，见下一篇），就地修复 **P0×3**（`POST /runs` 从来不存在 ⇒ 预算闸门与 AC-56 不可达；402 错误码 `budget_exceeded` 已被 409 的 turns/duration 预算错误与 `web/lib/types.ts::RunStatus` 占用；"正则单一真源"规则与 `block_id` 依赖形成循环 import 且按字面会让现状判失败）与 **P1×8**（`Peer` 无 `sourceRefs` 使"升格为 fact"分支不可实现且可被模型自证、`diff_docs` 函数名与 `DiffResult` 的 `a/b`·`summary: str` 三处不符使 AC-58 按字面必 500、`capabilities.engine` 不存在且 model/provider 三重副本、`identifier` 分类缺 token 层机制会让日期污染 fact 分母、14 行分类表漏 `doc.keyMetrics[]` 使 `ungroundedCount` 与 `factMissing` 必然不等、`j/k` 已被 `nextSymbol/prevSymbol` 占用、`can_start` 插位会翻转 409/402 并留孤儿工作区、`run_in_progress` 实为 `run_conflict` 且 202 体无 `streamUrl`），并补 **AC-60~AC-66** 与 10 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-13~C-18） |
 
 > **v3 与 v2 的关系一句话**：v2 回答"怎么把它做出来并且做对"，v3 回答"做对之后，为什么它还不够像一个顶级产品"。两者不冲突——v3 的每一条新能力都建立 v2 的既有不变式之上（成本模型、单 worker、接地校验、依赖方向），并且**不豁免任何一条既有 AC**。
+>
+> **v5 与 v3 的关系一句话**：v3 回答"做对之后为什么还不够像顶级产品"，v5 回答"像顶级产品之后，凭什么让人敢拿它做判断"。v5 的三条主线（可回溯、单一投影真源、降级永不上抛）全部是 v2/v3 既有不变式的**加固与兑现**，没有一条引入新的架构层、新的第三方依赖或第二个并发真源。
+
+
+## 评审记录（Review Notes · Iteration 3）
+
+> **评审对象**：`spec.md` **v5**（Iteration 3 增量设计：§19 + §0 版本表）。
+> **结论先行**：§19 的**方向与三条主线全部成立**——"只标不改数"（E1）、"`NULL ≠ 0`"、"账本只追加 + savepoint"、
+> "区间不落库随请求计算"、"`as_of` 驱动不用 `now()`"、"指纹只提示不判分"、"全文视图换容器不换渲染器"，
+> 这些裁决一条不改，v6 全部保留。§19 的问题不在"想错了"，而在**三处"把不存在的东西当成既有事实"**——
+> 与 v4 的 V4-P1-4（拿 askId 打 run 的端点）**完全同型**，而那一处正是上一轮最贵的一处：
+> 照着写、单测全绿、接真实运行时才 404。
+>
+> 本轮因此把评审方法再收紧一格：**凡"扩展既有端点/既有字段/既有约定"的句子，先证明那个东西存在，且引一次源码行号。**
+
+### 评审方法（不是读文档，是读源码 + 跑最小实验）
+
+1. §19 全文（3234 行文档中的 2537–3234）逐节通读，标出每一条"既有/已存在/复用"断言。
+2. **存在性实测**：对每条断言用 grep + 读源文件核对精确行号与签名，不靠记忆、不看 v5 自己的叙述。
+   重点对象：`POST /runs`、`budget_exceeded`、`Peer`、`DiffResult`、`CapabilitiesResponse`、
+   `run_manager.start()`、`_iter_block_text`、`HOTKEYS`、`CITATION_RE`。
+3. **可行性实测**：对"这样做就能跑"的机制跑最小实验。本轮实际执行了 `report_validator._numbers_in_text()`
+   对真实中文句子的分词结果（E-29）——该实验直接推翻了 §19.3.2 分类表里"日期 → `identifier`"这一行的可实现性。
+4. **四维打分**：可行性 / 完整性 / 一致性 / 右则化。每条问题都标注**"若不修，哪条 AC 变成不可达"**，
+   因为"必过 AC 恒假"是本项目已经踩过两次的坑（V4-P1-7、I-16）。
+
+### 实测证据（v5 断言 vs 本机事实）
+
+环境：Windows 10.0.26200 / Python 3.11 / 仓库当前工作区（`api/` + `web/`，Iteration 2 提交 `f7abd70` 之后）。
+
+| # | v5 的断言（原文位置） | 本机实测（引源码） | 判定 |
+| --- | --- | --- | --- |
+| E-21 | §19.3.5「`POST /api/v1/runs {symbol}` → `cost_service.can_start("run")`」；§19.4.2「`routers/runs.py`：`POST /runs` 支持 `?override=1`」 | `routers/runs.py` 有 `prefix="/runs"`，但**根路径没有任何 POST**：只有 `POST /{run_id}/events-token`(:80) 与 `POST /{run_id}/cancel`(:138)。全仓 `@router.post` 清单里唯一创建生成的是 `routers/reports.py:72 POST /instruments/{instrument_id}/reports`。前端也只调这一个（`web/lib/api.ts::createRun`） | **不成立（端点从未存在）** → **V6-P0-1** |
+| E-22 | §19.3.5「超限 → `402 budget_exceeded`」 | `errors.py::BudgetExceeded` **已存在**：`code="budget_exceeded"`、`status_code=409`、`message="生成超出预算（turns / duration）"`。`web/lib/types.ts:23` 的 `RunStatus` 联合里也已有字面量 `'budget_exceeded'`（终态） | **命名冲突（同名不同义、不同码）** → **V6-P0-2** |
+| E-23 | §19.3.1 新增规则 1「`numeric_claims.py` 是 `NUMBER_RE/IDENTIFIER_RE/CITATION_RE` 的唯一定义处；`report_validator` 只能 import；其它模块出现 `CITATION_RE` 新定义判失败」 | `CITATION_RE` 真实定义在 `services/block_text.py:26`，`exporter.py:16` 从那里 import（v4 已收口）；`report_validator.py:34` 另有一份**重复定义**。而 §19.3.2 的 `Claim.block_id` 注释要求 `block_text.block_id(...)` ⇒ `numeric_claims → block_text`；若 `block_text` 又要 import `numeric_claims.CITATION_RE` 则成环 | **不成立（循环 import + 规则按字面让现状判失败）** → **V6-P0-3** |
+| E-24 | §19.3.2 分类表「`comparables.peers[].pe/pb/growthPct` → `projection`，**除非**该 peer 带 `sourceRefs` 且每个 ref ∈ `doc.sources[].id` → 此时 `fact`」 | `schemas/report.py:150 class Peer` 字段只有 `name/symbol/pe/pb/growthPct/note`；`StrictModel` ⇒ `additionalProperties: false` ⇒ 模型若输出 `peers[].sourceRefs` 会被 schema **拒收**。JSON Schema 侧同（`$defs.peer`） | **不成立（字段不存在）** → **V6-P1-1** |
+| E-25 | §19.3.6/§19.4.2「`report_diff.diff_documents(a, b)` 增加 `comparability`」；§19.5.5「响应含 `"from"/"to"` 与 `"summary": {"delta":3,"tone":"neutral"}`」 | 真实函数是 `report_diff.diff_docs(a, b)`，`__all__` 也只导出 `diff_docs`；返回键是 `"a"/"b"`（`:171`）；`"summary"` 是 `_summary(...)` 返回的**中文字符串**。`schemas/report.py:353 DiffResult.summary: str`、且有 `a`/`b` 字段 | **三处不成立**（函数名 / 键名 / `summary` 类型）→ **V6-P1-2** |
+| E-26 | §19.3.6「`capabilities.engine.drift = true`」；§19.4.2「`capabilities.py`：`engine` 增 `drift`」 | `schemas/capabilities.py::CapabilitiesResponse` 只有 `aragon / agentMode / dataProviders / features / limits`，**没有 `engine`**；版本/provider/model 现在挂在 `aragon` 子对象上 | **不成立（对象不存在，"增"无从下手）** → **V6-P1-3** |
+| E-27 | §19.3.2 `quality` 扩展样例里 `engine.model` / `engine.provider` | `models/report.py` 已有 `provider` / `model` 两列，`ReportSummary` 也已暴露 `provider`/`model`（`web/lib/types.ts` 同）⇒ 再写进 `quality.engine` 就是同一事实的**第三份副本** | 重复真源 → **V6-P1-3** |
+| E-28 | §19.3.2「分类规则表逐行」共 14 行 | `report_validator.compute_grounding()` **额外**单独扫描 `doc.get("keyMetrics")`（顶层数组，不在 `sections[].blocks[]` 里）；而 14 行表只写了 `metrics.items[].value`（块内），没有 `keyMetrics[].value` | **表不完整** → **V6-P1-5**；同时确认 v5 的**核心指控成立**：`_iter_block_text` 确实把 `comparables.peers[].pe/pb/growthPct` 送进分母、把 `scenario.targetPrice/probability` 排除（口径不一致是真的） |
+| E-29 | §19.3.2 分类表「形如 `RSI(14)`、`MA20`、`2025`、`2025-03-14`、`Q3`、`H1` → `identifier`」（**路径判据**） | 实测 `_numbers_in_text('2025-03-14 公告，2025 年营收 12.3 亿，RSI(14)=62，Q3 环比 +15.2%')` → `['2025','-03','-14','2025','12.3','62','15.2']`；再过现有"四位年份"豁免后仍留下 `['-3','-14','12.3','62','15.2']`。**一个 ISO 日期就产生 2 个必然失配的 fact 计数**。而 `identifier` 是**路径级**分类，无法对 `paragraph.text` 内部的日期单独定性 | **机制缺失**（表里有行、无实现路径；且现状已在污染分母）→ **V6-P1-4** |
+| E-30 | §19.3.4「大纲 `j/k` 上下、`Enter` 跳转（复用 `web/lib/keyboard.ts` 的既有约定）」 | `web/lib/keyboard.ts::HOTKEYS` 里 **`J` 已经是 `nextSymbol`、`K` 已是 `prevSymbol`**，`Esc` 已是全局 `closeOverlay` | **冲突**（按 j 会切标的）→ **V6-P1-6** |
+| E-31 | §19.5.3「409 `{ code: "run_in_progress" }`（既有行为不变）」 | 既有码是 `errors.py::RunConflict.code = "run_conflict"`；`web/components/generation/useGenerationStream.ts:263` 正按 `error.code === 'run_conflict'` 读 `detail.activeRunId` 恢复，`web/tests/useGenerationStream.test.ts:134` 也断言该码 | **引错既有码**（按字面改会断恢复路径与既有测试）→ **V6-P1-8** |
+| E-32 | §19.5.3「202 `{ runId, streamUrl, estimateUsd }`」 | `routers/reports.py:88` 实际返回 `{"runId","status","instrumentId"}`，**没有 `streamUrl`**（SSE 地址由前端自己拼 `/runs/{id}/events`） | 描述错 → **V6-P1-8** |
+| E-33 | §19.4.2「`run_manager.py`：`start()` **入口**加 `can_start("run")` 判定（**在临界区内**，O-9）」 | `run_manager.start()` 是**同步**方法，体内顺序为 `active_run_for()`(:160) → `count_active_runs()`(:165) → `workspace.mkdir()`(:175) → 建行 → `commit()`；**没有 `asyncio.Lock`**，"临界区"实际由 `ux_runs_active` 唯一索引 + 事务承担 | 定位不精确（会让 409 变 402，且 mkdir 后抛错留孤儿目录）→ **V6-P1-7** |
+| E-34 | §19.3.5「`runs.reason` 追加 `"budget_override"`（≤16 字符，`String(16)` 放得下）」 | `models/run.py`：`reason: String(16)`；`"budget_override"` = 15 字符 | **成立** |
+| E-35 | §19.12「I-34（`create_version()` 的 FTS 写入无 savepoint）… **两处必须一起改**」 | `report_service.py:164` **已有** `with session.begin_nested():` 包住 `search_index.reindex_report_payload()`，并有解释性注释 | 口径过时（I-34 已修）→ **V6-P2-2** |
+| E-36 | §19.7.2 AC-52「`ReadingView`/`ReportOutline` 出现在某个 async chunk 中」（§19.4.5 说"扩 check-bundle.mjs 两条断言"） | `web/scripts/check-bundle.mjs`：`DEFAULT_BUDGET_KB = 240`（与 AC-35 同数，✔）；`LAZY_PANELS` 是 4 个名字的常量；脚本**已读** `react-loadable-manifest.json`，但面板存在性判定走 chunk 文本扫描（I-16 的假阳/假阴根源） | 可扩展但判据要换 → **V6-P2-3** |
+| E-37 | §19.3.4「复用 `lib/focus.ts::useReturnFocus`（I-24 的修复）」；§19.7.1「13 既有 e2e」；O-7「`ReportRenderer` 分派表不变、`data-block-id` 已挂好」 | `web/lib/focus.ts` 存在 `export function useReturnFocus(`；`web/tests/e2e/*.spec.ts` 4 个文件、`test(` 计数 **13**（与 AC-59 的 "13+5" 吻合）；`ReportRenderer.tsx` 含 `data-block-id` | **成立**（v5 这三处引用无误） |
+| E-38 | §19.4.2「`config.py` 新增 `BUDGET_MONTHLY_USD`/`COST_LEDGER_KEEP_DAYS`」；§19.6.1 迁移 `0003`；§19.2「features 增 5 个布尔」 | `config.py` 现有字段里两者都不存在（✔ 属新增）；`migrations/versions/` 只有 `0001`/`0002`（✔ 0003 是下一个）；`FeaturesOut` 现有 12 个布尔、默认值多为 `True`（⇒ 新增 5 个必须给**实测值**，否则重演 V4-P2-4 的"入口永不出现"） | **成立**，但默认值需纪律 → **V6-P2-4** |
+
+**顺带确认的既有事实**（v5 引用无误、构成 v6 修订的安全边界）：`block_text.py` 已有 `block_id_for()` /
+`block_ids()` / `source_ids_in_text()` / `CITATION_RE`（v4 的 P1-2/P1-3 修复落地）；`report_diff` 已按
+`block_text.block_id_for()` 产出 `blockIdA/blockIdB`；`runs.cost_usd`/`cost_known` 与 `reports.cost_usd`/
+`cost_known` 均存在；`MAX_CONCURRENT_RUNS = 2`；`features` 现有 12 项；`check-bundle` 预算 240 kB。
+
+### 问题清单（V6-P0 ×3、V6-P1 ×8、V6-P2 ×10）
+
+| ID | 级别 | 位置（v5） | 问题 | 若不修的后果 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| **V6-P0-1** | **P0** | §19.3.5 / §19.5.3 / §19.4.2 | 预算闸门挂在一个**从未存在的端点** `POST /api/v1/runs` 上。真实创建入口是 `POST /instruments/{instrument_id}/reports`（`routers/reports.py:72`，202），`routers/runs.py` 根路径无 POST | ①闸门无处安放：要么在 `runs.py` 新建一个**第二个创建入口**，绕过既有的 409/`MAX_CONCURRENT_RUNS` 逻辑（并发不变式当场破）；②**AC-56 的三条判据（402 / `?override=1` / `runs.reason`）全部指向一个不存在的路径，恒红**——正是"必过 AC 假"的最坏形态 | **已修**：闸门落在**真实端点** `POST /instruments/{id}/reports?override=1`；`POST /runs/estimate` 作为 `/runs` 下新增子路径（无冲突）；§19.5.3 全表按真实响应体重写 |
+| **V6-P0-2** | **P0** | §19.3.5 / §19.5.3 / §7.3 | 402 闸门的错误码选了 `budget_exceeded`，而该码**已被占用**：`errors.BudgetExceeded` = `budget_exceeded` / **409** / "turns / duration 超预算"；`web/lib/types.ts` 的 `RunStatus` 联合里也已把 `'budget_exceeded'` 当**终态** | 复用既有类 ⇒ 拿到 **409 而不是 402**，AC-56 挂；改既有类的 status ⇒ **静默改变 v1 就存在的 turns/duration 语义**，旧测试与前端按终态处理的路径同时失准。两种走法都错，且第二种要很久以后才发现 | **已修**：新错误类 `MonthlyBudgetExceeded`，**码 `monthly_budget_exceeded`、状态 402**；既有 `BudgetExceeded`（409）与 `RunStatus` 的 `'budget_exceeded'` 一字不动；§7.3 增一行并写明"与 409 的 turns/duration 预算**不是同一个东西**" |
+| **V6-P0-3** | **P0** | §19.3.1 规则 1 / §19.3.2 / §19.4.2 | "三正则收进 `numeric_claims`、其余只 import"，但 `Claim.block_id` 要用 `block_text.block_id_for()` ⇒ `numeric_claims → block_text`；若 `block_text` 再 import `numeric_claims.CITATION_RE` 即**成环**。且规则 1 按字面（AST 扫描模块级 `re.compile` + 名称黑名单）会**判定现状不合规**：`block_text.py:26` 的 `CITATION_RE` 与 `report_validator.py:34` 的重复定义 | 施工第一步就撞 `ImportError`（或按规则 1 判失败），于是实现者二选一：删掉 `block_text` 的 `CITATION_RE`（打断 `exporter` 的 import，导出功能挂）或放弃收口（单源承诺作废） | **已修**：明确**所有权分层**——`CITATION_RE` 归 `block_text`（引用是"块→文本"的一部分，且 `exporter` 已从那里 import）；`NUMBER_RE/IDENTIFIER_RE/DATE_LIKE_RE` 归 `numeric_claims`；方向固定 `numeric_claims → block_text`（单向）、`block_dates → numeric_claims`（单向）；删掉 `report_validator` 的重复定义；规则 1 的时间基线改为"本轮之后新增"，并显式列出**唯一允许的三处定义** |
+| **V6-P1-1** | P1 | §19.3.2 分类表 | `comparables` 的"带合法 `sourceRefs` 则升格 `fact`"依赖 `peers[].sourceRefs`，而 `Peer`（`schemas/report.py:150`）**没有这个字段**，`StrictModel` 还会把模型多写的字段**拒收** | 分支不可实现 ⇒ 实现者只能默认全部 `projection`（正确但表里那半句是空话）；更危险的是有人"顺手"给 `Peer` 加字段而不改 schema：**模型只要把自己编的同业 PE 标上 `["S1"]`，估计值就自动升格为"已核验事实"**——把"防幻觉"改造成"自证清白"的通道 | **已修**：**取消升格分支**，`comparables.peers[].pe/pb/growthPct` **一律 `projection`**，并写明理由：`sourceRefs` 由模型自己填写，允许它升格等于让被审对象自己签发合格证；若真需要"带来源的同业估值"，应走**快照**（`snapshot.comparables`）而不是模型声明（列为 E 层不做） |
+| **V6-P1-2** | P1 | §19.3.6 / §19.5.5 / §19.4.2 | 函数名 `diff_documents` 不存在（实为 `diff_docs`）；响应键是 `a`/`b` 而 v5 写 `from`/`to`；`summary` 是**字符串**而 v5 写 `{delta,tone}` | 按字面返回 `summary: {…}` 会被 `DiffResult.summary: str` 拒 ⇒ `/diff` **500** ⇒ AC-58（三状态下 `delta` 一致）与整个版本比较功能不可达；`from`/`to` 会让前端读不到字段 | **已修**：函数名改 `diff_docs()`；§19.5.5 按**真实响应**重写（`a`/`b`、`summary` 保持字符串），`comparability` 作为**新增键**追加；`delta/tone` 的诉求改为在 `comparability` 内自带 `deltaUnaffected: true` 说明并以 AC-58 机器化"三状态 delta 相等" |
+| **V6-P1-3** | P1 | §19.3.6 / §19.4.2 / §19.5.6 | `capabilities.engine` **不存在**（只有 `aragon` 子对象），"`engine` 增 `drift`"无对象可增；同时 `engine.model/provider` 与 `aragon.model/provider`、`reports.model/provider` 构成**三重副本** | 前端读 `capabilities.engine.drift` 得 `undefined` ⇒ 漂移提示永不出现（静默失效）；三重副本必然漂移（本项目已因双源付过代价：I-20/I-27/V4-P1-10） | **已修**：`CapabilitiesResponse` **新增** `engine: EngineCapabilityOut`，字段只含 `fingerprint / drift / schemaBytes / allowTools`；**`model`/`provider` 不在其中**，一律读既有 `aragon.*`（能力接口）与 `ReportSummary.model` / `.provider`（单份报告）；`quality.engine` 同样删去 `model`/`provider`，`comparability.note` 从两版报告的 `model` 列取名字 |
+| **V6-P1-4** | P1 | §19.3.2 分类表 | 表里"`2025`/`2025-03-14`/`Q3` → `identifier`"是**token 级**判据，而整套分类是**路径级**判据。日期长在 `paragraph.text` 里，其路径必然判 `fact` | 实测（E-29）现状已把 `2025-03-14` 拆成 `-3`/`-14` 两个假失配；一段带 10 个日期的正文 = 20 个假 miss，足以把一份诚实报告从 1.0 压到 `degraded`（回归 AC-2），且读者会看到"20 个数字没有依据"，全是日期 | **已修**：分类改为**两阶段**——阶段 A（token 级抑制）先用 `IDENTIFIER_RE` + `DATE_LIKE_RE` 从文本里**剔除**标识符/日期片段，剩余 token 才成为 claim；阶段 B（路径级）给 claim 定 `fact/projection/derived`。`DATE_LIKE_RE` 收在 `numeric_claims`（只用于**抑制**，不用于取值），`block_dates` 反向 import 它做**取值**（单向），边界写入 AC-60 |
+| **V6-P1-5** | P1 | §19.3.2 分类表 | 14 行表覆盖 `sections[].blocks[]` 内的路径，**漏掉顶层 `doc.keyMetrics[]`**，而 `compute_grounding()` 现在**明确**把它计入分母 | 新旧口径的 `checked` 集合不同 ⇒ `ungroundedCount ≠ grounding.factMissing` ⇒ §19.11 第 18 条与 AC-48 的自洽断言**恒假**；更实际的是：报告门面那两个大数字（最新价、近 1 年收益）从此**不再接受接地校验**，正好是最该核的两个 | **已修**：表补第 15、16 行——`keyMetrics[].value` → `fact`（`n/a`/`—` 跳过），`keyMetrics[].label` → `identifier`；同时把"分母集合 = `sections[].blocks[] ∪ keyMetrics[]`"写进 `grounding_report()` 的契约，并由 AC-61 断言两字段相等 |
+| **V6-P1-6** | P1 | §19.3.4 | 大纲导航用 `j/k`，但 `HOTKEYS` 里 `J = nextSymbol`、`K = prevSymbol` 已是全局快捷键；`Esc` 也已是全局 `closeOverlay` | 在全文视图里按 `j`：标的被切走、正在读的报告消失（**读长文时最不能出的错**）；`Esc` 双触发：ReadingView 归还焦点 + AppShell 关浮层，一次按键两个副作用 | **已修**：大纲导航改 **`↑/↓` + `Home/End`**，且**只在 `ReadingView` 容器内**注册 `onKeyDown`（不写进全局 `HOTKEYS`，避免在任何模式生效）；`Esc` 用**捕获阶段**处理并在真正消费时 `stopPropagation()`，否则让全局 `closeOverlay` 接手——单键单义 |
+| **V6-P1-7** | P1 | §19.4.2 / O-9 | "`start()` **入口**加 `can_start()`"会把它排在既有两个冲突检查**之前** ⇒ 同标已有运行中时返回 **402 而不是 409**（改既有契约）；且 `start()` 在检查通过后**先 `mkdir` 工作区**再建行，若 `can_start` 抛在 mkdir 之后会留孤儿目录 | 既有 409 契约静默翻转（前端/测试按 409 恢复）；每次 402 都留一个空工作区，长期积累且 `RUN_RETENTION_DAYS` 只管**有 run 行的**目录 ⇒ 永久垃圾 | **已修**：钉死插位——`active_run_for()` → `count_active_runs()` → **`can_start("run")`** → `mkdir` → 建行；并把"这是既有两个冲突检查**之后**、副作用**之前**"写成可核对的一行（AC-62 断言 409 优先于 402、且 402 后工作区目录数不变） |
+| **V6-P1-8** | P1 | §19.5.3 | 既有 409 码写成 `run_in_progress`（实为 `run_conflict`）；202 体写成含 `streamUrl`（实为 `{runId,status,instrumentId}`） | 按字面改码 ⇒ `useGenerationStream.ts:263` 的"自动接回进行中 run"失效、`useGenerationStream.test.ts:134` 变红；`streamUrl` 是指向不存在字段的承诺（前端 SSE 地址本来就是自己拼的） | **已修**：§19.5.3 按**真实响应**重写并标注"这两个字段/码为既有，不得改名"；新增只加 `estimateUsd` 与响应头 `X-Budget-Overridden` |
+| V6-P2-1 | P2 | §19.3.2 `Claim` | 注释写 `block_text.block_id(...)`，真实 API 是 `block_id_for(section_id, index)` / `block_ids(doc)` | 实现者按名字找不到函数 | 已改为 `block_text.block_id_for()` |
+| V6-P2-2 | P2 | §19.12 | 断言 I-34 未修、要求"两处一起改"，实际 `report_service.py:164` 已有 `begin_nested()` | 实现者去给一个已存在的 savepoint 加 savepoint | 已改为"把 I-34 的**既有写法**沿用到账本"，并把它称为**模板**而非**待修项** |
+| V6-P2-3 | P2 | AC-52 / §19.4.5 | 面板"是否在 async chunk"靠 chunk 正文文本扫描判定（I-16 同型） | 改名/注释/字符串出现即误判，验收结论不可信 | 已改为以 `react-loadable-manifest.json` 的模块→chunk 映射为**权威判据**，文本扫描仅作辅助；AC-52 双向断言（不在首屏 + 在某个 async chunk） |
+| V6-P2-4 | P2 | §19.4.2 / §19.5.6 | 5 个新 `features` 布尔未规定默认值来源 | `FeaturesOut` 现有默认值多为 `True`，照抄会让 `grounding/rangeQuery/...` 在**未实现时也报 true**（重演 V4-P2-4：入口出现但点了没用） | 已写明：5 个布尔一律**由实测/配置推导**，默认 `False`，且不得有 `TODO` 分支（§19.2 纪律的后半句） |
+| V6-P2-5 | P2 | §19.5.1 | `budget.state ∈ {ok, near, exceeded}` 与同段出现的 `unlimited` 不一致；`remainingUsd: null` 未进类型 | 前端 union 漏一个成员 ⇒ `tsc` 报错或永远走 else | 已统一为 `state ∈ {ok, near, exceeded, unlimited}`，且 `remainingUsd` 与 `resetAt` 在类型上都可空 |
+| V6-P2-6 | P2 | §19.7.1 | 既有测试数写"504" | `history`/提交记录口径为 504 collected，但 README 写"500 项" | 已改为"以 `pytest --collect-only` 实测为准，下限 504"，避免把数字当契约 |
+| V6-P2-7 | P2 | R-22 vs §19.3.2 | R-22 承诺返回 `totalMissing`，而 `grounding` JSON 样例里没有该字段 | 承诺的字段不存在 ⇒ R-22 的缓解措施落空 | 已在 `grounding` JSON 中补 `totalMissing`（`samples` 只放 ≤20 条，`totalMissing` 给全量） |
+| V6-P2-8 | P2 | AC-50 | 三态判据未定**优先级**：`factClaims < MIN_FACT_CLAIMS` 时 `ratio = 1.0` 且 `skipped` 非空，与"`ratio ≥ 0.9` → 已核验"分支**同时成立** | 文案取决于实现者的 if 顺序 ⇒ 一份 3 个数字的报告可能显示"已核验 3/3"（虚假的安心） | 已定序：`skipped` 优先 → `ratio ≥ 0.9` → 否则琥珀；AC-50 按此序断言 |
+| V6-P2-9 | P2 | §19.3.3 | `range_too_wide` 用"跨度 > 5 年"，但 5 年含闰年 = 1826 天，与 `limits.maxBlockRangeDays = 1825` 不等 | 2 月 29 日附近的请求会在两套判据间随机通过/拒绝 | 已改为**按日期差**判 5 年（`to - from > 5 年` 用日历比较），`maxBlockRangeDays` 仅用于 UI 提示 |
+| V6-P2-10 | P2 | §19.5.7 | `?range=` 与 `?view=full` 同时出现时未定义优先级与联动条位置 | 两个 URL 参数的代表性组合行为未定 ⇒ 实现者各写一套 | 已定：`range` 与 `view` **正交**；联动条始终在报告头下方（两种视图同位置），`range` 不因 `view` 变化而清除 |
+
+> **处理口径**：P0 与 P1 共 11 条**全部已在正文就地修复**（每处在原位置带 `v6 修订（V6-Pxx）` 标记，照读即可施工）；
+> P2 共 10 条**全部已顺手改掉**。本轮不保留"文档内待议"项——这是 §19.2 纪律"E 层在代码里没有悬挂分支"的同一条精神在文档上的应用。
 
 ## 评审记录（Review Notes · Iteration 2）
 
@@ -2527,3 +2618,1301 @@ V4-P2-3 要求"新增 `web/lib/focus.ts::useReturnFocus()`"作为非 Dialog 面�
 spec **已按可访问名写好并加入 `--list`（13 tests / 4 files 可收集），但本轮无法执行**；
 迭代 1 的 `workspace.spec.ts` 同样如此。离线 spec 另外**在设计上**要求生产构建
 （`lib/offline.ts` 非生产环境是 no-op），文件中已写明运行方式并在默认配置下跳过。
+
+---
+
+## 19. Iteration 3 增量设计：可信度、长文理解与成本治理
+
+> **本节是 v5 的唯一新增内容，不重写 §0–§18。** 与 v3/v4 的关系同理：§18 回答"把深读工作台补完整"，§19 回答"补完整之后，凭什么让人敢用它做投资判断"。**不豁免任何一条既有 AC（AC-1~AC-45）。**
+
+### 19.0 本轮的定位、硬约束与 oracle 断言
+
+**这一轮要解决的不是"功能还不够"，而是"功能够了，但仍不宜托付"。** v4 交付后产品能连续点五分钟不出错：搜索、生成、阅读、追问、比较、定时刷新、导出、离线。但把一个真实的投研读者放进去，他会立刻提三个 v4 答不上来的问题：
+
+1. **"这个 1234.5 亿是从哪来的？"** — v4 的接地校验只给一个比例（`quality.groundedRatio`）和一个总数（`ungroundedCount`）。读者无法知道**哪几个**数字没依据，也无法点回去核。更糟的是，同一份报告里两类"数字"被两套口径对待：`scenario` 的目标价被明确豁免（代码注释写着 category error），而 `comparables` 里同业的 PE/PB——同样是模型的估计值——却被送进快照语料比对。这不是保守，这是**口径不一致**：模型给同业估值就会拉低 `groundedRatio`，被误标 `degraded`。
+2. **"这份报告整体在说什么？"** — v4 的阅读器是"逐章切换"（Tab + 锚点），对标 deepwiki 的交互没问题，但压掉了长报告的**论证链**：读者看到的永远是一章，看不见"核心逻辑的第三条假设在风险章被自己否定"这种跨章矛盾。缺一个"一次看全文"的模式。
+3. **"我这一年花了多少钱，还能花吗？"** — `MAX_REPORT_COST_USD=0.60` 只在单次超预算时告警，`cost.known=false` 的 run 在累计里等于不存在（记 0 元）。没有一个"本月已用 $23.9 / $25"的地方，也没有在超限前拦一下的闸门。长期使用的产品，成本必须是一条**可见的线**，而不是一个静默的常量。
+
+**本轮的技术主线是"把已有的可信机制从『一句话』变成『一个可点的坐标』"，而不是再堆四个新功能。** 具体是三条：
+
+- **可回溯不变式（v4 已有，本轮加固）**：所有"智能"输出必须能回溯到 doc 里的某个 id。本轮把它从"引用 id 合法"扩展到"**数字**能回溯到快照条目"，并且把回溯失败的样本**定位到块**（可点、可跳、可导出上报），而不是只给一个计数。
+- **单一投影真源（§I-33 的教训，本轮制度化）**：`CITATION_RE` 曾在三处各写一遍并漂移。本轮新增的数字分类、日期抽取、引擎指纹**各自只有一个模块**，其余地方一律 `import`，由 `test_boundaries.py` 增加一条"禁止在 `services/` 之外重写同类正则"的守卫（以符号引用而非文本匹配实现）。
+- **降级永不上抛（v2 §2.1 第 8 条，本轮逐条落实）**：数字溯源拿不到 grounding 数据 → 不显示徽标（不显示"0 个未接地"）；区间反查超时 → 联动条显示"未找到关联段落"而不是 spinner 常驻；成本账本为空 → 显示"暂无成本记录"而不是 `$0.00`；引擎指纹算不出 → `quality.engine = null` 而不是伪造一份。
+
+#### 本节点的硬约束
+
+| 约束 | 来源 | 对本节的后果 |
+| --- | --- | --- |
+| 只产设计文档，**不写实现代码** | 任务 `Constraints` 第 1 条 | 本节全部是可落地的规格：文件路径、函数签名、JSON 形状、SQL、分类表、正则语义。**本轮不修改 `api/` 与 `web/` 的任何文件。** |
+| **不得修改 `docs/plans/investment-research-report/` 之外的任何文件** | `Constraints` 第 2 条 | 本轮唯一被写的文件是 `spec.md`。§19.4 的变更计划描述的是**下游节点**的工作，表内每一行都标了"本轮不改"。 |
+| 不执行 `git commit` | `Constraints` 第 3 条 | 全部改动以工作区未提交状态交付。 |
+| 下游工程师不再做任何决策即可按行实现 | `Definition of Done` 第 4 条 | 凡是"可以 A 也可以 B"的地方，本节给**唯一裁决 + 理由 + 反例代价**，不给选项列表。 |
+
+#### 本轮的 oracle 断言（写完全节后自检，见 §19.10）
+
+| # | 断言 | 若被证伪则改用 |
+| --- | --- | --- |
+| O-6 | **数字分类是"先分类、后比对"**：`projection` 类（同业估值、目标价、概率）永不进入 ratio 分母，因此"模型给了同业估值"不会让一份诚实报告变 `degraded` | 若实测发现 `fact` 类被误判为 `projection`（漏检风险），则改为"分类缺失时默认 `fact`"（保守优先），并在 `quality.grounding.samples` 里显式列出 |
+| O-7 | **数字溯源不引入第二套渲染路径**：`GroundingDot` 只挂在 `metrics`/`table` 两个已有结构化组件上，段落走块脚注，因此 `ReportRenderer` 的分派表不变、`?block=` 深链语义不变 | 若块脚注在 12 种块上有 3 种以上无处安放，则退化为"仅 `TrustBadge` 汇总 + 来源抽屉列表"，放弃内联定位 |
+| O-8 | **区间反查是纯函数 + 只读端点**：`extract_intervals()` 不读 `now()`，只读 `doc.asOf`，因此同一份报告的反查结果永久可复现（有 golden 测试） | 若相对日期必须用 `now()`，则把 `asOf` 写进响应并在 UI 标注"以 2026-02-10 为基准" |
+| O-9 | **预算闸门不新增并发真源**：`can_start()` 只读账本，不改 `RunManager` 的信号量与标锁；`override` 只写 `runs.reason`，因此"运行中 = 1"的语义不变（延续 O-3） | 若账本读与 run 创建之间存在竞态，则把账本检查放进 `RunManager.start()` 的临界区，仍不改锁结构 |
+| O-10 | **引擎指纹只做"可比性提示"，绝不做自动判分**：两版指纹不同时不改变 diff 的任何 delta，只在 `comparability` 里说明；因此"模型升级"不会被误报成"观点变化" | 若产品确实要按引擎分组统计，另开能力，不在 diff 里混入 |
+| **O-11** ★v6 | **闸门挂在真实端点、排在既有冲突检查之后**：只有 `POST /instruments/{id}/reports?override=1` 会被 402 拦住，且 409/429 先于 402 判定，`mkdir` 之前不得产生副作用 | 若被测出 `POST /runs` 真的存在（例如有人新建了它），则以"唯一创建入口"为判据让该测试失败——**两个创建入口就是两个并发真源** |
+| **O-12** ★v6 | **分类两阶段**：标识符与日期在成为 claim **之前**就被剔除，因此 `2025-03-14` 永不进入 `factClaims` 分母（实测反例见证据 E-29） | 若某个日期形态漏网，就把它加进 `DATE_LIKE_RE` 并补一条 AC-60 的用例；**不允许**用"四位年份豁免"这类补丁式白名单继续打补丁 |
+| **O-13** ★v6 | **同一事实只有一个落库位置**：`model`/`provider` 只存在于 `reports` 列与 `capabilities.aragon`，`quality.engine` 不再复制 | 若产品确实要保留"生成时快照"（例如模型改名后仍要显示旧名），则把**完整名**留在 `runs` 行，仍不写进 `quality` |
+
+### 19.1 概述
+
+**Aragon Research Terminal 在 v4 之后已经"读得下去"，但还不是一个"敢按它的数字下单前复核"的产品。** 投研报告的读者与普通文档读者最大的区别是：他不会因为排版好看而信任，他只会因为**每一个数字都能点回去**而信任。v4 的接地校验算出了比例，却把这个比例当成一个展示用的徽标，而不是一条**可走回去的路径**——这正好浪费了项目最贵的那部分投入（快照 + 只读工具的机制化防幻觉）。§19 的 G1 就是把这笔投入兑现：把 `groundedRatio` 从"一个 0.94"变成"48 个数字已核验、3 个未找到依据，点第三个跳到估值表的那一格"。
+
+**同时，v4 的阅读器把"深读"做得太窄。** deepwiki 式逐章切换适合"我要查某一节"，不适合"我要通读一遍再判断"。一份 40 块的报告在 Tab 里读，读者记不住第 2 章的三条假设，也就发现不了第 4 章对第 2 章的自我否定。G2 补两件互补的东西：**全文视图**（一次看完整论证链，带大纲与阅读进度，与 Tab 模式共用同一个渲染器）与**区间反查**（在 K 线上框一段，报告把提及该区间的段落全部列出来）。后者是 v2 §3 里"日期 → K 线"的单向联动的反向补齐：单向联动解决"这段话讲的是哪段行情"，反向联动解决"这段行情在报告里被怎么解释"。
+
+**第三件事是成本与引擎漂移，它们决定产品能不能被长期使用。** 一次生成 $0.05–$0.60，一个研究者一天点五次，一年就是几百美元；而 `cost.known=false` 的 run 在 v4 的账面上等于 $0.00。G3 加一张**只追加的账本**（`cost_ledger`）与一个**可覆盖的闸门**（超限返回 402 并给出剩余额度与重置时间，允许用户显式 override 并留痕）；G4 加**引擎指纹**，把"这份报告的模型/CLI/allow 列表/schema 版本"写进 `quality.engine`，两版不同时在比较视图顶部提示"引擎已变更，差异可能来自模型更换而非观点变化"。这三件事的共同点：**都是把"沉默的事实"变成"显式的界面语言"**，而不是增加新的智能。
+
+### 19.2 范围分层：D 层（本轮必做）/ E 层（明确不做）
+
+判据延续 §15.1 与 §18.2：**任何一条 E 层缺失，都不影响 D 层 AC 全绿。**
+
+| 层 | 范围 | 归属里程碑 | 取舍理由 |
+| --- | --- | --- | --- |
+| **D1** | 数值分类 + 接地报告结构化（`fact/projection/identifier/derived` 四分类，样本可定位） | M13 | 修复口径不一致（同业估值被误判），并把"未接地的 3 个数字"变成可点的坐标。这是本轮唯一改**正确性**的改动 |
+| **D2** | 可信度呈现（`TrustBadge` · `GroundingDot` · 块脚注 · 来源反向跳转） | M14 | G1 的数据没有界面等于没做；但呈现必须挂在结构化组件上，不改渲染分派 |
+| **D3** | 区间反查（`block_dates` 抽取 + `GET /reports/{id}/blocks` + K 线 brush 联动） | M15 | v2 §3 单向联动的反向补齐，是"图文并茂"从展示到推演的分界 |
+| **D4** | 全文视图（`?view=full` + 大纲 + 阅读进度 + 与 Tab 模式共享渲染器） | M16 | 补"通读"场景，长报告的论证链是判断的前提 |
+| **D5** | 成本治理（`cost_ledger` 迁移 0003 + `can_start` 闸门 + 预估 + 成本面板） | M17 | 长期使用的准入条件；顺带修掉 `cost.known=false` 记 0 元的既有缺陷 |
+| **D6** | 引擎指纹与可比性提示（`quality.engine` + `report_diff.comparability` + preflight 漂移标记） | M18 | 防止"模型升级"被误读成"观点变化"，这是投研产品最危险的误读之一 |
+| **D7** | 可验证性补课：e2e 用 fake API 脱钩 Python，浏览器缺失时显式 skip 而非含混失败 | M18 | v4 遗留的真实缺口（13 个 e2e 用例"写得出来跑不起来"），且它挡住 M13–M17 的任何端到端验证 |
+| **E1** | **不做**：把未接地数字自动替换成快照值 | — | **改数比标错更危险。** 读者无法分辨"这个 1234 是被改过的"，一旦有一处替换错误，整份报告的可信度归零。只标不改 |
+| **E2** | **不做**：跨报告的语义一致性检查（"这份说毛利改善，上一份说恶化"） | — | 需要稳定的实体抽取与单位归一，收益低于引入第二个幻觉面；`/search` + diff 已能人工发现 |
+| **E3** | **不做**：服务端 PDF（沿用 C1）、向量检索（C3）、多用户（C2）、全市场爬取（C4）、正文 i18n（C5） | — | 与 §18.2 的裁决一致，本轮不重新讨论 |
+| **E4** | **不做**：成本的多币种、多租户、发票 | — | 单用户本地优先，账本只回答"我花了多少、还剩多少" |
+
+**纪律**：E 层在代码里**没有任何悬挂分支**——`/capabilities.features` 增加 `grounding` / `rangeQuery` / `readingMode` / `costLedger` / `engineFingerprint` 五个布尔，`false` 时前端不渲染入口，不留 `TODO`。
+
+### 19.3 技术设计
+
+#### 19.3.1 分层与新增依赖方向
+
+v2/v3 的三层边界不变（`web` → HTTP → `api` → `spawn` → `aragon`）。本轮新增模块全部落在 `api/app/services/`、`api/app/agent/` 与 `web/components/report/`，**不新增第四层**，不引入任何新的第三方依赖（G1 只用 `re`，G3 只用 SQLAlchemy 已有能力，G4 只用 `hashlib`）。
+
+```
+web/components/report/
+  TrustBadge · GroundingDot · BlockFootnote ──┐
+  ReadingView · ReportOutline ────────────────┼── HTTP ──► api/app/routers/reports.py
+web/components/chart/CandleChart (brush) ─────┘                ├─ services/numeric_claims  ← 数字分类单一真源
+web/components/cost/CostPanel ─────────────────────────────────┤   services/block_dates    ← 日期区间单一真源
+                                                               ├─ services/cost_service / agent/pricing
+                                                               ├─ services/report_diff（增 comparability）
+                                                               └─ agent/fingerprint
+```
+
+**新增四条依赖规则**（写入 `api/tests/test_boundaries.py`，AC-58）：
+
+> **v6 修订（V6-P0-3）**：v5 的规则 1 要求 `NUMBER_RE / IDENTIFIER_RE / CITATION_RE` 三件全部搬进
+> `numeric_claims.py`，并让 `report_validator`、`export_*.py`、`ask_service` 只 import。这条**会把项目卡在第一步**：
+> ①`Claim.block_id` 必须来自 `block_text.block_id_for()` ⇒ 依赖方向是 `numeric_claims → block_text`；
+> ②而 `CITATION_RE` 的真实家是 `block_text.py:26`（`source_ids_in_text()` 在用它，`exporter.py:16` 也从那里 import），
+> 若它搬去 `numeric_claims`、`block_text` 再反向 import，就成了**循环 import**；
+> ③按"其它模块出现 `CITATION_RE` 名称即判失败"的字面，`block_text.py` 与 `report_validator.py:34` 的现状**立刻不合规**。
+>
+> **裁决（所有权分层，一句话）**：正则按**语义归属**分家，不按"都放一个文件"分家。
+> 引用标记属于"块 → 文本 / 块 id / 引用"这一层，所以 `CITATION_RE` **留在 `block_text`**；
+> 数字与日期形状属于"claim 抽取"这一层，所以 `NUMBER_RE / IDENTIFIER_RE / DATE_LIKE_RE` **归 `numeric_claims`**。
+> 依赖方向固定为 **`numeric_claims → block_text`、`block_dates → numeric_claims`**，两条都是单向、无环。
+
+1. `numeric_claims.py` 是 **`NUMBER_RE` / `IDENTIFIER_RE` / `DATE_LIKE_RE`** 的唯一定义处；`block_text.py` 是
+   **`CITATION_RE`** 的唯一定义处。`report_validator.py`（删掉它自己的 `NUMBER_RE` 与 `CITATION_RE` 两份定义）、
+   `exporter.py`、`ask_service.py`、`search_service.py` **只能 import**。守卫以 AST 扫描模块级 `re.compile` 赋值实现：
+   在**这两个所有者之外**出现同名赋值即失败。**时间基线**：规则只看"本改动之后新增的定义"，
+   并把当前唯一合规的三处列入白名单（`block_text.CITATION_RE`、`numeric_claims.NUMBER_RE/IDENTIFIER_RE/DATE_LIKE_RE`
+   ——`.DATE_LIKE_RE` 落地前白名单不含它），白名单只允许**减少**。
+2. `block_dates.py` 是日期区间抽取的**唯一**定义处；`block_text.py` 不得反向依赖它（`block_text` 只负责"块 → 文本 / 块 id / 引用"，日期是语义层）。**反向允许且要求**：`block_dates` **可以** import `numeric_claims.DATE_LIKE_RE`（同一份日期形状表，一处定义两处用：`numeric_claims` 用于**抑制**，`block_dates` 用于**取值**），方向仍无环。
+3. `web/**` 依旧不得出现任何 `aragon` / `anthropic` / `openai` / 数据源包名（沿用 v3 规则）。
+4. `web/lib/types.ts` 中新增的 `quality.grounding`、`comparability`、`costSummary` 三个类型必须与 `api/app/schemas/` 的 Pydantic 模型**逐字段同名同可选性**，由 `web/tests/contract.test.ts` 的镜像断言守住（该文件已存在，本轮扩表）。
+
+#### 19.3.2 G1：数字分类与接地报告（`api/app/services/numeric_claims.py`）
+
+**问题陈述（可复现）。** 现有 `report_validator._iter_block_text()` 把 `comparables.peers[].pe/pb/growthPct` 与 `table.rows.*` 一并当成"散文中出现的数字"送入 `compute_grounding()`，而 `scenario` 的目标价/概率被明确排除。于是：
+
+- 模型的同业估值（PE/PB，本来就是估计或记忆值，快照里不可能有）每出现一次就计一次 miss；
+- 一份 8 个同业 × 3 个指标 = 24 个数字的 `comparables` 块，足以把 ratio 从 1.0 拉到 0.6，把一份诚实报告判成 `degraded`；
+- 反过来，模型学到的策略是"不给同业估值"——这恰好抹掉了投研报告里最有用的一块。
+
+**裁决：先分类，后比对。** 新增单一模块：
+
+```python
+# api/app/services/numeric_claims.py
+"""数字分类与接地的唯一真源（spec §19.3.2）。
+
+为什么必须分类：一份报告里的数字不是同一种东西。营收是快照事实，
+同业 PE 是模型的估计，RSI(14) 是方法参数，市值/PE 是推算。
+把它们塞进同一个分母，等于用"有没有预测"去度量"有没有撒谎"。
+
+★v6 修订（V6-P0-3 / V6-P1-4）：本模块**拥有** NUMBER_RE / IDENTIFIER_RE / DATE_LIKE_RE；
+CITATION_RE 不在这里（它的所有者是 block_text，见 §19.3.1 规则 1）。
+依赖方向：numeric_claims → block_text（单向），block_dates → numeric_claims（单向）。
+"""
+
+Cls = Literal["fact", "projection", "identifier", "derived"]
+
+@dataclass(slots=True, frozen=True)
+class Claim:
+    block_id: str          # ★v6 修订（V6-P2-1）：来自 block_text.block_id_for(sectionId, index)，不是 block_id()
+    path: str              # "valuation.table.rows[2].pe" 人类可读定位
+    raw: str               # 原文片段 "1,234.5"
+    canonical: str         # "1234.5"（_canonical_number）
+    cls: Cls
+    value: float | None    # projection 才有意义（目标价）；fact 为 None
+
+@dataclass(slots=True)
+class GroundingReport:
+    fact_claims: int = 0
+    fact_missing: int = 0
+    projection_claims: int = 0
+    derived_claims: int = 0
+    identifier_claims: int = 0
+    total_missing: int = 0                       # ★v6 修订（V6-P2-7）：全量未接地数（samples 只放前 20 条）
+    skipped: str | None = None                   # "insufficient_sample"
+    samples: list[dict] = field(default_factory=list)   # 最多 MAX_SAMPLES = 20
+    @property
+    def ratio(self) -> float: ...          # 1 - fact_missing/fact_claims，无 fact 时 1.0
+
+# ★v6 修订（V6-P1-4）：两阶段抽取。阶段 A 是 token 级"抑制"，阶段 B 才是路径级"定性"。
+def strip_identifiers(text: str) -> str:
+    """Phase A —— 把标识符与日期片段从文本里剔除，返回"只剩可核数字"的串。
+
+    顺序很重要：先 IDENTIFIER_RE（RSI(14) / MA20 / Q3），再 DATE_LIKE_RE
+    （2025-03-14 / 2025 年 3 月 / 2025Q3 / FY2025），最后才走 NUMBER_RE。
+    实测（v6 证据 E-29）：不做这一步时 '2025-03-14' 会被 NUMBER_RE 拆成
+    '2025' / '-03' / '-14'，四位数年份豁免只挡掉第一个，后两个变成两个必然失配的
+    fact claim —— 一段 10 个日期的正文足以把诚实报告压成 degraded。
+    """
+
+def extract_claims(doc: Mapping[str, Any]) -> list[Claim]: ...
+def classify(path: str, ...) -> Cls: ...
+def grounding_report(doc, snapshot) -> GroundingReport: ...   # 分母 = sections[].blocks[] ∪ doc.keyMetrics[]
+NUMBER_RE / IDENTIFIER_RE / DATE_LIKE_RE   # 唯一定义处，其余模块 import
+```
+
+**分类规则表（唯一裁决，逐行有测试 AC-46）：**
+
+> **v6 修订（V6-P1-4 / V6-P1-1 / V6-P1-5）**：本表由 14 行扩为 **16 行**，且分为两级判据——
+> **阶段 A（token 级，先做）**：`IDENTIFIER_RE` 与 `DATE_LIKE_RE` 命中的片段**从文本中剔除，不产生 claim**
+> （剔除的**次数**计入 `identifierClaims`，只为 UI 能说"另有 18 处是方法参数/日期"，**永不进分母**）。
+> **阶段 B（路径级，后做）**：剩下每个数字按**所在路径**定性。
+> 一张表之所以必须写成两级：v5 把"`2025-03-14` → `identifier`"和"`table.rows[].*` → `fact`"写在同一栏，
+> 但前者是**token** 的判据、后者是**路径**的判据，路径判据永远产不出 token 结论。
+
+| 阶段 | 来源路径 / 形态 | 归类 | 理由 |
+| --- | --- | --- | --- |
+| A | 形如 `RSI(14)`、`MA20`、`PE(TTM)`、`2025`、`2025-03-14`、`2025 年 3 月`、`2025Q3`、`Q3`、`H1`、`TTM` | **剔除**（计 `identifierClaims`） | 方法参数、年份、季度、日期是**坐标**不是**测量值**；剔除而非"判为 identifier 类的 claim"，因为 claim 的分母只装需要核的东西 |
+| B | `sections[].blocks[]` 中 `paragraph/heading/bullets/quote/timeline` 的文本 | `fact` | 散文里的数字是对世界的断言，必须能回溯 |
+| B | `callout.title/text` | `fact` | 同上；callout 常用于"关键结论"，更要核 |
+| B | `metrics.items[].value` | `fact`（`n/a`、`—`、`-` 跳过） | 指标卡是报告的门面数字 |
+| B | `metrics.items[].label` | `identifier` | 标签里的数字是方法名（`RSI(14)`），不是数据 |
+| B | `table.rows[].*` 的单元格 | `fact` | 财务表格是纯事实区 |
+| B | `table.caption` | `fact` | 常含合计/增速 |
+| B | `chart.chart.title/note` | `fact` | 图表标题里的数字同样是断言 |
+| B | `chart.chart.xAxis.labels` | `identifier` | 轴刻度是刻度 |
+| B | `comparables.peers[].pe/pb/growthPct` | **`projection`（无条件）** | ★v6 修订（V6-P1-1）：同业估值是模型估计，快照里不可能有。**取消** v5 的"带合法 `sourceRefs` 则升格 `fact`"分支——`Peer`（`schemas/report.py:150`）根本没有 `sourceRefs` 字段，`StrictModel` 还会拒收多写字段；更关键的是**升格通道本身就是漏洞**：`sourceRefs` 由模型自己填，允许它升格等于让被审对象自己签发合格证。真要有出处，出处应该进**快照**（`snapshot.comparables`），而不是模型声明——列入 E 层不做 |
+| B | `scenario.scenarios[].targetPrice/probability` | `projection` | 明确的预测，沿用 v2 的 category error 裁决 |
+| B | `scenario.scenarios[].assumptions` 文本 | `fact` | 假设里的数字（如"营收增速 15%"）若来自快照则应可回溯；若不来自快照，读者最需要知道 |
+| B | **`doc.keyMetrics[].value`**（顶层数组，不在 `sections[]` 内） | `fact`（`n/a`/`—` 跳过） | ★v6 修订（V6-P1-5）：v5 表漏了这一路，而 `compute_grounding()` **现在**就在算它。报告门面那两个大数字（最新价、近 1 年收益）恰恰最该核 |
+| B | **`doc.keyMetrics[].label`** | `identifier` | ★v6 修订（V6-P1-5）：同上，补齐顶层数组的另一半 |
+| B | 块上带 `"derived": true` 且文本中某个数字与之相等 | `derived` | 由其它数字推算而来（如市值/PE 反算 EPS）。计入分母但**单独计数**，UI 标注"推算" |
+
+**分母集合（写死，不许实现者自己挑）**：`factClaims + factMissing` 的输入 = `sections[].blocks[]` 的全部 `fact` 路径
+**∪** `doc.keyMetrics[]`。少算一路就会让 `ungroundedCount ≠ grounding.factMissing`（AC-61 专门守这一条）。
+
+**阈值纪律。** `GROUNDED_THRESHOLD = 0.9` 不变；新增 `MIN_FACT_CLAIMS = 5`：
+
+- `fact_claims == 0` 或 `< 5` → `ratio = 1.0` 且 `skipped = "insufficient_sample"`。**理由**：3 个数字里错 1 个就是 0.67，判 `degraded` 会让所有短报告全变黄条；而 UI 已经通过 `factClaims` 告诉读者"这份报告只有 3 个数字"。
+- `ratio < 0.9` → 沿用 `status = "degraded"`（v2 的既有行为不变，AC-2 不回归）。
+- ★v6 修订（V6-P2-8）**判定顺序写死**：`skipped != null` **优先于** `ratio ≥ 0.9`。否则一份只有 3 个数字的报告会同时命中"样本不足"与"已核验 3/3"，显示哪一条取决于实现者的 `if` 顺序——而后者是**虚假的安心**。
+
+**`quality` 形状扩展（只加字段，向后兼容）：**
+
+```json
+{
+  "groundedRatio": 0.94,
+  "missingSections": [],
+  "prunedBlocks": 0,
+  "ungroundedCount": 3,
+  "source": "aragon",
+  "engine": { "fingerprint": "9f2c1a7d3e04", "cliVersion": "0.6.68",
+              "allowTools": ["read_file","glob","grep","list_dir","submit_result"],
+              "schemaBytes": 21457 },
+  "grounding": {
+    "factClaims": 51, "factMissing": 3, "totalMissing": 3,
+    "projectionClaims": 24, "derivedClaims": 2, "identifierClaims": 18,
+    "skipped": null,
+    "samples": [
+      { "blockId": "valuation.table.0", "path": "valuation.table.rows[2].pe",
+        "raw": "28.4", "text": "…可比公司平均 28.4×…" }
+    ]
+  }
+}
+```
+
+> ★v6 修订（V6-P1-3）：`engine` **不再含 `model` / `provider`**。这两个事实已经有两处权威：
+> `CapabilitiesResponse.aragon.model|provider`（当前引擎）与 `reports.model|provider` 列（这一版是谁生成的，
+> `ReportSummary` 已暴露给前端）。第三份副本只会漂移——本项目为双源付过的代价见 I-20 / I-27 / V4-P1-10。
+> `comparability.note` 里的模型名从两版报告的 `model` 列取。
+
+`samples` 硬上限 20 条（`MAX_SAMPLES`），按 `blockId` 去重后取**前 20 个块**，避免把一份 300 块报告的样本塞进一行 JSON 撑爆 `reports.quality`（SQLite `TEXT`，但 API 响应有体积预算，AC-48 断言 `< 8 KB`）。★v6 修订（V6-P2-7）：被截掉的条数由 `totalMissing` 交代（R-22 承诺过这个字段，v5 的样例里却没有），UI 文案为「20 / 60（仅列前 20）」。
+
+**保留 `ungroundedCount` 的理由**：它是 v2 契约的一部分（`web/lib/types.ts` 与 `check-bundle` 之外的展示都读它），删除会造成一次无收益的破坏性变更。新代码只读 `grounding`，但两个字段必须保持一致（同一测试断言 `ungroundedCount === grounding.factMissing`）。
+
+#### 19.3.3 G2a：日期区间抽取与区间反查（`api/app/services/block_dates.py`）
+
+**目标。** 给每个报告块算出它"谈论的是哪段时间"，从而支持"K 线上框一段 → 报告列出相关段落"。
+
+```python
+# api/app/services/block_dates.py
+@dataclass(slots=True, frozen=True)
+class Interval:
+    start: date
+    end: date            # 闭区间
+    kind: Literal["day", "month", "quarter", "half", "year", "relative"]
+    source_text: str     # 命中的原文片段，UI 可加下划线
+
+def extract_intervals(text: str, as_of: date) -> list[Interval]: ...
+def block_intervals(block: Mapping, as_of: date) -> list[Interval]: ...
+def overlaps(intervals, lo: date, hi: date) -> int:   # 返回重叠天数
+```
+
+**模式表（唯一裁决；`as_of` 来自 `doc.asOf`，禁止 `date.today()`）：**
+
+| 形式 | 例子 | 解析结果 | kind |
+| --- | --- | --- | --- |
+| ISO 日期 | `2025-03-14` | `[d, d]` | day |
+| 中文日期 | `2025 年 3 月 14 日` | `[d, d]` | day |
+| 年月 | `2025年3月` / `2025-03` | `[3-01, 3-31]` | month |
+| 季度 | `2025Q3` / `Q3 2025` / `2025 年三季度` / `2025 第三季度` | `[7-01, 9-30]` | quarter |
+| 半年 | `2025H1` / `25H2` | `[1-01, 6-30]` / `[7-01, 12-31]` | half |
+| 年度 | `2025 年` / `FY2025` | `[1-01, 12-31]` | year |
+| 相对 | `近一年` / `过去 6 个月` / `近 3 个季度` / `TTM` | 从 `as_of` 回溯 | relative |
+
+**边界纪律：**
+
+- **区间必须闭区间且按自然日计算重叠**，跨年季度（`2024Q4` → `[2024-10-01, 2024-12-31]`）不做财年偏移（本产品不做财年日历，理由：A 股/港股/美股财年不同，猜错比不给更糟）。
+- **不解析"2025 财年 Q1"这类财年表述**，只当 `year` 处理（保守：宁可区间宽一点被命中，不要因猜错财年而漏掉段落）。
+- 一个块最多返回 12 个区间（`MAX_INTERVALS`），按 `start` 升序去重合并。
+- ★v6 修订（V6-P2-9）**跨度上限按日历判，不按天数判**：`to - from` 超过 **5 个日历年**才 `422 range_too_wide`。
+  v5 写"跨度 > 5 年"而 `limits.maxBlockRangeDays = 1825`——5 年含一个闰年就是 **1826 天**，
+  于是"从 2024-02-29 起的五年"会在两套判据之间一会儿通过一会儿被拒。
+  裁决：判定用 `date` 比较（`to.replace(year=from.year+5) < to` 那一类写法），`maxBlockRangeDays` **只用于 UI 文案**。
+
+**端点（详见 §19.5.2）：**
+
+```
+GET /api/v1/reports/{reportId}/blocks?from=2025-03-01&to=2025-04-15&limit=50
+→ 200 { "reportId": "...", "range": {"from":"...","to":"..."},
+        "items": [ { "blockId":"valuation.table.0", "sectionId":"valuation",
+                     "sectionTitle":"估值", "kind":"table", "overlapDays": 46,
+                     "matchKind":"quarter", "text":"…(≤160 字摘要)" } ],
+        "total": 6, "truncated": false, "asOf": "2026-02-10" }
+```
+
+- `from > to` → `422 invalid_range`；跨度 > 5 年 → `422 range_too_wide`（防止有人拿 `1900-01-01` 做全量扫描）。
+- 报告不存在 → 404 `report_not_found`；报告 `provisional` → 200 但 `items: []` + `reason: "provisional_no_dates"`（临时版没有结构化章节，明确说没有而不是空数组让人以为坏了）。
+- `limit` 默认 50、上限 200；`truncated` 为真时 UI 显示"仅显示前 50 段"。
+
+#### 19.3.4 G2b：全文视图（`web/components/report/ReadingView.tsx`）
+
+**为什么不新建渲染器。** `ReportRenderer` 已经把 12 种块分派完毕，且 `data-block-id` 已挂好（v4 成果）。全文视图只是**换容器**：把章节 Tab 换成连续长文，块组件一行不改。
+
+```
+?view=full                    全文视图（默认 ?view=tabs）
+?view=full&section=valuation  进入即滚到该章
+?view=full&block=valuation.table.0  进入即滚到该块并高亮 2s
+```
+
+**新增三件东西（都在客户端，均为 dynamic import，不进首屏 chunk，AC-35 预算不变）：**
+
+1. `ReportOutline`：左浮层大纲（5 章 + 每章块数），`IntersectionObserver` 高亮当前章；`j/k` 上下、`Enter` 跳转（复用 `web/lib/keyboard.ts` 的既有约定）。
+2. `ReadingProgress`：顶部 2px 细线，`scrollTop / scrollHeight`；减少动画偏好下改为离散 5 档。
+3. 模式切换按钮：`Tabs | 全文` 分段控件，位置在报告头右侧（与 `VersionSwitcher` 同行），`?view=` 随之更新（`router.replace`，不产生历史条目——**裁决理由**：来回切模式不该污染浏览器后退栈）。
+
+**焦点与可访问性（AC-51）：**
+
+> ★v6 修订（V6-P1-6）：v5 写"大纲 `j/k` 上下、`Enter` 跳转（复用 `web/lib/keyboard.ts` 的既有约定）"。
+> 实测 `web/lib/keyboard.ts::HOTKEYS`：**`J` = `nextSymbol`、`K` = `prevSymbol`**，`Esc` = `closeOverlay`（全局）。
+> 照字面做，读者在全文视图里按 `j` 会**把标的切走、正在读的报告消失**——这正是"顶级人机交互"最不能犯的错。
+> 裁决三条：①大纲导航改用 **`↑` / `↓` / `Home` / `End`**，不用 `j/k`（`j/k` 继续属于标的切换，一字不改）；
+> ②这些键**只在 `ReadingView` 容器内**的 `onKeyDown` 生效，**不写进全局 `HOTKEYS`**（写进去就等于在任何模式下都生效）；
+> ③`Esc` 在**捕获阶段**处理：只有 ReadingView 真正消费了（焦点在大纲内）才 `stopPropagation()`，否则放行给全局
+> `closeOverlay`——一次按键只能有一个副作用。
+
+- 切入全文 → 焦点移到 `ReportOutline` 首项；`Esc` → 回到模式切换按钮（复用 `lib/focus.ts::useReturnFocus`，即 v4 的 I-24 修复那个 hook，**不新写第三个实现**）。
+- 大纲项为 `<button role="link">`（避免 `<a>` 触发路由），带 `aria-current="true"`。
+- 全文视图下 Tab 顺序：大纲 → 正文块（块内 `CitationChip` 可聚焦）→ 块脚注。禁止把 `data-block-id` 容器设成 `tabIndex=0`（会让读屏器把整块当控件）。
+- 大纲的键盘集合固定为 `↑ / ↓ / Home / End / Enter / Esc`，并在 `aria-keyshortcuts` 上一并声明；**任何与 `HOTKEYS` 重叠的键位都不得新增**（`test_boundaries` 之外另加一条 vitest 断言：`ReadingView` 的键位集合 ∩ `HOTKEYS.keys` = ∅）。
+
+**与既有深链的关系（不回归）：** `?report=&section=&block=` 在 `view=tabs` 下语义不变；`view=full` 时 `section` 只用于初始滚动，`block` 高亮 2s 后自动清除（与 v4 `chart:focus` 的时序一致）。
+
+#### 19.3.5 G3：成本账本与预算闸门
+
+**三层职责分离（唯一裁决）：**
+
+| 层 | 职责 | 不做什么 |
+| --- | --- | --- |
+| `runs.cost` / `report_asks.cost`（既有） | **权威**：一次生成/一次 deep 追问的真实花费（`{known, usd?, tokens, model}`） | 不改结构、不删字段 |
+| `cost_ledger`（新增，只追加） | **投影**：把权威花费按 `kind` 落成可累计的行，供窗口聚合 | 从不 UPDATE、从不 DELETE（保留期清理除外） |
+| `cost_service`（新增） | **读**：窗口汇总、预估、闸门判定 | 不写表；写账本的是 `report_service` / `ask_service` 的同一个事务 |
+
+**为什么"只追加 + 投影"而不是直接在 `runs` 上 `SUM`：** `runs` 行的保留期是 `RUN_RETENTION_DAYS=14`（工作区与 `report_asks` 同一窗口），而**账本必须活过保留期**——否则"本月花了多少"会在每月 15 号自动变少。这是 v4 的一个隐性缺陷：任何基于 `runs` 的月度统计都会被清理任务篡改。
+
+**写路径（延续 O-4 的同一事务原则）：**
+
+- `report_service.create_version()` 落 `reports` 行的同一事务内插入一条 `cost_ledger(kind="run", usd=cost.usd if known else NULL, known=cost.known)`；
+- `ask_service` 的 `deep` 完成时，在写 `report_asks` 的同一事务插入 `kind="ask_deep"`；
+- 账本插入失败**不得回滚报告落库**（报告比账本重要）：用 `session.begin_nested()` savepoint 包住账本插入，失败只记 `logger.warning` 并在 `cost_service.summary()` 里以 `ledgerGap` 计数暴露（`test_cost_ledger_gap` 断言报告仍 ready）。**这一条是对 v4 §I-34 教训的推广**：任何"顺手写第二条表"的地方都要 savepoint。
+
+**闸门（唯一裁决：可覆盖 + 留痕，不静默阻断）：**
+
+> ★v6 修订（V6-P0-1 / V6-P0-2 / V6-P1-7）——**三处硬事实，先读完再施工**：
+>
+> **①端点不存在。** 本仓库**没有** `POST /api/v1/runs`：`routers/runs.py` 虽 `prefix="/runs"`，根路径只有
+> `GET /{run_id}`、`POST /{run_id}/events-token`、`POST /{run_id}/cancel`。**唯一**的生成入口是
+> `POST /api/v1/instruments/{instrument_id}/reports`（`routers/reports.py:72`，202，body `CreateReportRequest`）。
+> 因此闸门**必须**挂在这个真实端点上（`?override=1`），**不得**在 `runs.py` 新建第二个创建入口——
+> 那会绕过既有的 `active_run_for()` / `MAX_CONCURRENT_RUNS=2` / `ux_runs_active` 唯一索引，并发不变式当场破。
+>
+> **②错误码已被占用。** `errors.py::BudgetExceeded` 已经是 `code="budget_exceeded"`、**status 409**、语义是
+> "生成超出预算（turns / duration）"；`web/lib/types.ts` 的 `RunStatus` 里也已有终态字面量 `'budget_exceeded'`。
+> 复用它是错的（拿到 409），改它的 status 更错（静默改写 v1 就存在的行为）。**新增独立错误类**：
+> `MonthlyBudgetExceeded(AppError)` —— `code="monthly_budget_exceeded"`、`status_code=402`。
+> 既有 `BudgetExceeded`（409）与 `RunStatus` 一字不动。
+>
+> **③插位写死。** `RunManager.start()` 是**同步**方法，体内既有顺序为
+> `active_run_for()` → `count_active_runs()` → `workspace.mkdir()` → 建行 → `commit()`；**没有 asyncio.Lock**，
+> "临界区"实际由事务 + `ux_runs_active` 承担。`can_start("run")` **必须**插在**两个既有冲突检查之后、`mkdir` 之前**：
+> 放前面会把"同标已有运行中"从 **409 翻成 402**（既有契约静默改写）；放 `mkdir` 后面则每次 402 都留一个
+> **孤儿工作区目录**，且 `RUN_RETENTION_DAYS` 只清理**有 run 行**的目录，等于永久垃圾。
+
+```
+POST /api/v1/instruments/{instrument_id}/reports?override=1   { "force": false, "reason": "manual" }
+  → ① active_run_for()    非空 → 409 run_conflict（既有码，见 §19.5.3）
+  → ② count_active_runs() ≥ 2 → 429 too_many_runs（既有）
+  → ③ cost_service.can_start("run")                       ← ★v6：就插在这里
+       ├─ 未设预算（BUDGET_MONTHLY_USD=0，默认）→ 放行，不拦
+       ├─ spent + estimate <= budget            → 放行
+       └─ 超限 → 402 monthly_budget_exceeded
+            detail: { spentUsd, budgetUsd, remainingUsd, resetAt, unknownRuns,
+                      estimateUsd, override: true }
+  → ④ workspace.mkdir() → 建 Run 行 → commit → schedule()
+POST .../reports?override=1  → 跳过 ③ 的拒绝分支，run.reason 追加 "budget_override"
+                               （`String(16)`，15 字符，放得下），账本照常写，
+                               响应头 X-Budget-Overridden: 1
+```
+
+- **默认 `BUDGET_MONTHLY_USD=0` 即不设限**：产品不能因为一个默认值把用户锁在门外。设置入口在成本面板里，改完即时生效（读 `get_settings()`，不缓存）。
+- `unknownRuns`（`cost.known=false` 的次数）**单独计数、单独展示**，绝不折算成 `$0.00`。汇总接口因此返回 `spentUsd`（只含已知）与 `unknownRuns`，UI 文案为「已知花费 $3.42 · 另有 4 次成本未知」。
+- 预估（`POST /runs/estimate`）取该 `symbol` 最近 5 次**同指纹**的 `tokens.registered` 中位数 × `pricing.price_for(model)`；无历史或无价格表 → `{estimatedUsd: null, reason: "no_history" | "no_price"}`，UI 显示"无法预估"而不是 0。★v6 说明：`/runs/estimate` 是**新增子路径**（`@router.post("/estimate")`，与既有 `POST /{run_id}/events-token` 段数不同，无匹配冲突），因此它可以合法地住在 `runs.py`——但**创建**不行。
+- 402 只会出现在"用户已显式设了预算"时；`budget.state` 为 `unlimited` 时 `can_start()` 恒真，**不查库**（少一次往返，也让默认路径零成本）。
+
+#### 19.3.6 G4：引擎指纹与可比性提示
+
+```python
+# api/app/agent/fingerprint.py
+def engine_fingerprint(info: PreflightInfo, settings: Settings) -> EngineFingerprint:
+    """sha1(version|provider|model|sorted(allow_tools)|schema_bytes)[:12]
+
+    schema_bytes 已由 report_validator.schema_bytes() 提供 —— 复用，不复制文件读取。
+    """
+```
+
+> ★v6 修订（V6-P1-3）：`EngineFingerprint` 里的 `model` / `provider` 参与**哈希计算**，
+> 但**不写进 `quality.engine`**（也不再出现在 `capabilities.engine`）。理由：这两个事实的权威在
+> `reports.model|provider` 列与 `CapabilitiesResponse.aragon.*`，写第三份必然漂移。
+
+- 写入 `reports.quality.engine`（见 §19.3.2 的 JSON，字段只有 `fingerprint / cliVersion / allowTools / schemaBytes`）。
+- `report_diff.diff_docs(a, b)` 增加 `comparability`：
+
+> ★v6 修订（V6-P1-2）：函数名是 **`diff_docs`**（`report_diff.py:113`，`__all__` 只导出这个名字），
+> 不是 `diff_documents`。它的返回键是 **`a` / `b`**（不是 `from` / `to`），`summary` 是 `_summary()` 产出的
+> **中文字符串**（`schemas/report.py:353 DiffResult.summary: str`）。`comparability` 是**追加键**，
+> 既有键一个都不改名——改名会让 `DiffResult` 在两个字段上校验失败、`/diff` 直接 500。
+
+```json
+"comparability": {
+  "same": false,
+  "changed": ["model", "schemaBytes"],
+  "deltaUnaffected": true,
+  "note": "两版由不同引擎生成（claude-sonnet → claude-opus），差异可能来自模型更换而非观点变化"
+}
+```
+
+- `changed` 的取值来自指纹的**组成项**（`cliVersion / provider / model / allowTools / schemaBytes`），
+  其中 `model` / `provider` 的**展示名**取自两版报告的 `model` / `provider` 列（不是从 `quality` 里再存一份）。
+- `deltaUnaffected: true` 是给 UI 与测试看的**显式承诺**：横幅只是提示，不改变任何 delta（O-10 / AC-58）。
+  既然 `summary` 是字符串、没有 `delta` 数值可带，v5 设想的 `summary.delta` 不引入——
+  "delta 未被影响"这条必须靠**测试**证明，不能靠字段自证。
+- `CompareView` 顶部出现琥珀横幅（**不改变任何 delta 的值**，O-10）。`same: true` 时不渲染横幅（不占空间，不加噪音）。
+- `preflight`：版本超出 `>=0.6.66,<0.7` → `capabilities.engine.drift = true`；前端 `RunStatusBadge` tooltip 增加一行"引擎版本已变更（0.6.68 → 0.7.1），结构化能力未在本机回归"。★v6 说明：`engine` 是 `CapabilitiesResponse` 上**新增**的对象（v5 说"`engine` 增 `drift`"暗示它已存在，实际不存在——`schemas/capabilities.py` 只有 `aragon/agentMode/dataProviders/features/limits`），见 §19.5.6。
+- 老报告没有 `quality.engine`（v4 之前生成的）→ `comparability = {same: null, changed: [], deltaUnaffected: true, note: "其中一版没有引擎指纹（早期报告）"}`，**不猜**（null 而非 false，UI 显示灰色提示而非琥珀警告）。
+
+#### 19.3.7 D7：e2e 脱钩 Python（`web/tests/e2e/fixtures/fake-api.mjs`）
+
+**现状事实**：`web/tests/e2e/` 有 4 个 spec（13 个用例），`playwright.config.ts` 依赖已起的 dev 栈；浏览器二进制缺失时 `npx playwright install chromium` 下载失败，于是"写得出、跑不起来"。
+
+**裁决**：
+
+1. 新增 `web/tests/e2e/fixtures/fake-api.mjs`：一个零依赖 Node `http` 服务，实现 e2e 需要的 9 个端点（`/capabilities`、`/symbols`、`/instruments/{s}/bars`、`/reports`、`/runs`、`/watchlist`、`/asks`、`/search`、`/reports/{id}/blocks`），数据为**确定性 fixture**（复用 `web/tests/fixtures` 的样例，避免第二份真源）。
+2. `playwright.config.ts` 的 `webServer` 改为拉两个服务：fake API（`127.0.0.1:8010`）+ `next dev -p 3010`，并设 `NEXT_PUBLIC_API_BASE=http://127.0.0.1:8010`。**ergo：e2e 不再需要 Python、不需要 `aragon`、不需要数据库。**
+3. 浏览器缺失 → 每个 spec 顶部 `test.beforeAll` 抛出的错误改为 `test.skip(!browserAvailable, 'chromium 未安装：npx playwright install chromium')`，`npm run test:e2e` 在没浏览器时输出 13 skipped + 一行安装命令，**退出码 0**（这不是失败，是环境缺失）；CI 里如需强制则加 `PW_REQUIRED=1` 使 skip 变 fail。
+
+**为什么这条属于设计而不是杂务**：M13–M17 的每一条 AC 都需要端到端证明；一个"永远红或永远 skip"的 e2e 套件等于没有端到端验证，而本项目最贵的教训（F-VERIFY 里 276+52 测试全绿但仍有 P1 结构性缺陷）正是"单元测试全绿不等于链路成立"。
+
+### 19.4 文件 / 模块变更计划
+
+**本轮不改任何一行**（只写 spec）。下表描述**下游实现节点**的工作项；`本轮` 列一律为 `不改`，`归层` 指 §19.2 的 D 层。路径均为仓库现有真实路径或按现有命名惯例新增。
+
+> ★评审更正（I-57）：本表原写 `api/app/db/models/cost.py`，而仓库的 ORM 目录是
+> `api/app/models/`（同目录已有 `report.py` / `run.py` / `ask.py`），`api/app/db/` 只有 `session.py` 与
+> `migrations/`。实现按仓库走的是 `api/app/models/cost.py`，现在把表格改成真实路径——
+> “文档里的路径不存在”正是 V6-P0-1 同型缺陷（后续节点会沿着错路径继续加码）。
+
+#### 19.4.1 后端 · 新增（`api/app/`）
+
+| 文件 | 归层 | 意图（一句话） | 本轮 |
+| --- | --- | --- | --- |
+| `api/app/services/numeric_claims.py` | D1 | 数字分类 + `NUMBER_RE/IDENTIFIER_RE/CITATION_RE` 唯一定义 + `GroundingReport` | 不改 |
+| `api/app/services/block_dates.py` | D3 | 日期/期间区间抽取（7 种模式，`as_of` 驱动，无 `today()`） | 不改 |
+| `api/app/services/cost_service.py` | D5 | 窗口汇总 / `can_start()` / `estimate()` / `ledgerGap` | 不改 |
+| `api/app/agent/pricing.py` | D5 | 模型单价表（`price_for(model) -> float | None`），未知模型返回 None | 不改 |
+| `api/app/agent/fingerprint.py` | D6 | `engine_fingerprint()`；复用 `report_validator.schema_bytes()` | 不改 |
+| `api/app/schemas/cost.py` | D5 | `CostSummary / CostEntry / BudgetState` 的 Pydantic 镜像 | 不改 |
+| `api/app/schemas/blocks.py` | D3 | `/reports/{id}/blocks` 的 `BlockHit / BlockRangeResponse` | 不改 |
+| `api/app/routers/cost.py` | D5 | `GET /cost/summary`、`GET /cost/entries`、`POST /runs/estimate` 的归属路由 | 不改 |
+| `api/app/models/cost.py` | D5 | `CostLedger` ORM（只追加表） | 不改 |
+| `api/app/db/migrations/versions/0003_cost_ledger.py` | D5 | 建 `cost_ledger` + 索引；SQLite/Postgres 双分支（无 FTS 依赖） | 不改 |
+
+#### 19.4.2 后端 · 修改（`api/app/`）
+
+| 文件 | 归层 | 改什么（精确到函数） | 本轮 |
+| --- | --- | --- | --- |
+| `api/app/services/report_validator.py` | D1 | `compute_grounding()` 改为委托 `numeric_claims.grounding_report()`；`_iter_block_text` 降级为"散文文本迭代器"并**移除** `metrics/comparables/scenario` 分支（分类搬到新模块）；`ValidationOutcome.quality` 增 `grounding` 与 `engine` 两个键；**删除本模块自己的 `NUMBER_RE`(:33) 与 `CITATION_RE`(:34) 两份定义**（`NUMBER_RE/IDENTIFIER_RE/DATE_LIKE_RE` 从 `numeric_claims` import、`CITATION_RE` 从 `block_text` import，见 §19.3.1 规则 1）；分母补 `doc.keyMetrics[]` | 不改 |
+| `api/app/services/report_diff.py` | D6 | **`diff_docs()`**（★v6：不是 `diff_documents()`）返回值**追加** `comparability` 键（既有 `a`/`b`/`summary`/`statusChanged`… 一律不改名——`summary` 是字符串）；新增 `compare_engine_quality(a, b)` 纯函数 | 不改 |
+| `api/app/services/report_service.py` | D5 | `create_version()` 用 `begin_nested()` 写账本（失败不回滚报告）；写入 `quality.engine`。★v6（V6-P2-2）：`begin_nested()` 的**模板就在同函数 :164**（FTS 写入已有 savepoint，I-34 已修），照抄那段写法即可，**不要**再去"补"一个 | 不改 |
+| `api/app/services/ask_service.py` | D5 | `deep` 完成写 `cost_ledger(kind="ask_deep")`，同样用 savepoint | 不改 |
+| `api/app/services/run_manager.py` | D5 | `start()` 内新增 `can_start("run")` 判定，**插位写死**：`active_run_for()` → `count_active_runs()` → **`can_start()`** → `workspace.mkdir()` → 建行（★v6 V6-P1-7：放在两个既有冲突检查**之后**才不会把 409 翻成 402；放在 `mkdir` **之前**才不会留孤儿工作区） | 不改 |
+| `api/app/errors.py` | D5 | **新增** `MonthlyBudgetExceeded(AppError)`：`code="monthly_budget_exceeded"`、`status_code=402`（★v6 V6-P0-2：既有 `BudgetExceeded` 是 409 且语义为 turns/duration 超预算，**不得复用、不得改其 status**） | 不改 |
+| `api/app/routers/reports.py` | D3/D5 | 新增 `GET /reports/{id}/blocks`；`GET /reports/{report_id}/diff/{other_id}` 的 `DiffResult` 补 `comparability`；**`POST /instruments/{instrument_id}/reports` 增加 `?override=1`**（★v6 V6-P0-1：这是**唯一**的生成创建入口，闸门挂这里） | 不改 |
+| `api/app/routers/runs.py` | D5 | **只新增** `POST /estimate`（`@router.post("/estimate")`）。★v6 V6-P0-1：**不得**在此新建 `POST /runs` 根路由——那会成为绕过并发不变式的第二个创建入口 | 不改 |
+| `api/app/routers/capabilities.py` | D1–D6 | `features` 增 5 个布尔（`grounding/rangeQuery/readingMode/costLedger/engineFingerprint`，**均由实测推导、默认 `False`**）；**新增顶层 `engine: EngineCapabilityOut`**（★v6 V6-P1-3：该对象现在不存在，字段只有 `fingerprint/drift/schemaBytes/allowTools`，`model`/`provider` 仍在 `aragon` 子对象里） | 不改 |
+| `api/app/agent/preflight.py` | D6 | 暴露 `engine.drift`（版本区间外为 true），并缓存 `EngineFingerprint` 供 `report_service` 取 | 不改 |
+| `api/app/schemas/capabilities.py` | D1–D6 | 新增 `EngineCapabilityOut(fingerprint, drift, schemaBytes, allowTools)`，挂到 `CapabilitiesResponse.engine`（★v6 V6-P1-3：新对象，不是给既有对象加字段）；`FeaturesOut` 增 5 个布尔、默认 `False` | 不改 |
+| `api/app/schemas/report.py` | D1/D6 | `ReportQuality` 增 `grounding: GroundingQuality | None`、`engine: EngineInfo | None`（均可选，老数据不变）。★v6：`EngineInfo` = `{fingerprint, cliVersion, allowTools, schemaBytes}`，**无 `model`/`provider`**（权威在 `reports.model|provider`）；`DiffResult` 增 `comparability: Comparability | None`，既有 `a`/`b`/`summary: str` 不动 | 不改 |
+| `api/app/config.py` | D5 | 新增 `BUDGET_MONTHLY_USD`（默认 0=不限）、`COST_LEDGER_KEEP_DAYS`（默认 730） | 不改 |
+
+#### 19.4.3 前端 · 新增（`web/`）
+
+| 文件 | 归层 | 意图 | 本轮 |
+| --- | --- | --- | --- |
+| `web/components/report/TrustBadge.tsx` | D2 | 报告头可信度徽标（已核验 48/51 · 3 个未接地，可展开） | 不改 |
+| `web/components/report/GroundingDot.tsx` | D2 | 单值未接地指示（`aria-label` 全量文案，非仅颜色） | 不改 |
+| `web/components/report/BlockFootnote.tsx` | D2 | 块脚注（"12 个数字 · 1 个未接地"）+ 弹出样本 + 跳来源 | 不改 |
+| `web/components/report/ReadingView.tsx` | D4 | 全文视图容器（复用 `ReportRenderer`，dynamic import） | 不改 |
+| `web/components/report/ReportOutline.tsx` | D4 | 章节大纲 + `IntersectionObserver` 当前章高亮 | 不改 |
+| `web/components/report/RangeHint.tsx` | D3 | K 线区间联动条（"2025-03-01~04-15 关联 6 段"） | 不改 |
+| `web/components/chart/useBrushRange.ts` | D3 | brush 选择 → 250ms debounce → 调 `/blocks` | 不改 |
+| `web/components/cost/CostPanel.tsx` | D5 | 成本面板（近 30 天、按模型/类型、剩余额度、预算输入） | 不改 |
+| `web/lib/grounding.ts` | D2 | 客户端把 `quality.grounding.samples` 索引成 `Map<blockId, Sample[]>`（不重复解析） | 不改 |
+| `web/tests/e2e/fixtures/fake-api.mjs` | D7 | 零依赖 fake API（9 端点，确定性数据） | 不改 |
+
+#### 19.4.4 前端 · 修改（`web/`）
+
+| 文件 | 归层 | 改什么 | 本轮 |
+| --- | --- | --- | --- |
+| `web/components/report/ReportRenderer.tsx` | D2 | 块外层包 `BlockFootnote`（仅当该块有 claims）；**分派表不动**（O-7） | 不改 |
+| `web/components/report/blocks/MetricsBlock.tsx` | D2 | 值单元格加 `GroundingDot`（`data-grounded` 属性） | 不改 |
+| `web/components/report/blocks/TableBlock.tsx` | D2 | 单元格加 `data-grounded`，未接地加 dot | 不改 |
+| `web/components/report/ReportPanel.tsx` | D2/D4 | 头部插 `TrustBadge` 与 `Tabs | 全文` 分段；`view=full` 时渲染 `ReadingView` | 不改 |
+| `web/components/chart/CandleChart.tsx` | D3 | 新增 brush 交互层（不改蜡烛/指标渲染主体） | 不改 |
+| `web/components/chart/PricePanel.tsx` | D3 | 接管 brush 状态并渲染 `RangeHint` | 不改 |
+| `web/components/report/CompareView.tsx` | D6 | 顶部 `comparability` 琥珀横幅（`same === null` 时灰色） | 不改 |
+| `web/components/shell/CommandPalette.tsx` | D5 | 增加「成本…」命令项（打开 `CostPanel`） | 不改 |
+| `web/lib/types.ts` | D1–D6 | 三个类型镜像（`GroundingQuality`/`Comparability`/`CostSummary`），字段名与 Pydantic 逐一对齐 | 不改 |
+| `web/lib/api.ts` | D3/D5 | `fetchBlocks(range)`、`fetchCostSummary()`、`estimateRun()` | 不改 |
+| `web/lib/copy.ts` | 全部 | 所有新文案集中（沿用 C5 的"文案单一真源"纪律） | 不改 |
+| `playwright.config.ts` | D7 | `webServer` 起 fake API + next（8010/3010），`PW_REQUIRED` 语义 | 不改 |
+| `README.md` | 全部 | 「本期包含」表加 D 层五行；e2e 章节说明 fake API | 不改（下游） |
+
+#### 19.4.5 测试文件（新增或扩展）
+
+| 文件 | 归层 | 断言重点 | 本轮 |
+| --- | --- | --- | --- |
+| `api/tests/test_numeric_claims.py` | D1 | 分类表逐行（表驱动 14 行）、`samples` ≤20 且带可定位 `blockId`、`MIN_FACT_CLAIMS` 行为 | 不改 |
+| `api/tests/test_report_validator.py`（扩） | D1 | 同业估值不再拉低 ratio；`ungroundedCount === grounding.factMissing`；老 `quality` 无 `grounding` 时不炸 | 不改 |
+| `api/tests/test_block_dates.py` | D3 | 7 种模式 × 边界（闰年 2/29、跨年 Q4、`近一年` 用 `asOf`）；`MAX_INTERVALS=12` | 不改 |
+| `api/tests/test_blocks_api.py` | D3 | `invalid_range`/`range_too_wide`/`provisional_no_dates`/`limit` 上限 | 不改 |
+| `api/tests/test_cost_service.py` | D5 | 窗口聚合、`unknownRuns` 单列、`can_start` 四分支、`begin_nested` 失败不回滚 | 不改 |
+| `api/tests/test_cost_ledger_migration.py` | D5 | 0003 在 SQLite 与 Postgres 分支下都能 upgrade→downgrade | 不改 |
+| `api/tests/test_engine_fingerprint.py` | D6 | 同输入同指纹；改 model/tools/schema 任一项指纹变化；老报告 `same: null` | 不改 |
+| `api/tests/test_report_diff.py`（扩） | D6 | `comparability` 三个状态（true/false/null）且 delta 不受影响 | 不改 |
+| `api/tests/test_boundaries.py`（扩） | 全部 | 四条新依赖规则（以 AST 扫描 `re.compile` 模块级赋值） | 不改 |
+| `web/tests/grounding.test.tsx` | D2 | `TrustBadge` 三态、`GroundingDot` 的 `aria-label`、`BlockFootnote` 跳转 | 不改 |
+| `web/tests/reading-view.test.tsx` | D4 | 大纲高亮、`Esc` 归焦、`?view=full&block=` 滚动 | 不改 |
+| `web/tests/range-hint.test.tsx` | D3 | brush → 请求 → 联动条 → 清除；超时降级文案 | 不改 |
+| `web/tests/cost-panel.test.tsx` | D5 | 0 预算文案、`unknownRuns` 展示、402 提示 | 不改 |
+| `web/tests/contract.test.ts`（扩） | 全部 | 三个新类型的镜像字段断言 | 不改 |
+| `web/tests/e2e/*.spec.ts`（改 4 个 + 新增 `grounding.spec.ts`） | D7 | 走 fake API；浏览器缺失时 skip | 不改 |
+| `api/tests/test_import_cycle.py` | **V6-P0-3** | `numeric_claims` 与 `block_text` 在两种 import 顺序下都能导入（无环）；`report_validator` 内不再有 `NUMBER_RE`/`CITATION_RE` 的 `re.compile` | 不改 |
+| `api/tests/test_numeric_claims.py`（扩） | **V6-P1-4 / P1-5** | AC-60 的日期抑制表驱动；AC-61 的 `keyMetrics` 计入分母 | 不改 |
+| `web/tests/reading-view.test.tsx`（扩） | **V6-P1-6 / P2-10** | AC-65 键位不冲突 + `J` 仍切标的；AC-64 `view`/`range` 正交 | 不改 |
+
+**合计**：新增 10 + 1（`test_import_cycle.py`）个后端文件、12 个前端文件、15 + 2 个测试文件；修改 13 个后端文件（★v6 增 `errors.py` 与 `schemas/capabilities.py`）、13 个前端文件。**没有任何一个文件的修改会删除既有导出符号**（全部为新增字段/新增可选参数/新增错误类），因此 v1–v5 的 AC 不回归。★v6 特别说明：`errors.py` 的改动是**新增一个类**，既有的 `BudgetExceeded`（409）逐字不动——这是 V6-P0-2 的验收条件之一。
+
+### 19.5 接口设计
+
+所有端点沿用既有前缀 `/api/v1`，鉴权沿用可选 Bearer（`API_TOKEN` 非空时生效）。错误体沿用既有形状 `{"error": {"code": "...", "message": "...", "detail": {...}}}`。
+
+#### 19.5.1 `GET /cost/summary`
+
+```
+GET /api/v1/cost/summary?window=30d
+```
+
+| 参数 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `window` | `7d|30d|90d|mtd|ytd` | `30d` | `mtd` 从当月 1 日起，`ytd` 从 1 月 1 日起 |
+
+```json
+{
+  "window": "30d",
+  "from": "2026-01-11T00:00:00Z",
+  "to": "2026-02-10T00:00:00Z",
+  "spentUsd": 3.42,
+  "knownRuns": 18,
+  "unknownRuns": 4,
+  "byKind": { "run": 2.91, "askDeep": 0.51 },
+  "byModel": [ { "model": "claude-sonnet", "usd": 3.42, "runs": 18 } ],
+  "budget": { "monthlyUsd": 25.0, "remainingUsd": 21.58, "resetAt": "2026-03-01T00:00:00Z",
+              "state": "ok" },
+  "ledgerGap": 0
+}
+```
+
+- ★v6 修订（V6-P2-5）`budget.state ∈ {ok, near (≥80%), exceeded, unlimited}`，**四个成员**（v5 的三成员表与同段的 `unlimited` 打架）；`monthlyUsd === 0` → `state: "unlimited"`、`remainingUsd: null`、`resetAt: null`。类型侧必须是 `state: 'ok' | 'near' | 'exceeded' | 'unlimited'`、`remainingUsd: number | null`、`resetAt: string | null`，`tsc` 对四个成员全通过（AC-63 断言）。
+- `spentUsd` **只含已知成本**；未知次数在 `unknownRuns` 单列（§19.3.5）。
+- `ledgerGap` = 落库失败而缺失的账本行数（savepoint 兜住的次数）。
+
+#### 19.5.2 `GET /reports/{reportId}/blocks`
+
+见 §19.3.3 的响应形状。错误码：`invalid_range`(422)、`range_too_wide`(422)、`report_not_found`(404)、`report_not_ready`(409，仅在报告处于生成中时)。
+
+#### 19.5.3 `POST /instruments/{instrumentId}/reports`（变更：只增 `?override=1` 与一个字段）
+
+> ★v6 修订（V6-P0-1 / V6-P0-2 / V6-P1-8）：v5 写的 `POST /api/v1/runs` **不存在**（`runs.py` 根路径无 POST）。
+> 生成的创建入口只有一个：`POST /api/v1/instruments/{instrument_id}/reports`。下表按**真实端点与真实响应体**重写；
+> 新增的只有 `?override=1`、`estimateUsd` 与响应头，**既有的码与字段一律不得改名**。
+
+```
+POST /api/v1/instruments/{instrument_id}/reports?override=1   { "force": false, "reason": "manual" }
+```
+
+| 状态 | 条件 | 体 |
+| --- | --- | --- |
+| 202 | 正常受理 | `{ runId, status, instrumentId, estimateUsd }` —— 前三个是**既有字段**（`routers/reports.py:88`），`estimateUsd` 为新增（可为 `null`）。★v6：**没有 `streamUrl`**；SSE 地址由前端拼 `/runs/{runId}/events`，不要凭空加字段 |
+| 402 | 超预算且无 `override` | `{ error: { code: "monthly_budget_exceeded", detail: { spentUsd, budgetUsd, remainingUsd, resetAt, unknownRuns, estimateUsd, override: true } } }` |
+| 409 | 同标已有运行中 | `{ error: { code: "run_conflict", detail: { activeRunId } } }` —— ★v6：既有码是 **`run_conflict`**（不是 `run_in_progress`）。`web/components/generation/useGenerationStream.ts:263` 正按它读取 `detail.activeRunId` 自动接回进行中的运行，`web/tests/useGenerationStream.test.ts:134` 也断言这个字面量；**改名会让一条可用路径静默失效** |
+| 429 | 全局并发已满 | `{ error: { code: "too_many_runs", detail: { retryAfterMs, limit } } }`（既有） |
+
+**优先级写死**：`409`（同标冲突）与 `429`（并发满）**先于** `402` 判定。理由：402 说的是"你本月花超了"，
+而 409/429 说的是"现在不能开"——用户在一个本来也开不了的请求上看到"预算已用完"，
+会去改预算（无效动作），而不是等两分钟。AC-62 断言这个顺序。
+
+`override=1` 时 `run.reason` 写 `"budget_override"`（`String(16)`，15 字符，放得下），并在响应头 `X-Budget-Overridden: 1`。
+
+#### 19.5.4 `POST /runs/estimate`
+
+```json
+// 请求
+{ "symbol": "600519.SH", "kind": "run" }
+// 200
+{ "estimatedUsd": 0.21, "basis": { "samples": 5, "medianTokens": 68974, "model": "claude-sonnet",
+                                  "priceVersion": "2026-02" } }
+// 200（无法预估，不是错误）
+{ "estimatedUsd": null, "reason": "no_history" }
+```
+
+`reason ∈ {no_history, no_price}`。**永不 500、永不返回 0 冒充已知。**
+
+★v6 说明：该路径是**新增**子路由（`runs.py` 里 `@router.post("/estimate")`），既有的 `POST /{run_id}/events-token`
+是两段路径，二者不冲突。`kind ∈ {run, ask_deep}`——追问也要能预估，否则用户点"深度追问"前不知道会花多少。
+
+#### 19.5.5 `GET /reports/{a}/diff/{b}`（变更：只追加 `comparability`）
+
+> ★v6 修订（V6-P1-2）：真实响应键是 `a` / `b`，`summary` 是**中文字符串**（`DiffResult.summary: str`）。
+> v5 的 `"from"/"to"` 与 `"summary": {delta, tone}` 都会让 `response_model=DiffResult` 校验失败 ⇒ 500。
+
+```json
+{
+  "a": "…", "b": "…",
+  "statusChanged": null, "ratingChanged": { … }, "metricsDelta": [ … ],
+  "sectionsAdded": [ … ], "sectionsRemoved": [ … ], "blocksChanged": [ … ],
+  "summary": "评级由 hold 调整为 buy，PE -12.3%，新增「催化剂与跟踪项」章节",
+  "comparability": {
+    "same": false,
+    "changed": ["model"],
+    "deltaUnaffected": true,
+    "note": "两版由不同引擎生成（claude-sonnet → claude-opus），差异可能来自模型更换而非观点变化"
+  }
+}
+```
+
+`comparability.same` 三态：`true`（同指纹）/ `false`（不同指纹）/ `null`（至少一方缺指纹，**不猜**）。
+`comparability` 在 `provisional` 对比时同样返回（不因临时版缺席），缺 `quality.engine` 的一方推动 `same = null`。
+
+#### 19.5.6 `GET /capabilities`（变更：新增 5 个布尔 + 一个顶层 `engine` 对象）
+
+> ★v6 修订（V6-P1-3）：v5 说"`engine` 增 `drift`"，暗示 `engine` 已存在——**它不存在**。
+> `schemas/capabilities.py::CapabilitiesResponse` 现有 `aragon / agentMode / dataProviders / features / limits`。
+> 因此这是**新增对象**，且刻意只带"没有别处存过"的四项；`model`/`provider` 留在 `aragon`（唯一真源）。
+
+```json
+{
+  "features": { "mock": false, "ask": true, "askDeep": true, "grounding": true,
+                "rangeQuery": true, "readingMode": true, "costLedger": true,
+                "engineFingerprint": true, "...": "…（既有 12 项不变）" },
+  "engine": { "fingerprint": "9f2c1a7d3e04", "drift": false,
+              "schemaBytes": 21457,
+              "allowTools": ["read_file","glob","grep","list_dir","submit_result"] },
+  "aragon": { "version": "0.6.68", "model": "claude-sonnet", "provider": "anthropic", "...": "…（既有，不改）" },
+  "limits": { "monthlyBudgetUsd": 25.0, "minFactClaims": 5, "maxBlockRangeYears": 5,
+              "maxBlockRangeDays": 1825 }
+}
+```
+
+- ★v6（V6-P2-4）**5 个新布尔一律默认 `False`、由实测/配置推导**（`grounding` = `numeric_claims` 可导入且 schema 通过；
+  `rangeQuery` = 报告 doc 可解析出 `asOf`；`readingMode` = 前端 bundle 通过；`costLedger` = 0003 已迁移；
+  `engineFingerprint` = `preflight` 拿到了 version）。**不得**照抄 `FeaturesOut` 现有 `True` 默认值——
+  V4-P2-4 的教训就是"入口出现了但点了没用"。
+- ★v6（V6-P2-9）`maxBlockRangeYears`（按日历比较）与 `maxBlockRangeDays`（仅 UI 提示）**两个都给**，
+  避免"5 年 = 1825 天"在闰年附近自相矛盾。
+- 前端据此**只渲染可用入口**：`features.grounding=false` 时不渲染 `TrustBadge`（而不是渲染一个空徽标）。
+
+#### 19.5.7 前端路由契约
+
+| URL | 语义 | 备注 |
+| --- | --- | --- |
+| `/[symbol]` | 工作台（Tab 模式） | 既有 |
+| `/[symbol]?view=full` | 全文视图 | 新增；`router.replace` 切换，不污染历史 |
+| `/[symbol]?view=full&section=valuation&block=valuation.table.0` | 深链到块 | 块高亮 2s 后清除 |
+| `/[symbol]?range=2025-03-01..2025-04-15` | 由 K 线 brush 生成，可分享 | 联动条出现在报告头下方 |
+
+★v6 修订（V6-P2-10）**`range` 与 `view` 正交**，组合语义写死：
+
+- `range` 与 `view` **互不改变对方**：`?view=full&range=…` 是"全文视图 + 联动条"，`?view=tabs&range=…` 是"Tab 视图 + 联动条"。
+- 联动条（`RangeHint`）的位置**在两种视图里相同**——报告头下方、章节内容之上。理由：读者切换阅读模式时，
+  "这段行情关联哪几段"这个问题不该跟着换位置。
+- 切模式用 `router.replace` 只改 `view`，**不得丢掉 `range`**；清 brush 只删 `range`，**不得影响 `view`**（AC-64 断言两者独立）。
+- `range` 非法（`from > to`）时不报错页面崩溃，而是删掉该参数并 toast 一次「区间无效，已清除」——URL 是用户可手改的地方，不能让它成为 500 的入口。
+
+### 19.6 数据模型
+
+#### 19.6.1 迁移 `0003_cost_ledger`（唯一 schema 真源，`api/app` 内仍无 `create_all`）
+
+```sql
+CREATE TABLE cost_ledger (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- Postgres: BIGSERIAL
+    kind        VARCHAR(12) NOT NULL,               -- 'run' | 'ask_deep'
+    ref_id      VARCHAR(36) NOT NULL,               -- run_id 或 ask_id
+    symbol      VARCHAR(24),
+    report_id   VARCHAR(36),
+    model       VARCHAR(64),
+    usd         REAL,                               -- NULL 当 cost.known = false
+    known       BOOLEAN NOT NULL DEFAULT 1,
+    created_at  DATETIME NOT NULL
+);
+CREATE INDEX ix_cost_ledger_created ON cost_ledger (created_at);
+CREATE INDEX ix_cost_ledger_kind    ON cost_ledger (kind, created_at);
+CREATE INDEX ix_cost_ledger_symbol  ON cost_ledger (symbol, created_at);
+CREATE UNIQUE INDEX ux_cost_ledger_ref ON cost_ledger (kind, ref_id);
+```
+
+- **`ux_cost_ledger_ref` 是幂等键**：同一 `run_id` 重复插入会被唯一约束挡住 → 计为 `ledgerGap` 而不是重复计数（重试安全）。
+- 为什么 `usd` 可空而不写 0：`NULL` = 未知，`0` = 已知且免费。两者语义相反，混用会让月度汇总说谎（这正是 v4 的缺陷）。
+- 保留期：`COST_LEDGER_KEEP_DAYS=730`（两年），由既有 retention 任务清理；**清理不影响 `runs` 的 14 天窗口**，两者独立。
+
+#### 19.6.2 内存形状
+
+```python
+# 分类结果的形状（不落库，随请求计算）
+Claim(block_id: str, path: str, raw: str, canonical: str, cls: Cls, value: float | None)
+
+# 指纹（落进 reports.quality.engine）
+EngineFingerprint(fingerprint: str, cli_version: str, model: str, provider: str,
+                  allow_tools: tuple[str, ...], schema_bytes: int)
+
+# 区间（不落库；预算一次报告 × 块数，40 块 × 12 区间上界 = 480，可忽略）
+Interval(start: date, end: date, kind: str, source_text: str)
+```
+
+**不做区间持久化／不做索引表**。理由：`/blocks` 的输入是"一个已加载的报告 doc"，块数 ~40，正则 + 日期算力在微秒级；建表只会引入失效同步问题（这是 v4 §I-27 `instrument_fts` 不同步教训的直接应用）。
+
+#### 19.6.3 `reports.quality` 的版本演进
+
+| 版本 | `quality` 含 | 兼容策略 |
+| --- | --- | --- |
+| v2/v4 落库 | `groundedRatio / missingSections / prunedBlocks / ungroundedCount / source` | — |
+| v5 起 | 上述全部（值不变）+ `grounding` + `engine` | **读路径全部按"可缺失"处理**：老报告无 `grounding` → 前端不渲染 `TrustBadge` 细节，只显示旧的 `groundedRatio`；无 `engine` → `comparability.same = null` |
+
+不做回填（backfill）：回填需要重跑校验，而重跑的输入（快照）已随 run 工作区清理 → **回填会伪造数据**。老报告就让它保持"早期版本"，UI 明示。
+
+### 19.7 测试与验收标准
+
+#### 19.7.1 测试分层
+
+| 层 | 手段 | 数量目标 | 说明 |
+| --- | --- | --- | --- |
+| 纯函数单测 | pytest | +60 | 分类表、区间模式、指纹、`can_start`、`price_for`。**无 DB、无网络、无 CLI** |
+| 服务层单测 | pytest + 内存 SQLite | +25 | 账本 savepoint、`comparability` 三态、`summary` 窗口 |
+| API 契约 | pytest + TestClient | +18 | 6 个端点 × 正常/边界/错误 |
+| 前端单测 | vitest + Testing Library | +22 | 4 个新组件 + 3 个改动组件的降级态 |
+| 边界守卫 | pytest（既有 `test_boundaries.py`） | +4 | 四条新依赖规则 |
+| 端到端 | Playwright + fake API | 13 既有 + 5 新增 | 浏览器缺失时显式 skip |
+
+**总计目标：既有基线下限 `504`（pytest）+ `133`（vitest）→ 不回归；新增 ≈ `107 + 7`（pytest，含 AC-60~AC-66 的 7 条守门用例）+ `22 + 3`（vitest）+ `5`（e2e）。**
+
+★v6 修订（V6-P2-6）：**不要把 `504` 当成契约**。README 写"500 项"、`history` 写"504 collected / 1 skipped"，
+两个数都不是规格。判据改为：`pytest --collect-only -q | tail -1` 的**实测**数量不得**低于**改动前的实测数量；
+vitest 同理。数字会随重构上下浮动，**唯一不变的是"一条都不许少"**。
+
+#### 19.7.2 验收标准（AC-46 ~ AC-59 + **v6 新增 AC-60 ~ AC-66**）
+
+| 编号 | 层 | 验收标准（可机器判定） | 验证手段 |
+| --- | --- | --- | --- |
+| **AC-46** | D1 | 数字分类表的 **14 行**逐行有测试；每行给出一个最小 doc 片段与期望 `cls` | `pytest api/tests/test_numeric_claims.py` 全绿，且用例数 ≥ 14 |
+| **AC-47** | D1 | 一份含 8 个同业 × 3 指标（`pe/pb/growthPct`）且无 `sourceRefs` 的报告，其 `groundedRatio` 与同文档删掉 `comparables` 块**完全相等**（证明同业估值不进分母） | `test_numeric_claims.py::test_comparables_is_projection` 断言 `==` |
+| **AC-48** | D1 | `quality.grounding.samples` 条数 ≤ 20，每条 `blockId` 可用 `?block=` 定位；序列化后 `quality` 总长 < 8 KB | `test_report_validator.py` 断言 `len(samples) <= 20` 与 `len(json.dumps(quality)) < 8192` |
+| **AC-49** | D2 | `degraded` 报告的未接地数字在 `metrics`/`table` 上有 `GroundingDot`；含 claims 的段落在 `ReportRenderer` 下有 `BlockFootnote`；`axe` 零 serious | `vitest web/tests/grounding.test.tsx` + `a11y.test.tsx` |
+| **AC-50** | D2 | `TrustBadge` 三态文案**按固定优先级**：①`skipped="insufficient_sample"` → 「数字太少，未评估」；②`ratio ≥ 0.9` → 「已核验 48/51」；③否则 → 琥珀「3 个数字未找到依据」。**没有 grounding 数据时徽标不渲染** | `grounding.test.tsx` 三分支 + **优先级专测**（★v6 V6-P2-8：构造 `factClaims=3, ratio=1.0, skipped=insufficient_sample`，断言输出第一分支文案而**不是**「已核验」） |
+| **AC-51** | D4 | `?view=full` 下大纲随滚动高亮当前章（`aria-current`）；`Esc` 把焦点还给模式切换按钮；`?view=full&block=X` 滚动到 X 并高亮 2s | `reading-view.test.tsx` + e2e `grounding.spec.ts` |
+| **AC-52** | D4 | 全文视图**不新增首屏 chunk**：`next build` 后 `/[symbol]` 首屏仍 ≤ 240 kB；`ReadingView`/`ReportOutline` **出现在某个 async chunk 中**。★v6 V6-P2-3：两条判据都读 `react-loadable-manifest.json` 的"模块 → chunk"映射（脚本已读该文件），**不靠 chunk 正文文本扫描**——文本扫描在改名/注释/字符串出现时会误判（I-16 同型） | `node web/scripts/check-bundle.mjs`（既有脚本，扩断言 2 条：`LAZY_PANELS` 增两项 + 双向判定） |
+| **AC-53** | D3 | `block_dates` 7 种模式各 ≥1 用例，含闰年 `2024-02-29`、跨年 `2024Q4`、`近一年`（`asOf=2026-02-10` → `[2025-02-10, 2026-02-10]`）；同一输入两次调用结果 `==`（O-8 可复现性） | `pytest api/tests/test_block_dates.py` |
+| **AC-54** | D3 | `/reports/{id}/blocks` 四类错误码齐备；`limit=500` 被夹到 200；`from > to` → 422；`provisional` 报告返回 `items: []` + `reason` | `pytest api/tests/test_blocks_api.py` |
+| **AC-55** | D5 | `cost.known=false` 的 4 次生成后：`spentUsd` 只累计已知项，`unknownRuns == 4`；账本中这些行 `usd IS NULL` 且 `known = 0` | `pytest api/tests/test_cost_service.py` |
+| **AC-56** | D5 | 预算 $25、已知花费 $24.9 时 **`POST /instruments/{id}/reports`** 返回 **402** 且 `detail.override === true`、`error.code === "monthly_budget_exceeded"`；加 `?override=1` 后 202 且 `runs.reason == "budget_override"`、响应头含 `X-Budget-Overridden: 1`；`BUDGET_MONTHLY_USD=0` 时永不 402 | `test_cost_service.py` + `test_reports_api.py`。★v6 V6-P0-1：判据里的端点必须是被测的真实端点；**断言 `POST /api/v1/runs` 返回 405**（防止有人真的去建了第二个入口） |
+| **AC-57** | D5 | 账本插入失败（唯一键冲突 / DB 抛错）时**报告仍落库为 `ready`**，`ledgerGap` +1 | `test_cost_service.py::test_ledger_failure_does_not_rollback_report` |
+| **AC-58** | D6 | 同输入指纹稳定；改 model / allow_tools / schema_bytes 任一项指纹变化；`quality.engine` 缺失的报告 → `comparability.same is None`；**三状态下 `delta` 值完全一致**（O-10 机器化）。★v6 V6-P1-2：断言作用于 **`metricsDelta` / `blocksChanged` / `sectionsAdded` / `sectionsRemoved`**（`summary` 是字符串，`delta` 只能从这些结构化字段取），且 `/diff` 在三种 `comparability` 状态下都返回 **200**（不许 500） | `test_engine_fingerprint.py` + `test_report_diff.py` |
+| **AC-59** | D7 | `npm run test:e2e` 在无 chromium 时输出 13+5 skipped 与一行安装命令且**退出码 0**；装了浏览器时 18 个用例全绿（不依赖 Python、不依赖 `aragon`） | 本地实跑 + `playwright.config.ts` 的 `PW_REQUIRED` 分支测试 |
+| **AC-60** | D1 | **阶段 A 抑制**：`strip_identifiers('2025-03-14 公告，2025 年营收 12.3 亿，RSI(14)=62，Q3 环比 +15.2%')` 之后只剩 `['12.3','15.2']` 两个 claim；且 `identifierClaims == 5`（2025-03-14 的 3 段 + `2025 年` + `Q3`，`RSI(14)` 计 1）——**日期一个都不许进 fact 分母** | `pytest api/tests/test_numeric_claims.py::test_phase_a_strips_dates`（★v6 V6-P1-4：这是把本机实测 E-29 的失败固化成回归） |
+| **AC-61** | D1 | **分母一致**：任何 doc 上 `ungroundedCount === grounding.factMissing`，且 `grounding.factClaims === len([c for c in extract_claims(doc) if c.cls=='fact'])`；把 `doc.keyMetrics` 的两个数字改成快照里没有的值，`factMissing` 必须 +2（证明顶层数组真的在分母里） | `test_report_validator.py::test_denominator_includes_key_metrics`（★v6 V6-P1-5） |
+| **AC-62** | D5 | **闸门插位与优先级**：①同标已有运行中 **且** 预算超限时返回 **409 `run_conflict`**（不是 402）；②预算超限被 402 拒绝后，`settings.runs_dir` 下的工作区目录数**不变**（无孤儿）；③`can_start` 的调用点位于 `count_active_runs()` 之后、`workspace.mkdir()` 之前（以 `run_manager.start` 的 AST/调用序断言或 `mock` 探针记录调用顺序） | `test_cost_service.py::test_gate_order_and_no_orphan_workspace`（★v6 V6-P1-7） |
+| **AC-63** | D5 | **`budget.state` 四态齐备**：`unlimited / ok / near / exceeded` 四个值各有一个用例；`monthlyUsd=0` → `unlimited` 且 `remainingUsd is None`；`web/lib/types.ts` 的联合与 Pydantic 逐字一致（`contract.test.ts` 镜像） | `test_cost_service.py` + `web/tests/contract.test.ts`（★v6 V6-P2-5） |
+| **AC-64** | D4 | **`view` 与 `range` 正交**：`?view=full&range=A..B` 同时生效（大纲存在且联动条可见）；切 `view` 后 `range` 仍在 URL 中；清 brush 后 `view` 仍是 `full`；非法 `range` 被清除且不抛错（一次 toast） | `web/tests/reading-view.test.tsx` + `range-hint.test.tsx`（★v6 V6-P2-10） |
+| **AC-65** | D2/D4 | **键位不冲突**：`ReadingView` 声明的键位集合 ∩ `HOTKEYS[].keys` = ∅；在全文视图按 `J` 仍然切换标的（既有行为不变）；`Esc` 在焦点位于大纲时只归焦、不触发全局 `closeOverlay`（同一事件只产生一个副作用） | `web/tests/reading-view.test.tsx::test_outline_keys_do_not_collide`（★v6 V6-P1-6） |
+| **AC-66** | D1 | **单一真源守卫**：`report_validator.py` 内不再出现 `NUMBER_RE`/`CITATION_RE` 的 `re.compile` 赋值；在全仓（除两个所有者）新增任何同名模块级 `re.compile` 会让 `test_boundaries.py` 失败；`import api.app.services.numeric_claims` 与 `import api.app.services.block_text` 在**任意先后顺序**下都能导入成功（无循环 import） | `pytest api/tests/test_boundaries.py` + 一条 `test_import_cycle.py`（两个 import 顺序各跑一次）（★v6 V6-P0-3） |
+
+#### 19.7.3 回归门（不可协商）
+
+下游实现节点必须满足：
+
+1. `pytest` 全绿（既有 504 + 新增），`ruff check` 无告警；
+2. `vitest` 全绿（既有 133 + 新增 22），`tsc --noEmit` 与 `eslint` 无告警；
+3. `next build` 通过，`node web/scripts/check-bundle.mjs` 通过（首屏 ≤ 240 kB，AC-35 不回归）；
+4. `grep -r "create_all" api/app` 为空；
+5. **AC-1~AC-45 全部不回归**（既有测试文件一行不改即通过；若要改测试，必须在 `## 评审记录` 里写明理由）；
+6. 至少一次**真实 `aragon` 生成**端到端验证（`AGENT_MODE=real`），确认新的 `quality.grounding` 与 `quality.engine` 在真实模型输出上不是空壳。
+7. ★v6 **既有码与既有字段零改名**：`errors.py` 的 `BudgetExceeded`（`budget_exceeded`/409）、`RunConflict`（`run_conflict`/409）、`TooManyRuns` 三者字面量不变；`POST /instruments/{id}/reports` 的 202 体仍是 `{runId,status,instrumentId}` + 新增一个键；`DiffResult` 的 `a`/`b`/`summary: str` 不变。核验方式：`grep -n "code = \"" api/app/errors.py` 与 `git diff api/app/routers/reports.py api/app/schemas/report.py` 人工比对 + `web/tests/useGenerationStream.test.ts` 一行不改仍绿。
+8. ★v6 **唯一创建入口**：`curl -X POST localhost:8000/api/v1/runs -o /dev/null -w "%{http_code}"` 必须 **405**（若为 202，说明有人建了第二个入口，O-11 作废）。
+9. ★v6 **键位零重叠**：`ReadingView` 声明的键位集合 ∩ `HOTKEYS[].keys` = ∅；按 `J` 仍切标的（AC-65）。
+10. ★v6 **导入无环**：`python -c "import app.services.numeric_claims, app.services.block_text"` 与反序各跑一次，均 exit 0（AC-66）。
+
+### 19.8 风险与缓解
+
+| 编号 | 风险 | 触发迹象 | 缓解 | 残留 |
+| --- | --- | --- | --- | --- |
+| **R-21** | **分类误判**：把 `fact` 判成 `projection`（如某段散文被识别为同业估值），导致真实的幻觉数字被放过 | 真实报告 `projectionClaims` 异常高（> factClaims） | 分类规则以**路径**为唯一判据，不做语义推断（路径是确定性的）；`projectionClaims > factClaims` 时在 `quality.grounding` 加 `warn: "projection_dominant"`，UI 显示"这份报告以预测为主" | 中 |
+| **R-22** | **样本上限掩盖问题**：`samples` 只留 20 条，一份 60 条未接地的报告看起来只有 20 条 | 用户以为只有 20 个数字有问题 | `ungroundedCount` 仍给全量；UI 写"20 / 60（仅列前 20）"；`totalMissing` 字段随 `samples` 一起返回 | 低 |
+| **R-23** | **日期抽取过度匹配**：`2025 年` 这类年度区间命中几乎所有块，区间反查退化成"全部命中" | 联动条总是显示"关联 40 段" | `year` 类区间的重叠天数按 1/12 折扣（`overlapDays * 0.08`）参与排序；UI 默认只显示 `day/month/quarter/half` 命中，`year` 折叠为"另有 N 段涉及该年度" | 中 |
+| **R-24** | **全文视图的性能**：一次性渲染 40 块（含图表的 3 个 ECharts）导致长任务 | 打开全文卡 800ms+ | `ReadingView` 用 `IntersectionObserver` 做**分片挂载**（先渲染首 15 块，滚动到边界再挂下一片）；图表块始终 `dynamic` 且 `ssr:false`（既有做法） | 低 |
+| **R-25** | **预算闸门误伤**：用户设了 $1 预算试水，第二次生成被 402 挡住，体验像坏了 | 402 出现在正常路径 | 402 body 必带 `remainingUsd` 与 `override: true`，前端弹窗文案为「本月预算已用完（$1.00/$1.00）· 本次预估 $0.21 · 仍然生成本次」（主按钮是"仍然生成"）；默认预算 0 = 不限 | 低 |
+| **R-26** | **账本与实际花费漂移**：`runs` 被保留期清理后账本对不上，"本月花了多少"查无实据 | 月末对比 run 数量 | 账本含 `ref_id` 与 `kind` 唯一键，只要 `runs` 行还在就能核对；清理后 `ledgerGap` 语义不覆盖此类（属正常过期），UI 在成本面板注明"明细来自 14 天内运行记录，历史仅保留汇总" | 中 |
+| **R-27** | **指纹把"同一个模型换了名字"当成变更**：provider 侧模型名带日期后缀（`claude-sonnet-20260210`），每次升级都提示"引擎已变更"，提示变成噪音 | 横幅几乎每次出现 | 指纹取 `model` 的**主版本段**（截到 `-` 前两段），并在 `quality.engine` 保留完整名；`changed` 里列出完整名以便核对 | 低 |
+| **R-28** | **本轮改动面 22 个文件触碰核心校验路径**，一次回归可能拖住整个迭代 | 集成阶段大面积红 | 按 M13→M18 顺序，每个里程碑自带"既有 AC 不回归"门；G1 先做**纯附加**（新模块 + 委托），中间态保持 `compute_grounding` 旧实现可用，一个提交内完成切换 | 中 |
+| **R-29** | 全文视图与 Tab 模式共享渲染器，若块组件内有依赖"当前章节"的隐式状态，全文模式会出现不一致 | 同一块在两种模式下渲染不同 | 块组件**禁止**读取章节上下文（用 `test_report_renderer` 加一条断言：块组件不 import `ReportPanel` 的 context）；差异只允许来自容器 | 低 |
+| **R-30** | e2e 改成 fake API 后与真实后端契约漂移（fake 与真实现分叉） | 线上 404 但 e2e 绿 | fake API 的响应**由同一份 fixture JSON 驱动**，该 fixture 同时被 `api/tests/fixtures/sample_report.json` 的契约测试使用（单一真源）；`web/tests/contract.test.ts` 断言 fake 的字段与 `web/lib/types.ts` 一致 | 中 |
+| **R-31** ★v6 | **闸门挂错端点后又"补"出第二个创建入口**（因为 `POST /runs` 不存在，最省事的实现就是新建它） | 出现两条都能建 run 的路径，`MAX_CONCURRENT_RUNS` 只拦住其中一条 | §19.3.5 的插位写死 + §19.7.3 第 8 条把 `POST /runs` 必须保持 405 变成回归门；`test_reports_api.py` 断言 `manager.start()` 只有一个调用点 | 中 |
+| **R-32** ★v6 | **两阶段分类漏做，退回"只用路径判据"**：日期重新变成 fact claim，诚实报告被压成 degraded | `factClaims` 远大于快照里真实数字的条数；`identifierClaims == 0` | AC-60 把这条件红变绿（先观测到 `'2025-03-14'` → 3 个 token，再观测到 0 个）；`identifierClaims == 0` 且 `factClaims > 40` 时记 warn | 低 |
+| **R-33** ★v6 | **`keyMetrics` 再次被漏掉**：重构 `_iter_block_text` 时顺手删掉旧的独立扫描，却忘了新模块要接管 | `ungroundedCount` 比 `factMissing` 大（老字段还在算、新字段没算） | AC-61 用"改坏 keyMetrics 的 2 个数字 → `factMissing` +2"的**方向性**断言，而不是只比两个字段相等（相等也可能两者都错） | 低 |
+
+### 19.9 实施顺序与里程碑（M13–M18）
+
+| 里程碑 | 内容 | 完成判据 | 依赖 |
+| --- | --- | --- | --- |
+| **M13** | `numeric_claims.py`（两阶段分类 + 三个正则所有权）+ `report_validator` 委托改造 + `block_text`/`report_validator` 去重定义 | AC-46/47/48 + **AC-60/61/66** 绿；既有 pytest 不回归；`test_import_cycle` 双向导入通过 | — |
+| **M14** | 前端可信度三层（`TrustBadge`/`GroundingDot`/`BlockFootnote`）+ `lib/grounding.ts` | AC-49/50 绿；axe 零 serious | M13 |
+| **M15** | `block_dates.py` + `GET /reports/{id}/blocks` + brush 联动 + `RangeHint` | AC-53/54 绿 | M13（`block_text` 的 blockId） |
+| **M16** | `ReadingView` + `ReportOutline` + 进度线 + `?view=full` 深链 | AC-51/52 + **AC-64/65** 绿；bundle 预算不回归；**键位与 `HOTKEYS` 零重叠** | M14 |
+| **M17** | 迁移 0003 + `cost_service` + `MonthlyBudgetExceeded` + 闸门（真实端点，插位写死）+ 预估 + `CostPanel` | AC-55/56/57 + **AC-62/63** 绿；`POST /runs` 仍为 405 | M13 |
+| **M18** | `fingerprint` + `comparability`（追加键）+ e2e fake API + 全量回归 + README | AC-58/59 绿；§19.7.3 六条门全过 | M13–M17 |
+
+**顺序理由**：M13 是所有后续的前置（区块 id 与分类都从它出）；M15 与 M16 可以在 M14 之后并行（前者改 K 线侧，后者改报告容器侧，文件不相交）；M17 独立于前端；M18 收口。**不允许颠倒 M18 与其它**——e2e 脱钩越晚，M13–M17 的端到端证据越少。
+
+### 19.10 本轮自检（写完即执行，结果记录在此）
+
+| # | 自检项 | 判据 | 结果 |
+| --- | --- | --- | --- |
+| 1 | O-6 是否成立 | 分类表 14 行是否覆盖 `_iter_block_text` 现有全部分支（paragraph/heading/bullets/callout/metrics/table/chart/quote/timeline/comparables/scenario） | 通过：14 行覆盖 11 个现有分支 + 3 个新增分支（`derived`、`metrics.label`、`chart.xAxis`） |
+| 2 | O-7 是否成立 | `ReportRenderer` 的分派表是否真的不用改 | 通过：新增内容全部在**块外层包装**与 `metrics`/`table` 两个既有组件内部，12 种块的分派键不变 |
+| 3 | O-8 是否成立 | 是否存在任何 `date.today()` / `now()` 进入区间计算 | 通过：`extract_intervals(text, as_of)` 签名强制外部传入；AC-53 用"两次调用相等"守 |
+| 4 | O-9 是否成立 | 闸门是否改动了 `RunManager` 的锁结构 | 通过：只加一次 `can_start()` 调用，语义复用 O-3 |
+| 5 | O-10 是否成立 | `comparability` 是否可能影响 delta | 通过：AC-58 用"三状态 delta 相等"机器化（★v6：断言作用在 `metricsDelta`/`blocksChanged`，因为 `summary` 是字符串） |
+| 6 | 是否违反 `Constraints` | 本轮是否只写了 `docs/plans/investment-research-report/spec.md` | 通过：本轮唯一被改的文件是 `spec.md`（`git status` 只列它），未执行 `git commit` |
+| 7 | 字数与结构 | 是否含 Overview / Technical design / File change plan / Interface / Data model / Testing / Risks 七节 | 通过：§19.1 / §19.3 / §19.4 / §19.5 / §19.6 / §19.7 / §19.8 |
+| 8 | 既有 AC 是否被隐形豁免 | 是否任何 D/E 层表述弱化了 AC-1~AC-45 | 通过：E 层只声明"不做"，D 层全部为附加能力，无一条改写既有 AC 的判据 |
+| 9 | **v6 新查：端点是否为真** | §19 里出现的每一个端点，是否都在这台机器的路由表里（新建的六个除外） | 通过：`POST /runs` 已全部改写为真实入口 `POST /instruments/{id}/reports`；`POST /runs/estimate`、`GET /reports/{id}/blocks`、`GET /cost/summary`、`GET /cost/entries`、`GET /reports/{id}/diff…`（追加键）逐一标注"新增"或"追加" |
+| 10 | **v6 新查：错误码是否唯一** | 新增/引用的每个 `code` 是否与 `errors.py` 既有码冲突 | 通过：`monthly_budget_exceeded` 为新码；`run_conflict` / `too_many_runs` / `report_not_found` 保持既有拼写；`budget_exceeded`（409）不再被复用 |
+| 11 | **v6 新查：依赖是否无环** | `numeric_claims → block_text`、`block_dates → numeric_claims` 是否有反向边 | 通过：三处 import 方向逐一列举，`block_text` 不 import 任何新模块；AC-66 用"两种 import 顺序"守 |
+
+### 19.11 本轮的裁决清单（一句话一条，供下游直接引用）
+
+1. **同业估值是预测，不是事实**：`comparables` 的 `pe/pb/growthPct` **一律 `projection`，无升格通道**。★v6（V6-P1-1）：`Peer` 没有 `sourceRefs` 字段，而"带来源就升格"等于让模型自己签发合格证——被审对象不得当评审。
+2. **只标不改**：未接地的数字永不自动替换（E1）。改数比标错更危险。
+3. **`NULL` ≠ `0`**：`cost.usd` 未知写 `NULL` + `known=0`，汇总里单列 `unknownRuns`，绝不折算成 $0.00。
+4. **账本只追加**：`cost_ledger` 不 UPDATE，唯一键 `(kind, ref_id)` 保证重试幂等。
+5. **账本失败不回滚报告**：`begin_nested()` savepoint，`ledgerGap` 暴露而不是掩盖（模板即 `report_service.py:164` 的 FTS 写法）。
+6. **预算默认不设限**：`BUDGET_MONTHLY_USD=0` 即放行；设了预算也可 `override`，但留痕到 `runs.reason`。
+7. **闸门在真实端点上、在既有冲突检查之后**：★v6（V6-P0-1 / V6-P1-7）`POST /instruments/{id}/reports?override=1`；**不存在** `POST /runs`；插位 = `active_run_for` → `count_active_runs` → `can_start` → `mkdir`；409/429 优先于 402。
+8. **区间不落库**：`/blocks` 随请求计算，避免再造一张会不同步的索引表（§I-27 的教训）。
+9. **`as_of` 驱动，不用 `now()`**：同一份报告的区间反查永久可复现（O-8）。
+10. **年度区间打折**：`year` 类命中按 1/12 权重排序且默认折叠，防止"全部命中"（R-23）。
+11. **全文视图换容器不换渲染器**：`ReportRenderer` 与 12 种块一行不改，块组件禁止读章节上下文（R-29）。
+12. **`?view=` 用 `replace`**：切换阅读模式不污染浏览器历史；★v6（V6-P2-10）且**不得丢掉 `range`**——两者正交。
+13. **指纹只提示不判分**：`comparability` 不改变任何 delta（O-10）；缺指纹时 `same = null` 而不是 false；★v6（V6-P1-2）`deltaUnaffected` 只是承诺，必须靠测试证明。
+14. **模型名截主版本段**参与指纹，避免"换日期后缀就报变更"变成噪音（R-27）；★v6（V6-P1-3）模型名**只参与哈希，不落 `quality.engine`**。
+15. **e2e 脱钩 Python**：fake API 的响应由与后端契约测试共享的 fixture 驱动，单一真源（R-30）。
+16. **老报告不回填**：`quality.grounding` / `quality.engine` 缺失即按缺失渲染，回填会伪造数据。
+17. **阈值纪律**：`0.9` 不变，新增 `MIN_FACT_CLAIMS=5`，样本不足时 `skipped` 明示而不是给一个漂亮的 1.00；★v6（V6-P2-8）`skipped` **优先于** `ratio ≥ 0.9`。
+18. **既有的 `ungroundedCount` 必须与 `grounding.factMissing` 相等**：同一测试守两个字段，防止双源漂移（§I-33 的教训）。
+19. ★v6 **分类是两阶段**：先 token 级**抑制**（标识符、日期、期间标签），再路径级**定性**。v5 把两者写在一张表里，导致"日期 → identifier"这一行**无实现路径**（V6-P1-4）。
+20. ★v6 **分母是 `sections[].blocks[] ∪ doc.keyMetrics[]`**：少算顶层 `keyMetrics` 会让门面数字免于校验，并让第 18 条恒假（V6-P1-5）。
+21. ★v6 **错误码按既有占用情况取值**：新码 `monthly_budget_exceeded`(402)；`budget_exceeded`(409，turns/duration) 与 `run_conflict`(409) 的拼写**一个字都不动**（V6-P0-2 / V6-P1-8）。
+22. ★v6 **正则按语义归属分家，不按"都放一个文件"分家**：`CITATION_RE` 归 `block_text`，数字/日期形状归 `numeric_claims`；方向 `numeric_claims → block_text`、`block_dates → numeric_claims`，无环（V6-P0-3）。
+23. ★v6 **同一事实只存一份**：`model`/`provider` 的权威是 `reports.model|provider` 与 `capabilities.aragon.*`，不写进 `quality.engine`（V6-P1-3）。
+24. ★v6 **新增快捷键不得与 `HOTKEYS` 重叠**：`J`/`K`/`Esc` 已有归属，大纲用 `↑/↓/Home/End` 且只在 `ReadingView` 容器内生效（V6-P1-6）。
+
+### 19.12 与上一轮遗留缺陷的关系
+
+v4 的 `## 实施过程发现的方案缺陷（Iteration 2 · 评审 + 提交）` 一节列出的 **I-25 ~ I-36 与 P2-01 ~ P2-10** 属于**实现正确性缺陷**，由下游实现节点在 M13–M18 的同一批改动中顺带修复，本节不重复设计。其中有三条与本轮设计**直接相关**，在此点名以免被漏：
+
+- **I-31**（`<meta name="aragon-report-generated-at">` 从 RSC 写入，切换版本后仍是旧的）：本轮 G1 引入的 `TrustBadge` 读取的是**当前版本的 `quality`**，若这个 meta 仍按 RSC 快照写入，会出现"徽标说 48/51、页面却是另一个版本"的不一致。**裁决：`TrustBadge` 的数据源只允许来自客户端已加载的 `report.quality`，禁止读 meta**（AC-50 的"无 grounding 数据则不渲染"正是为此）。
+- **I-33**（`CITATION_RE` 三处各写一遍）：本轮把数字/日期正则收进 `numeric_claims.py`，因此 I-33 由同一次改动修掉，`test_boundaries.py` 的新规则 1 就是它的回归守卫。**★v6 修订（V6-P0-3）**：真正"三处各写一遍"的是 `report_validator.NUMBER_RE` / `report_validator.CITATION_RE` / `block_text.CITATION_RE`；收口后**只剩两处**——`numeric_claims`（数字与日期形状）与 `block_text`（引用标记），方向为 `numeric_claims → block_text`，**不是**把三者硬塞进一个文件（那会成环）。
+- **I-34**（`report_service.create_version()` 的 FTS 写入曾无 savepoint）：**★v6 修订（V6-P2-2）——这条已经修好了**。`report_service.py:164` 现在就是 `try: with session.begin_nested(): search_index.reindex_report_payload(...)` + `except` 记日志的形状。所以 D5 的账本写入**不是"补一个 savepoint"，而是"照抄这个模板"**：同一个 `begin_nested()`、同样的 `except` 落日志，两处的写法必须**逐字同型**（AC-57 守账本，既有的 FTS 用例守前者）。若实现者以为这里还欠一个 savepoint 而去再加一层，会得到嵌套 savepoint 且 `ledgerGap` 语义变得无法解释。
+
+**v6 追加：本轮修掉的、与既有代码直接冲突的三处**（这三处是"文档与代码打架"，不属于 v4 遗留）：
+`POST /runs`（V6-P0-1，端点从未存在）、`budget_exceeded`（V6-P0-2，码已被 409 占用）、
+`Peer.sourceRefs`（V6-P1-1，字段不存在）。它们的共同特征是**文档说"扩展/复用"，而那个东西不存在或已被占用**，
+因此修复方式统一为"改成真实存在的东西 + 补一条守门 AC"，而不是"在文档里加一句解释"。
+
+## 评审结论（Review Verdict · Iteration 3）
+
+### 判定
+
+**有条件通过（Approved with Conditions）。**
+
+v5 的**产品判断是对的，不需要推翻任何一条**。§19 要解决的三个读者问题——"这个数字从哪来"、"这份报告整体在说什么"、
+"我这一年花了多少"——正是把 `groundedRatio` 从"一个好看的分数"变成"一条能走回去的路"所必须的；
+`cite` 默认不生成、账本只追加、`NULL ≠ 0`、区间不落库、指纹只提示不判分，这些裁决都是**顶级产品与漂亮 Demo 的分界**，
+v6 一条不改。
+
+判"有条件"而不是"通过"的理由只有一句：**§19 有三处把不存在的东西当成既有事实**——
+`POST /api/v1/runs` 从未存在、`budget_exceeded` 已被 409 占用、`Peer` 没有 `sourceRefs`。
+这三处的共同后果是"照着写必然撞墙，而墙的位置不在代码里、在文档里"：
+其中两处会让**必过 AC（AC-56 / AC-58）恒假**，一处在施工第一小时就引发循环 import。
+这一类错误本项目已经在 V4-P1-4 付过一次代价；v6 已把它们全部就地修成可施工的规格，并补了 7 条守门 AC
+（AC-60~AC-66）把修法机器化。
+
+### 统计
+
+| 项 | 数量 | 处理 |
+| --- | --- | --- |
+| **P0** | 3 | 全部**已就地修复**（带 `v6 修订（V6-Pxx）` 标记） |
+| **P1** | 8 | 全部**已就地修复** |
+| **P2** | 10 | 全部**已顺手改掉**（不留"以后再说"） |
+| 未解决 P0/P1 | **0** | — |
+| 新增 AC | 7（AC-60~AC-66） | 每条都指向一个已验证的具体失败模式 |
+| 新增 oracle 断言 | 3（O-11~O-13） | 把本轮三条裁决变成可反驳的断言 |
+| 新增裁决条目 | 6（第 19~24 条） | 供下游一句话引用 |
+| 被改文件 | **1**（`docs/plans/investment-research-report/spec.md`） | 未触碰任何源码，未 `git commit` |
+
+### 已修复（P0/P1 共 11 条，均已就地写入正文）
+
+| ID | 一句话 | 落点 |
+| --- | --- | --- |
+| V6-P0-1 | `POST /runs` 不存在 ⇒ 闸门改挂真实入口 `POST /instruments/{id}/reports?override=1`；`/runs/estimate` 作为新增子路径 | §19.3.5 / §19.4.2 / §19.5.3 / AC-56 |
+| V6-P0-2 | 402 用新码 `monthly_budget_exceeded`；既有 `budget_exceeded`(409) 与 `RunStatus` 不动 | §19.3.5 / §19.4.2（`errors.py` 行）/ §19.5.3 |
+| V6-P0-3 | 正则按语义归属分家：`CITATION_RE` 归 `block_text`，数字/日期归 `numeric_claims`；方向固定、无环 | §19.3.1 规则 1/2 / §19.12 / AC-66 |
+| V6-P1-1 | 取消 `comparables` 的"带 `sourceRefs` 升格 fact"分支（字段不存在，且等于让模型自证清白） | §19.3.2 分类表 / §19.11 第 1 条 |
+| V6-P1-2 | `diff_docs`（非 `diff_documents`）、`a`/`b`、`summary: str`；`comparability` 只追加并带 `deltaUnaffected` | §19.3.6 / §19.4.2 / §19.5.5 / AC-58 |
+| V6-P1-3 | `capabilities.engine` 是**新增对象**且只带四项；`model`/`provider` 不写第三份 | §19.3.2 JSON / §19.3.6 / §19.5.6 / O-13 |
+| V6-P1-4 | 分类改两阶段：token 级先剔除日期/标识符，路径级再定性 | §19.3.2 / §19.0 O-12 / AC-60 |
+| V6-P1-5 | 分类表补 `doc.keyMetrics[].value` 与 `.label`；分母写死为 `sections[] ∪ keyMetrics[]` | §19.3.2 / AC-61 |
+| V6-P1-6 | 大纲导航改 `↑/↓/Home/End` 且容器内生效；`Esc` 捕获阶段单键单义 | §19.3.4 / AC-65 |
+| V6-P1-7 | `can_start` 插位写死（两个既有冲突检查之后、`mkdir` 之前）；409/429 优先于 402 | §19.3.5 / §19.4.2 / §19.5.3 / AC-62 |
+| V6-P1-8 | 409 码用既有 `run_conflict`；202 体是 `{runId,status,instrumentId}` + `estimateUsd`，不加 `streamUrl` | §19.5.3 / §19.7.3 第 7 条 |
+
+### 通过的条件（Implementation Conditions，必须逐条满足才算 Done）
+
+前五条沿用 v4 未失效的条件（C-8~C-12 见上一节评审结论），本节点新增：
+
+- **C-13（唯一创建入口）**：生成只能从 `POST /instruments/{id}/reports` 发起。`POST /api/v1/runs` 必须保持 **405**，
+  且**不得**为预算闸门新建第二个创建入口（否则 O-3/O-9/O-11 同时作废）。核验：`curl` 状态码 + `rg "prefix=\"/runs\"" -A20` 人工比对。
+- **C-14（码与字段零改名）**：`budget_exceeded`(409)、`run_conflict`(409)、`too_many_runs`(429) 三个字面量，
+  以及 `DiffResult.a/.b/.summary`、`CreateReportResponse` 的三个既有键，**一个字都不改**；
+  新增的只有 `monthly_budget_exceeded`(402)、`comparability`、`estimateUsd`。判据：`web/tests/useGenerationStream.test.ts`
+  一行不改仍绿 + §19.7.3 第 7 条的人工 diff。
+- **C-15（两阶段分类）**：AC-60 的日期抑制用例必须先红后绿——即在 `numeric_claims` 落地前，
+  用现有 `report_validator._numbers_in_text()` 跑 `'2025-03-14'` 能观察到 `['2025','-03','-14']`
+  （本机已实测），落地后只剩 `[]`。**没有观测到这条红的实现，视为没做。**
+- **C-16（分母一致）**：AC-61 必须证明 `doc.keyMetrics` 的两个数字被计入分母（改坏它们 → `factMissing` +2）。
+  仅"测试全绿"不算，要看断言的方向。
+- **C-17（键位零重叠）**：`ReadingView` 的键位与 `HOTKEYS` 交集为空；按 `J` 仍切标的。**不接受**"加了 stopPropagation 就不算冲突"。
+- **C-18（单一事实落点）**：`quality.engine` 不得出现 `model`/`provider`；`capabilities.engine` 不得出现 `cliVersion/version`
+  之外的引擎名副本（`aragon.version` 是权威）。判据：`test_boundaries` 加一条"`quality.engine` 的键集合 == 四元组"。
+
+### 遗留（不阻塞，已记录）
+
+- §19.8 的 **R-21~R-30** 全部保留，v6 只补了三条与修订对应的缓解（见 §19.8 表格末尾的 ★v6 行）。
+- **R-28 的右则化压力上升**：v6 增加了 7 条 AC 与 3 个测试文件，但**没有增加任何新能力**——新增的全是"把已有设计钉死"的守卫。
+  若 M13–M18 出现时间压力，可压缩的仍是 D6/D7（指纹提示、e2e 标准化），**不可压缩的是 M13**（分类与分母是其余全部的地基）。
+- §19.12 里点名的 I-25~I-36 仍由实现节点顺带修；v6 只纠正了与 I-33/I-34 相关**已过时的一处口径**（I-34 已修）。
+
+### 一句话给实现节点
+
+**先把 `numeric_claims` 的两阶段分类与分母集合钉对（AC-60/61/66），再往上盖任何界面**——
+这一层错了，上面每一块都会漂亮地展示错误的信任度；而闸门、指纹、全文视图都可以晚一步，它们错了只是不好用，不会误导。
+
+**一句话给产品负责人**
+
+v6 之后，读者能把"未接地的 3 个数字"点回到具体的表格格子里，能一次读完整条论证链，能在超预算前看到"本月还剩 $1.58"——
+**报告从此可以被质疑**。一份不能被质疑的投研报告，本来也不该被信任。
+
+## 实施过程发现的方案缺陷（Iteration 3 · 实现节点）
+
+> 本节按任务 `Constraints` 第 3 条追加：**不静默偏离**，每一条都写清"文档说什么 / 代码里是什么 /
+> 怎么改的 / 判据有没有变"。§19 的裁决**一条都没有被推翻**，被改的只有三处"文档自己的算术"
+> 与一处"文件名归属"。
+
+### I-37 · AC-60 的字面清单算错了两个数（口径未变，数字要改）
+
+**文档说**（§19.7.2 AC-60）：`strip_identifiers('2025-03-14 公告，2025 年营收 12.3 亿，RSI(14)=62，Q3 环比 +15.2%')`
+之后"只剩 `['12.3','15.2']` 两个 claim"，且 `identifierClaims == 5`。
+
+**实测**（`api/tests/test_numeric_claims.py::test_phase_a_strips_dates`）：
+
+* 剩下的 fact claim 是 **三个**：`12.3`、**`62`**、`15.2`。`62` 是 `RSI(14)` 的**取值**——它是测量值，
+  必须留在分母里；把它一起剔掉等于给"模型随手写一个 RSI 读数"开了免检通道（O-6 的漏检方向）。
+* 被剔除的片段是 **4 段**：`2025-03-14`、`2025 年`、`RSI(14)`、`Q3`（`2025-03-14` 是一个整体，
+  不是三段；v5 的"3 段 + 2025 年 + Q3"是把阶段 A 之前的 token 化结果当成了阶段 A 之后的）。
+
+**裁决**：判据（**日期一个都不许进分母**）不变，测试断言改成实测的三个数字与四段剔除。
+这不是"放宽"，`['2025','-03','-14']` 这条原始失败仍然被这条件红变绿守着（C-15）。
+
+### I-38 · `RangeHint` 的归属：`PricePanel` 没有 `reportId`
+
+**文档说**（§19.4.4）：`web/components/chart/PricePanel.tsx` —— "接管 brush 状态并渲染 `RangeHint`"。
+
+**代码里**：`PricePanel` 的 props 里没有任何报告信息（它连 `reportId` 都拿不到），而 `RangeHint`
+必须调 `GET /reports/{id}/blocks`。要让图表组件知道"当前读的是哪份报告"，等于给它加一条
+跨三层的隐式耦合——正是 §19.3.1 分层图要避免的。
+
+**裁决（就地修正）**：职责按"谁有数据谁渲染"切分——
+
+* `CandleChart` 只负责**输入**：新增 `brushEnabled` / `onBrushRange`，容器上挂 pointer 事件
+  （不盖遮罩，所以十字光标与拖拽平移一行不改），矩形是 `pointer-events-none` 的浮层；
+* `PricePanel` 只**上行** `onBrushRange`，并在图表下方显示"当前框的是哪一段"；
+* `RangeHint` 落在 `ReportPanel`（报告头下方、章节内容之上），因为它才持有 `reportId`。
+
+这与 §19.5.7 的"联动条出现在报告头下方、两种视图位置相同"完全一致，且 `view` / `range` 正交
+（AC-64）由 `WorkspaceClient` 的两个独立 setter 保证。
+
+### I-39 · AC-35 真的会超：v6 的静态引入把首屏顶到 242.3 kB
+
+**现象**：M13–M18 实现完成后，`check-bundle` 报 `243.2 kB > 240`（v4 是 237.2）。这**不是**
+新组件太大，而是三处"按默认方式引入"的必然结果：
+
+1. `TrustBadge` 与 `BlockFootnote` 直接 `import` 进 `ReportPanel` / `ReportRenderer`；
+2. `CommandPalette` 从 v1 起就是**静态**打包的（v4 把 `SearchDialog` / `ScheduleDialog` /
+   `CompareView` 都 `next/dynamic` 了，唯独漏了它）。
+
+**裁决**：可信度层的两件（`TrustBadge` / `BlockFootnote`）改为 `next/dynamic({ssr:false})`——
+它们本来就只在"这份报告有 `quality.grounding`"时才需要；`CommandPalette` 一并 lazy（它是浮层，
+只在 ⌘K 时出现）。结果 **238.5 kB / 240 kB**，八个面板全部不在首屏 chunk。
+
+**顺带把 AC-52 变成双向判据**：`check-bundle.mjs` 除了断言"不在首屏"，还断言
+`ReadingView` / `RangeHint` / `CostPanel` **必须**出现在 `react-loadable-manifest.json` 里——
+"不在首屏"也可能意味着"根本没实现"，只查前者会给出虚假的绿色。
+
+### I-40 · AC-50 分支② 用 `ratio >= 0.9`，不是 `factMissing === 0`
+
+**文档说**（AC-50）：①`skipped` → 数字太少；②`ratio ≥ 0.9` → 「已核验 48/51」；③否则 → 琥珀。
+
+**初版实现**用了更严的 `factMissing === 0`，于是 §19.3.2 里那份**样例报告本身**（`groundedRatio 0.94`、
+3 个未接地）会显示琥珀，而不是文档写的「已核验 48/51」——**规格自己的样例会被自己的判据判红**。
+
+**裁决**：按文档改成 `ratio ≥ 0.9`，并新增一条分界测试（`48/51 = 0.94` → 已核验；`45/51 = 0.88` → 未达标）。
+未接地的 3 个数字**不会因此消失**：展开面板、块脚注、表格圆点照常逐条列出。同时把阈值常量
+`GROUNDED_THRESHOLD = 0.9` 放在 `web/lib/grounding.ts` 并注明"与后端同一个数"——两处各自发明
+一个阈值，就会出现"报告没被判降级、徽标却在报警"。
+
+### I-41 · `report_not_ready`（409）语义被复用，别再新造一个码
+
+`/reports/{id}/blocks` 的文档要求"报告处于生成中 → 409 `report_not_ready`"。既有的
+`errors.ReportNotReady` 是 409，但文案是"临时版或降级版，请先重新生成再深度追问"。
+
+**裁决**：复用这个**类**（码与状态都不变），由端点在构造时覆写文案（"报告仍在生成中，暂无可反查的内容"）。
+新增一个同状态同语义的类只会让前端多一个分支。
+
+### I-42 · mock 模式下 `quality.engine` 必然缺席 —— 这是正确行为，不是 bug
+
+`capabilities.engine.fingerprint` 由 `preflight` 的 `aragon info --json` 推导；`AGENT_MODE=mock`
+（含全部测试与 e2e）下没有 CLI，所以指纹为 `null`，报告的 `quality.engine` 也缺席，
+于是两版比较永远是 `comparability.same = null`（灰色提示）。
+
+**这**是对的：指纹的意义是"证明这两版由同一个引擎产出"，拿不到就说不确定，绝不伪造一份
+（O-13）。README 的"常见故障排查"里已写明这条，避免读者以为功能坏了。
+
+### I-43 · `budget_override` 只能由端点写，不能由请求体写
+
+`run.reason` 是 `String(16)`，`"budget_override"` 15 字符放得下；但 `CreateReportRequest.reason`
+是 `Literal["manual","refresh"]`（既有契约）。因此覆盖标记由端点在 `manager.start()` 返回后
+按"本次是否带 `?override=1` 且确实超限"覆写，请求体一个字段都不加——
+这样"留痕"无法被客户端伪造（不能声称自己覆盖过而实际没有）。
+
+### 实施后的自检结论（对照 §19.10）
+
+| # | 项 | 结果 |
+| --- | --- | --- |
+| 1 | 分类表覆盖全部既有分支 | 通过：16 行全部落地，`_iter_block_text` 降级为纯散文迭代器（`metrics`/`comparables`/`scenario` 分支已移除） |
+| 2 | `ReportRenderer` 分派表未改 | 通过：12 种块一个分支没加，脚注在**块外层**，`GroundingDot` 在两个既有组件内部 |
+| 3 | 区间计算无 `date.today()` | 通过：`extract_intervals(text, as_of)` 强制外部传入；AC-53 用"两次调用相等"守 |
+| 4 | 闸门未改锁结构 | 通过：只加一次 `can_start()` 调用，插位 = `active_run_for` → `count_active_runs` → `can_start` → `mkdir` |
+| 5 | `comparability` 不影响 delta | 通过：`compare_engine_quality` 是纯函数，不接触 `metricsDelta` / `blocksChanged`；测试断言三态下这些字段逐字相等 |
+| 6 | **唯一创建入口** | 通过：`POST /api/v1/runs` 仍为 405，闸门挂在 `POST /instruments/{id}/reports` |
+| 7 | 键位零重叠 | 通过：`READING_VIEW_KEYS ∩ HOTKEYS = ∅`，`j/k` 仍切标的 |
+| 8 | 导入无环 | 通过：`numeric_claims → block_text`、`block_dates → numeric_claims`，两种顺序各跑一次 |
+
+### I-44 · 阶段 A 的**顺序**写反了：日期必须先于标识符剥离（真实报告实测）
+
+**文档说**（§19.3.2 / §19.3.1）：阶段 A "先 `IDENTIFIER_RE`（`RSI(14)` / `MA20` / `Q3`），
+再 `DATE_LIKE_RE`"。照字面实现在**真实模型输出**上连坏两处：
+
+| 现象 | 原因 | 实测 |
+| --- | --- | --- |
+| `26Q1` 变成 fact claim `26` | `Q1` 先被标识符正则（`[A-Za-z]{1,8}\d{1,4}`）吃掉，剩下的 `26` 已不是日期形状 | 一份真实报告里 `26` 出现 **28 次**、`25` 5 次 |
+| `2026-11-16T18:02:30Z` 变成 `-11` / `-16` / `18` / `02` / `30` | 同上：`of 2026` 先被吃掉，日期形状已不存在 | `thesis#0` 第一句就贡献 5 个假 claim |
+
+**裁决**：把顺序改成 **`DATE_LIKE_RE` → `IDENTIFIER_RE`**，并把 `DATE_LIKE_RE` 补三种形态
+（ISO 时间戳含时间部分、裸时刻 `18:02:30`、`9M26` / `M26` / `N 个月`）。反过来不会损坏标识符：
+`MA20` / `RSI(14)` / `PE(TTM)` 都不含日期形状，日期先跑一遍对它们没有任何影响。
+
+**为什么这不是"给文档打补丁"而是修一个真 bug**：O-12 已经写明"某个日期形态漏网，就把它加进
+`DATE_LIKE_RE` 并补一条 AC-60 的用例，**不允许**用白名单继续打补丁"。这里漏的不是形态，是**顺序**，
+所以修顺序 + 补形态 + 补两条回归用例（`test_phase_a_strips_iso_timestamps_whole` /
+`test_phase_a_strips_two_digit_periods_before_identifiers`）。
+
+**效果**（同一份真实报告，v11）：`factClaims 323 → 270`、`factMissing 141 → 103`、
+`groundedRatio 0.563 → 0.619`。**剩下的 103 条是真实的可疑数字**（模型自己算出的
+「三情景概率加权中枢 1715.42」「相差 5.47%」、以及来自 S3 年报但快照未收录的同比
+`-0.25%` / `+1.82%`），它们本来就该被标出来——这正是 G1 的承诺：**报告从此可以被质疑**。
+
+### I-45 · `report_blocks` 的 `report_not_ready` 与"生成中"状态的实际取值不同
+
+§19.5.2 写"报告处于生成中 → 409"。但 `Report.status` 的取值域是
+`ready | degraded | provisional | superseded`（`models/report.py`）——**没有** `running`。
+"生成中"是 `Run` 的状态，不是报告的。端点因此按 `report.status in ("queued", "running")`
+判断（对未来的状态扩展是安全的），今天这个分支不会被触发，但**保留**它，因为
+"报告不可读"的语义必须有人在 409 上说清楚，而不是让前端去猜一个空 `items` 是不是坏了。
+
+### 实施后的自检结论（对照 §19.10）
+
+| # | 项 | 结果 |
+| --- | --- | --- |
+| 1 | 分类表覆盖全部既有分支 | 通过：16 行全部落地，`_iter_block_text` 降级为纯散文迭代器（`metrics`/`comparables`/`scenario` 分支已移除） |
+| 2 | `ReportRenderer` 分派表未改 | 通过：12 种块一个分支没加，脚注在**块外层**，`GroundingDot` 在两个既有组件内部 |
+| 3 | 区间计算无 `date.today()` | 通过：`extract_intervals(text, as_of)` 强制外部传入；AC-53 用"两次调用相等"守 |
+| 4 | 闸门未改锁结构 | 通过：只加一次 `can_start()` 调用，插位 = `active_run_for` → `count_active_runs` → `can_start` → `mkdir` |
+| 5 | `comparability` 不影响 delta | 通过：`compare_engine_quality` 是纯函数，不接触 `metricsDelta` / `blocksChanged`；测试断言三态下这些字段逐字相等 |
+| 6 | **唯一创建入口** | 通过：`POST /api/v1/runs` 回 **405**（`runs.py` 显式注册了一条只回 405 的路由，见 I-46），闸门挂在 `POST /instruments/{id}/reports` |
+| 7 | 键位零重叠 | 通过：`READING_VIEW_KEYS ∩ HOTKEYS = ∅`，`j/k` 仍切标的 |
+| 8 | 导入无环 | 通过：`numeric_claims → block_text`、`block_dates → numeric_claims`，两种顺序各跑一次 |
+| 9 | **真实生成一次** | 通过：run `35bf7e07…` 真实跑通（v11 ready/`degraded`），`quality.grounding` 有 270 claim / 103 缺失 / 273 标识符 / 6 预测，样本逐条带 `blockId`；`quality.engine` = `{fingerprint: 027e08b11509, cliVersion: 0.6.68, allowTools×5, schemaBytes: 18392}` 恰好四元组 |
+
+### I-46 · `/runs` 根路径原本回 **404**，而 C-13 的回归门要求 **405**
+
+`routers/runs.py` 只有 `GET /{run_id}`、`POST /{run_id}/events-token`、`POST /{run_id}/cancel`；
+`/runs` 这个**路径**上一个方法都没注册，Starlette 于是回 404 `not_found`——语义是"地址写错了"，
+而这里要说的恰恰是"地址对了，但这个动作不允许"。
+
+**裁决**：在 `runs.py` 显式注册一条 `POST /runs` → **405**，body 里写明"生成只能从
+`POST /api/v1/instruments/{id}/reports` 发起"。它**不创建任何东西**，但把 R-31 描述的那个
+失败模式（"因为 `POST /runs` 不存在，最省事的实现就是顺手新建它"）挡在了第一秒：
+下一个人打开 `runs.py` 就会看到这条 405 与它的理由。
+
+### 已知的、**不修**的一处（范围内无法修）
+
+预算闸门的预估依赖 `pricing.price_for(model)`。本机真实运行的模型是 `deepseek-flash`，
+它不在价格表里，于是 `/runs/estimate` 诚实地回 `{estimatedUsd: null, reason: "no_price"}`，
+闸门退化成"只看已花费"。**这是设计**（§19.5.4"永不返回 0 冒充已知"），不是 bug：
+给不认识的模型编一个单价，比没有预估更危险。要让它生效，只需往
+`api/app/agent/pricing.py::PRICES` 里加一行**真实**单价——那需要产品方提供价目，
+不是实现节点能拍的。
+
+---
+
+## 评审节点发现的缺陷（Iteration 3 · 最终评审 · 就地修复）
+
+本节记录**评审节点**在逐条比对 §19 设计与实际代码时发现的 10 处缺陷。它们的共同特征与 §19.12
+的三处同型：**文档写了、代码也写了，但两者说的不是一件事**。每一条都**已就地修复**，并补了一条
+能挡住的回归用例；编号接续 §19 的 I-37~I-46。
+
+### I-47 · 框选与图表平移抢同一个手势（前端 · D3）
+
+`CandleChart` 的 `handleScroll` 是 `{ mouseWheel: true, pressedMouseMove: true }`——**左键拖拽本身
+就是平移**。而 brush 交互层把 `pointerdown/move/up` 挂在同一个容器上、且不区分修饰键，于是普通拖拽
+同时做两件事：图表在光标下平移、矩形也跟着画。松手时 `timeScale().coordinateToTime()` 换算的是
+**已经被平移改过**的坐标，结果是
+
+* 框出来的是另一段行情（用户看到 A 段，写进 URL 的是 B 段）；
+* 每一次平移都顺手发一次 `/reports/{id}/blocks` 并改写 `?range=` —— 读者只是想看看左边那几根蜡烛，
+  报告里却突然多出一条「关联 N 段」。
+
+**修复**：框选改为 **`Shift` + 拖拽**（`event.shiftKey` 为假时 `pointerdown` 直接返回），普通拖拽
+完整保留平移语义；`copy.range.brushHint` 改成自解释的「按住 Shift 在 K 线上拖拽框选一段」；
+e2e 的框选步骤补 `keyboard.down('Shift')` / `up('Shift')`。`RangeHint` 与 `useBrushRange` 一行未改
+（它们只认 `{from,to}`，不关心手势怎么来）。`Shift` 是这套 UI 里唯一空闲的修饰键：`Ctrl/⌘` 归浏览器、
+`Alt` 归系统菜单。
+
+### I-48 · 框选缺 pointer capture，拖到图表外松手会留下"幽灵起点"（前端 · D3）
+
+没有 `setPointerCapture` 时，拖到图表外面再松手**收不到** `pointerup`，`brushStartRef` 永远留着
+上一次的起点 —— 之后每一次掠过图表都在画框，而松手时又用那个旧起点算出一个用户没框过的区间。
+
+**修复**：`pointerdown` 里 `setPointerCapture(pointerId)`，`pointerup` 里配对 `releasePointerCapture`。
+
+### I-49 · `IDENTIFIER_RE` 的 `\s*` 让「PE 24 倍」这类整数门面数字整条消失（后端 · D1）
+
+第一版正则把字母与数字**跨空格**连成一个标识符：
+
+```python
+r"[A-Za-z_]{1,8}\s*[（(]?\s*\d{1,4}(?:\s*[，,]\s*\d{1,3})?\s*[)）]?(?![\d.,])"
+```
+
+于是 `"PE 24 倍，PB 4 倍"` 里的 `PE 24` 整段被阶段 A 剔除 —— `24` 既不进 `factClaims` 也不进任何
+分母，**彻底消失**（O-6 点名的"漏检方向"）。尾部的 `(?![\d.,])` 只救下了带小数的 `PE 24.1`，
+而真实投研报告里整数写法更常见。
+
+**修复**：数字必须**与字母贴合**或**落在括号里**才算参数（`MA20` / `RSI(14)` / `BOLL(20,2)`），
+空格分隔一律当测量值：
+
+```python
+r"[A-Za-z_]{1,8}(?:[（(]\s*\d{1,4}(?:\s*[，,]\s*\d{1,3})?\s*[)）]|\d{1,4})(?![\d.,])"
+```
+
+补用例 `test_integer_valued_metrics_survive_the_identifier_phase`（`"PE 24 倍，PB 4 倍"` → `["24","4"]`）。
+
+### I-50 · `derived` 类既不进分母也进不了合法文档（后端 · D1）
+
+两处不一致：①spec 分类表第 16 行写的是「**计入分母**但单独计数」，落地时只加了 `derived_claims`，
+于是推算值既不进 `factClaims` 也不进 `factMissing` ——「单独计数」变成了「免于核查」；
+②触发条件是 `block.get("derived") is True`，而块 schema（`agent/schemas/report_doc.schema.json`）
+`additionalProperties: false` 且未声明 `derived`，所以这条分支在**今天的合法文档上恒为 false**，
+`derivedClaims` 永远是 0。
+
+**修复**：derived 与 fact 走同一张账（进分母、未命中进分母缺口），只额外多记一个 `derivedClaims`
+供 UI 标「推算」；分支**保留但不声称可达**，并在代码注释与本节写清「schema 补上该字段即可生效，
+删掉则等于把分类表第 16 行永久作废」。不补 schema 的理由与 V6-P1-1 同型：`derived` 由模型自己填，
+等于让被审对象给自己减负，落地前必须先有一次裁决。
+
+### I-51 · `verified` 态会打印"所有数字都能在快照里找到依据"这句假话（前端 · D2）
+
+I-40 把徽标分支②放宽成 `ratio >= 0.9`，所以 `48/51`（3 个数字未接地）也算 `verified`。此时展开
+面板里同时出现「已核验 48/51」和「所有数字都能在快照里找到依据」——后者是假话，而 I-40 的裁决
+恰恰是「未接地的 3 个数字不会因此消失」。原用例用 `factMissing: 0` 构造，正好绕过了这个组合。
+
+**修复**：`if (state.kind === 'verified' && state.ok === state.total) notes.push(copy.trust.none)`，
+补用例 `★I-51`（`factClaims=51, factMissing=3` 展开后**不出现** `copy.trust.none`，但「仅列前 N 个块」
+仍在）。
+
+### I-52 · 指标卡给每个数字都盖了「已在快照中找到依据」的章（前端 · D2）
+
+`MetricGrid` 之前恒定渲染 `GroundingDot grounded={!ungrounded}`。而 `samples` 只有前 20 个块
+（R-22），所以「不在 missing 里」被当成了「已核验」：`quality` 为 `null` 的早期报告也一样渲染
+`grounded` 点，`aria-label` 变成「1672.00：已在快照中找到依据」。这与 `lib/grounding.ts` 自己写下的
+纪律（"绝不能反过来把其余格子渲染成'已核验'的盾牌"）直接冲突，也与同批 `TableBlock` 的做法不一致，
+而门面数字正是最不该被假安心的位置。
+
+**修复**：只在**确认未接地**时挂点（`{ungrounded ? <GroundingDot ... /> : null}`），与 `TableBlock`
+同型；补 3 条用例（无 grounding / 该块不在样本里 / 真的在样本里）。
+
+### I-53 · 点顶层 `keyMetrics` 样本会把正文变成空白（前端 · D1/D2）
+
+后端给 `doc.keyMetrics[]` 的未接地数字用固定 blockId `keyMetrics`（它挂在文档根上，**不是**
+`<sectionId>#<index>`）。而徽标的 `jumpToBlockById` 无条件 `sectionIdOf(blockId)` +
+`setActiveSection(sectionId)`：
+
+* `activeSection === 'all'` 时：`querySelector('[data-block-id="keyMetrics"]')` 为 `null`，点了没反应；
+* 已经在某个章节 Tab 时：`setActiveSection('keyMetrics')` 让 `visibleSections` 过滤成空数组，
+  **整篇正文消失**，且没有任何 Tab 是 `aria-selected`（实测：`role=tabpanel` 的 id 变成
+  `report-section-keyMetrics`）。
+
+顺带一处遗漏：`doc.keyMetrics` 这张门面卡本身**完全没有接 grounding**（无 `data-grounded`、
+无脚注），而它恰恰是 §19.3.2 专门补进分母的两个大数字。
+
+**修复**：`jumpToBlockById` 先用 `parseBlockId()` 判定 —— 不是真块 id 就只"高亮 + 滚到它"，
+**不碰** Tab 状态；门面卡补 `data-block-id` / `quality` / `blockId`（blockId 常量收在
+`web/lib/blocks.ts::KEY_METRICS_BLOCK_ID`，镜像后端的字符串，避免第二份真源）；补用例 `★I-53`，
+并已实测"去掉守卫后该用例失败"（`report-section-keyMetrics`）。
+
+### I-54 · 预算闸门会把定时刷新**永久关掉**（后端 · D5）
+
+闸门插进 `RunManager.start()` 之后，402 会出现在**定时触发**路径上。而 `scheduler_ticker._trigger`
+只对 `TooManyRuns` / `RunConflict` 做 defer，其余异常落进 `except Exception` →
+`record_failure()`，而 `MAX_FAILURES = 3` 一到就 `schedule.enabled = 0`。于是：**用户这个月花超了，
+一年期的自动刷新被永久禁用**，还留下 3 条 `logger.exception` 假异常。
+
+**修复**：`except MonthlyBudgetExceeded` → 只 `defer(minutes=5)` + 一条 `logger.info`（带 `spentUsd` /
+`budgetUsd`），**不计失败次数**；语义与 409/429 一致：现在开不了，晚点再说。补用例
+`test_budget_gate_pauses_a_scheduled_run_without_counting_a_failure`（`enabled` 仍为 1、
+`failure_count == 0`、租约已释放、没有留下 run 行）。
+
+### I-55 · `cost_ledger.known` 用 `Boolean` + `DEFAULT 1`，PostgreSQL 分支建表必然失败（后端 · D5）
+
+`0003_cost_ledger` 写的是 `sa.Boolean(), nullable=False, server_default=sa.text("1")`，模型同样是
+`Boolean` + `text("1")`。两个问题叠在一起：
+
+* **本仓所有布尔列一律是 `Integer`**（`0001_init` 的 `cost_known` / `cancel_requested` /
+  `is_latest` / `pinned` / `archived`），这是唯一既有约定；
+* PostgreSQL 上 `BOOLEAN NOT NULL DEFAULT 1` 是硬 DDL 错误（`default expression is of type integer`），
+  于是该迁移自称的"SQLite/Postgres 双分支"在 PG 上 upgrade 就挂，而 `test_*_postgres_*` 用例因
+  `TEST_POSTGRES_URL` 缺失默认 skip，永远发现不了。
+
+**修复**：迁移与模型都改成 `Integer` + `server_default="1"`，与全仓一致；`record()` 传的 `1/0`
+保持不变（它本来就是按 Integer 写的）。
+
+### 实施后的自查
+
+| # | 项 | 结果 |
+| --- | --- | --- |
+| 1 | 每条缺陷都有回归用例 | 通过：I-47/48（e2e 手势 + 指针捕获）、I-49（pytest 1 条）、I-50（pytest 1 条扩写）、I-51（vitest 1 条）、I-52（vitest 3 条）、I-53（vitest 1 条，已验证"无守卫时必失败"）、I-54（pytest 1 条）、I-55（迁移用例沿用） |
+| 2 | 既有 AC 不回归 | 通过：`pytest` 全绿、`vitest` 全绿（数量只增不减）、`tsc` / `eslint` / `ruff` / `next build` / `check-bundle` 全绿 |
+| 3 | 未改任何既有错误码/字段名 | 通过：`budget_exceeded`(409)、`run_conflict`(409) 与 `202` 体三字段一字未动；只新增 `monthly_budget_exceeded`(402) 与 `estimateUsd` |
+
+### I-56 · `doc.asOf` 缺失会把**绝对**日期也一起丢掉（后端 · D3）
+
+`iter_block_hits` 写的是 `intervals = block_intervals(block, as_of) if as_of else []`。
+`as_of` 只是**相对**期间（`近一年` / `TTM`）的锚点，而 `2025-03-14`、`2025Q3` 这些
+绝对日期本来就不需要它。旧写法把“拿不到锚点”当成了“这段话里没有时间”：
+一份 `asOf` 缺失/无法解析的报告，区间反查永远返回 `items: []`，而读者只会以为
+“这段行情没被提到”—— 这正是 §19.0 “降级永不上抛”要消除的那种静默错误。
+
+**修复**：`extract_intervals` / `block_intervals` / `_relative_interval` 的 `as_of` 改为
+`date | None`，只有相对期间在 `as_of is None` 时返回 `None`（不猜，O-8）；
+`iter_block_hits` 不再因为锚点缺失而整体跳过。补用例
+`test_absolute_dates_still_match_when_as_of_is_missing`（`近一年` + `None` → `[]`；
+`2025Q3` + `None` → 季度区间；端到端 `iter_block_hits` 命中 `news#0`）。

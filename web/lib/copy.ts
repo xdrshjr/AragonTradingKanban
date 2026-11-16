@@ -320,6 +320,88 @@ export const copy = {
     retryWhenOnline: '联网后重试',
     online: '已恢复联网',
   },
+
+  /* ── G1 可信度（D2） ────────────────────────────────────────────────────── */
+  trust: {
+    /** 三态文案**按固定优先级**取值：skipped → 已核验 → 未接地。 */
+    verified: '已核验 {ok}/{total}',
+    missing: '{count} 个数字未找到依据',
+    insufficient: '数字太少，未评估',
+    label: '数字可信度',
+    expand: '查看未接地的数字',
+    collapse: '收起',
+    jump: '跳到该处',
+    more: '仅列前 {shown} 个块，共 {total} 处',
+    projections: '另有 {count} 个预测值（同业估值 / 目标价，不进核验）',
+    identifiers: '另有 {count} 处是方法参数或日期',
+    derived: '其中 {count} 个为推算值',
+    none: '所有数字都能在快照里找到依据',
+    noData: '这份报告没有数字核验记录（早期版本）',
+    footnoteAll: '{count} 个数字 · 全部可追溯',
+    footnoteMissing: '{count} 个数字 · {missing} 个未接地',
+    sampleRaw: '原值 {raw}',
+    dotMissing: '{value}：未在快照中找到依据',
+    dotGrounded: '{value}：已在快照中找到依据',
+  },
+
+  /* ── G2b 全文视图（D4） ─────────────────────────────────────────────────── */
+  reading: {
+    mode: '阅读模式',
+    tabs: '章节',
+    full: '全文',
+    outline: '大纲',
+    outlineHint: '↑↓ 选择 · Home/End 首尾 · 回车跳转 · Esc 返回',
+    outlineCount: '{count} 块',
+    progress: '阅读进度 {pct}%',
+    jumpToBlock: '跳到该段',
+    emptySection: '本章暂无内容',
+  },
+
+  /* ── G2a 区间联动（D3） ─────────────────────────────────────────────────── */
+  range: {
+    title: '区间联动',
+    hint: '{from} ~ {to} · 关联 {count} 段',
+    empty: '这段行情在报告里没有被提及',
+    clear: '清除区间',
+    more: '仅显示前 {shown} 段（共 {count} 段）',
+    invalid: '区间无效，已清除',
+    loading: '正在反查相关段落…',
+    timeout: '未找到关联段落',
+    provisional: '这是一份临时版报告，没有可反查的段落',
+    yearFolded: '另有 {count} 段仅涉及该年度',
+    brushHint: '按住 Shift 在 K 线上拖拽框选一段，反查报告里的相关段落',
+    jump: '在报告里定位',
+    failed: '区间反查失败',
+  },
+
+  /* ── G3 成本治理（D5） ──────────────────────────────────────────────────── */
+  cost: {
+    title: '成本',
+    open: '成本…',
+    windows: { '7d': '近 7 天', '30d': '近 30 天', '90d': '近 90 天', mtd: '本月', ytd: '今年' },
+    spent: '已知花费 ${usd}',
+    unknownRuns: '另有 {count} 次成本未知',
+    byKind: '按类型',
+    byModel: '按模型',
+    budget: '月度预算',
+    budgetUnlimited: '未设上限',
+    budgetRemaining: '本月剩余 ${usd}',
+    budgetResetAt: '重置于 {time}',
+    save: '保存预算',
+    saved: '预算已保存',
+    gap: '有 {count} 条账本记录未写入（报告不受影响）',
+    empty: '暂无成本记录',
+    loadFailed: '成本加载失败',
+    estimate: '本次预估 ${usd}',
+    estimateUnknown: '无法预估本次成本',
+    gateTitle: '本月预算已用完（${spent}/${budget}）',
+    gateBody: '本次预估 ${estimate}。仍然生成会把这次花费记进账本。',
+    gateOverride: '仍然生成',
+    gateCancel: '取消',
+    overridden: '已按预算覆盖继续生成',
+    kinds: { run: '生成', ask_deep: '深度追问' },
+    state: { ok: '额度充足', near: '接近上限', exceeded: '已超上限', unlimited: '不限额' },
+  },
 } as const;
 
 export type Copy = typeof copy;

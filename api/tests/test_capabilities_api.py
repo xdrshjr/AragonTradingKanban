@@ -78,8 +78,12 @@ def test_missing_cli_switches_to_mock(capability_client) -> None:
 
 def test_capabilities_shape_is_stable(capability_client) -> None:
     body = capability_client()
-    assert set(body) == {"aragon", "agentMode", "dataProviders", "features", "limits"}
+    # ★v6：新增顶层 `engine` 对象（V6-P1-3：它是**新增**的，不是给既有对象加字段）。
+    assert set(body) == {"aragon", "agentMode", "dataProviders", "features", "limits", "engine"}
     assert {"available", "version", "versionOk", "provider", "model", "ajv"} <= set(body["aragon"])
+    # ★v6 V6-P1-3 / O-13：`engine` 只带四项，`model`/`provider` 留在 `aragon`。
+    assert set(body["engine"]) == {"fingerprint", "drift", "schemaBytes", "allowTools"}
+    assert "model" not in body["engine"] and "provider" not in body["engine"]
     # ★V4-P2-4: `ask` is no longer a 501 placeholder, so the flags are the v4 set —
     # and every one of them is a measurement, which is what the next test pins down.
     assert body["features"] == {
@@ -97,8 +101,18 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
         "offline": True,
         "realtimeQuote": False,
         "semanticSearch": False,
+        # ★v6 五个新布尔（G1–G4），全部由实测推导，默认 False。
+        "grounding": True,
+        "rangeQuery": True,
+        "readingMode": True,
+        "costLedger": True,
+        "engineFingerprint": True,
     }
     assert body["limits"]["askDailyLimit"] == 30
+    # ★v6：面板与徽标需要的四个数（`maxBlockRangeDays` 只用于 UI 文案）。
+    assert body["limits"]["minFactClaims"] == 5
+    assert body["limits"]["maxBlockRangeYears"] == 5
+    assert body["limits"]["monthlyBudgetUsd"] == 0, "默认不设限，产品不能因默认值把用户锁在门外"
 
 
 def test_feature_flags_follow_measurements(capability_client, monkeypatch) -> None:

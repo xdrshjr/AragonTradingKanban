@@ -13,9 +13,13 @@ import type {
   AskOut,
   AskQueuedResponse,
   BarsResponse,
+  BlockRangeResponse,
   Capabilities,
+  CostEntriesResponse,
+  CostSummary,
   CreateRunResponse,
   DiffResult,
+  EstimateResponse,
   HealthResponse,
   Instrument,
   Quote,
@@ -192,12 +196,42 @@ export const api = {
 
   report: (reportId: string) => request<ReportDetail>(`/reports/${encodeURIComponent(reportId)}`),
 
-  createReport: (instrumentId: string, body: { reason?: string; force?: boolean } = {}) =>
-    request<CreateRunResponse>(`/instruments/${encodeURIComponent(instrumentId)}/reports`, {
-      method: 'POST',
-      body,
-      timeoutMs: 15000,
-    }),
+  createReport: (
+    instrumentId: string,
+    body: { reason?: string; force?: boolean } = {},
+    options: { override?: boolean } = {},
+  ) =>
+    request<CreateRunResponse>(
+      `/instruments/${encodeURIComponent(instrumentId)}/reports${options.override ? '?override=1' : ''}`,
+      {
+        method: 'POST',
+        body,
+        timeoutMs: 15000,
+      },
+    ),
+
+  /** ★v6 G3: `null` means "cannot estimate" — never a fake 0 (`/runs/estimate`). */
+  estimateRun: (body: { symbol: string; kind?: 'run' | 'ask_deep' }) =>
+    request<EstimateResponse>('/runs/estimate', { method: 'POST', body }),
+
+  /* ── cost ledger (G3) ────────────────────────────────────────────────── */
+
+  costSummary: (window: '7d' | '30d' | '90d' | 'mtd' | 'ytd' = '30d') =>
+    request<CostSummary>(`/cost/summary?window=${window}`),
+
+  costEntries: (limit = 50) => request<CostEntriesResponse>(`/cost/entries?limit=${limit}`),
+
+  /** ★v6 G3: the budget lives in `settings`, so it takes effect immediately. */
+  setBudget: (monthlyUsd: number) =>
+    request<CostSummary>('/cost/budget', { method: 'POST', body: { monthlyUsd } }),
+
+  /* ── range query (G2a) ───────────────────────────────────────────────── */
+
+  /** "Which paragraphs talk about this stretch of the chart?" (§19.3.3) */
+  reportBlocks: (reportId: string, from: string, to: string, limit = 50) =>
+    request<BlockRangeResponse>(
+      `/reports/${encodeURIComponent(reportId)}/blocks?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=${limit}`,
+    ),
 
   patchReport: (reportId: string, body: { pinned?: boolean; archived?: boolean; setLatest?: boolean }) =>
     request<ReportSummary>(`/reports/${encodeURIComponent(reportId)}`, { method: 'PATCH', body }),

@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
-import { blockIdOf } from '@/lib/blocks';
+import { KEY_METRICS_BLOCK_ID, blockIdOf, parseBlockId, sectionIdOf } from '@/lib/blocks';
 import { copy } from '@/lib/copy';
 import { costLabel, dateTime, relativeTime } from '@/lib/format';
 import { useUiStore } from '@/lib/store';
@@ -29,6 +29,38 @@ const AskPanel = dynamic(() => import('../ask/AskPanel').then((module) => module
   ssr: false,
   loading: () => null,
 });
+
+/**
+ * ★v6 G2b / AC-52: the full-text container is a **separate async chunk** too. It
+ * carries the outline and the progress line, none of which a Tab reader needs —
+ * so `/[symbol]` first load stays inside the 240 kB budget.
+ */
+const ReadingView = dynamic(() => import('./ReadingView').then((module) => module.ReadingView), {
+  ssr: false,
+  loading: () => null,
+});
+
+/**
+ * ★v6 G2a: the range link bar only exists when the URL carries `?range=`.
+ * Lazy for the same reason as everything else here: an unused entry is weight.
+ */
+const RangeHint = dynamic(() => import('./RangeHint').then((module) => module.RangeHint), {
+  ssr: false,
+  loading: () => null,
+});
+
+/**
+ * ★v6 G1：可信度徽标只在**这份报告真的有 `quality.grounding`** 时才需要，
+ * 所以它是一个 async chunk —— 没有核验记录的报告（早期版本、临时版、mock）
+ * 连这几 KB 都不下载。AC-35 的首屏预算因此不变（AC-52 同理）。
+ */
+const TrustBadge = dynamic(() => import('./TrustBadge').then((module) => module.TrustBadge), {
+  ssr: false,
+  loading: () => null,
+});
+
+/** `?view=` — `tabs` is the pre-v5 behaviour and stays the default (no regression). */
+export type ReadingMode = 'tabs' | 'full';
 
 export interface ReportPanelProps {
   instrumentName: string;
@@ -58,6 +90,20 @@ export interface ReportPanelProps {
   initialBlockId?: string | null;
   /** AC-36: `CompareView` returns focus here when it closes. */
   compareTriggerRef?: React.RefObject<HTMLButtonElement | null>;
+  /**
+   * ★v6 G2b：`?view=` 的当前值。默认 `tabs` —— 既有行为一行不改（不回归）。
+   * 由 `WorkspaceClient` 从 URL 读，并用 `router.replace` 写回（不污染历史）。
+   */
+  view?: ReadingMode;
+  onViewChange?: (view: ReadingMode) => void;
+  /** ★v6 G2a：`?range=2025-03-01..2025-04-15`；与 `view` **正交**（AC-64）。 */
+  range?: { from: string; to: string } | null;
+  onClearRange?: () => void;
+  /**
+   * ★v6 G1：`capabilities.features.grounding`。`false` 时**整个可信度层不渲染**
+   * （徽标、点、脚注都不出现），而不是渲染一个空壳（§19.2 的"E 层无悬挂分支"）。
+   */
+  groundingEnabled?: boolean;
 }
 
 /**
@@ -87,6 +133,11 @@ export function ReportPanel({
   initialSection,
   initialBlockId,
   compareTriggerRef,
+  view = 'tabs',
+  onViewChange,
+  range = null,
+  onClearRange,
+  groundingEnabled = true,
 }: ReportPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabsRef = useRef<HTMLDivElement | null>(null);
@@ -96,15 +147,21 @@ export function ReportPanel({
   const [askOpen, setAskOpen] = useState(false);
   const [askMounted, setAskMounted] = useState(false);
   const [highlightBlockId, setHighlightBlockId] = useState<string | null>(null);
+  const modeButtonRef = useRef<HTMLButtonElement | null>(null);
   const openSourceDrawer = useUiStore((state) => state.openSourceDrawer);
   const sources = useMemo<SourceRef[]>(() => detail?.doc.sources ?? [], [detail]);
+  const doc = detail?.doc ?? null;
+  const summary = detail?.report ?? null;
+  /**
+   * ★v6 G1：可信度层的数据源**只**是当前版本的 `report.quality`。
+   * 禁止读 `<meta>`（I-31：那是 RSC 快照，切换版本后会指向另一版）——
+   * 所以"徽标说 48/51、页面却是另一个版本"这个坑在这里被结构性地堵住。
+   */
+  const grounding = groundingEnabled ? (summary?.quality.grounding ?? null) : null;
 
   useEffect(() => {
     if (askOpen) setAskMounted(true);
   }, [askOpen]);
-
-  const doc = detail?.doc ?? null;
-  const summary = detail?.report ?? null;
 
   const sections = useMemo(() => {
     if (!doc) return [];
@@ -166,6 +223,33 @@ export function ReportPanel({
       });
     },
     [activeSection],
+  );
+
+  /**
+   * ★v6 G1：徽标里点一条样本 → 跳到那个块。全文视图没有"章节 Tab"的概念，所以
+   * 只设高亮 + 让容器滚；Tab 视图沿用既有 `jumpToBlock`（会先切 Tab）。
+   */
+  const jumpToBlockById = useCallback(
+    (blockId: string) => {
+      // ★v6 G1：`keyMetrics` 这类**不是** `<sectionId>#<index>` 的定位（后端给顶层
+      // `doc.keyMetrics[]` 的未接地样本用的就是这个 blockId）不能走 `jumpToBlock`：
+      // 它的 `sectionIdOf()` 会原样返回 'keyMetrics'，于是 `setActiveSection('keyMetrics')`
+      // 把 `visibleSections` 过滤成空数组 —— 正文整篇消失，而且没有任何 Tab 是选中态。
+      // 这类定位一律「在页头指标卡上高亮 + 滚到它」，Tab 状态一动不动。
+      if (!parseBlockId(blockId)) {
+        setHighlightBlockId(blockId);
+        requestAnimationFrame(() => {
+          const target = scrollRef.current?.querySelector<HTMLElement>(
+            `[data-block-id="${CSS.escape(blockId)}"]`,
+          );
+          target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
+        return;
+      }
+      const sectionId = sectionIdOf(blockId);
+      jumpToBlock(blockId, sectionId);
+    },
+    [jumpToBlock],
   );
 
   // The highlight is a flash, not a state: clear it so a later jump is visible.
@@ -285,8 +369,19 @@ export function ReportPanel({
             </Badge>
           ) : null}
           {summary?.quality.source === 'mock' ? <Badge tone="info">{copy.report.mock}</Badge> : null}
+          {/* ★v6 G1：`grounding == null`（无数据 / 早期报告 / 能力关闭）时组件自己返回 null。 */}
+          {summary ? (
+            <TrustBadge quality={summary.quality.grounding ?? null} reportId={summary.id} onJump={jumpToBlockById} />
+          ) : null}
 
           <div className="ml-auto flex items-center gap-1">
+            {/* ★v6 G2b：模式切换。`router.replace` 只改 `view`，不动 `range`（AC-64）。 */}
+            <ReadingModeSwitch
+              value={view}
+              onChange={onViewChange}
+              disabled={generating}
+              buttonRef={modeButtonRef}
+            />
             <span className="hidden text-[10.5px] text-[var(--text-tertiary)] sm:inline">
               {copy.report.generatedAt} {relativeTime(summary?.generatedAt)}
               {summary ? ` · ${costLabel(summary.costUsd, summary.costKnown)}` : ''}
@@ -394,7 +489,34 @@ export function ReportPanel({
         ) : null}
       </header>
 
+      {/* ★v6 G2a：联动条在**两种视图里位置相同** —— 报告头下方、章节内容之上。
+          读者切换阅读模式时，"这段行情关联哪几段"不该跟着换位置（§19.5.7）。 */}
+      {range && summary ? (
+        <RangeHint
+          reportId={summary.id}
+          from={range.from}
+          to={range.to}
+          onClear={() => onClearRange?.()}
+          onJumpToBlock={jumpToBlockById}
+          className="shrink-0"
+        />
+      ) : null}
+
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+        {view === 'full' && summary ? (
+          /* ★v6 G2b：换容器不换渲染器 —— 全文视图复用同一个 `ReportRenderer`（O-7）。 */
+          <ReadingView
+            reportId={summary.id}
+            doc={doc}
+            activeSectionId={initialSection ?? undefined}
+            highlightBlockId={highlightBlockId}
+            onSectionChange={(sectionId) => setActiveSection(sectionId)}
+            onJumpToBlock={jumpToBlockById}
+            onHighlightClear={() => setHighlightBlockId(null)}
+            returnFocusRef={modeButtonRef}
+            quality={grounding}
+          />
+        ) : (
         <article
           id="report-body"
           tabIndex={-1}
@@ -411,9 +533,20 @@ export function ReportPanel({
               {summary?.durationMs ? ` · ${(summary.durationMs / 1000).toFixed(0)}s` : ''}
             </p>
             <p className="mt-2 text-[14px] leading-[1.75] text-[var(--text-secondary)]">{doc.summary}</p>
+            {/* `data-block-id` + `quality` + `blockId`：后端把顶层 `doc.keyMetrics[]`
+                的数字挂在这个 blockId 下（`numeric_claims`），所以门面卡既能显示未接地圆点/脚注，
+                也能被徽标里的样本点中。 */}
             {doc.keyMetrics.length > 0 ? (
-              <div className="mt-3">
-                <MetricGrid items={doc.keyMetrics} compact />
+              <div
+                className="mt-3 scroll-mt-4 rounded-[var(--radius-sm)] transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
+                data-block-id={KEY_METRICS_BLOCK_ID}
+              >
+                <MetricGrid
+                  items={doc.keyMetrics}
+                  compact
+                  quality={grounding}
+                  blockId={KEY_METRICS_BLOCK_ID}
+                />
               </div>
             ) : null}
           </div>
@@ -436,6 +569,8 @@ export function ReportPanel({
                     blocks={section.items.map((item) => item.block)}
                     blockIds={section.items.map((item) => item.blockId)}
                     sources={sources}
+                    quality={grounding}
+                    onJumpToBlock={jumpToBlockById}
                   />
               </section>
             ))}
@@ -482,7 +617,8 @@ export function ReportPanel({
               </button>
             ) : null}
           </footer>
-        </article>
+          </article>
+        )}
       </div>
 
       {/* Mounted on first open: the chunk must not be fetched just because a
@@ -502,6 +638,56 @@ export function ReportPanel({
 
       <SourceDrawer sources={sources} />
     </section>
+  );
+}
+
+/**
+ * ★v6 G2b：`章节 | 全文` 分段控件（与 `VersionSwitcher` 同行）。
+ *
+ * 用 `role="tablist"` 是因为它就是"同一内容的两种视图"，而 `?view=` 的写入由上层用
+ * `router.replace` 完成 —— 来回切模式不该污染浏览器后退栈（§19.3.4 的裁决）。
+ */
+function ReadingModeSwitch({
+  value,
+  onChange,
+  disabled,
+  buttonRef,
+}: {
+  value: ReadingMode;
+  onChange?: (view: ReadingMode) => void;
+  disabled?: boolean;
+  buttonRef?: React.RefObject<HTMLButtonElement | null>;
+}) {
+  if (!onChange) return null;
+  return (
+    <div
+      role="tablist"
+      aria-label={copy.reading.mode}
+      className="flex items-center gap-0.5 rounded-[var(--radius-sm)] bg-[var(--bg-surface-2)] p-0.5"
+    >
+      {(['tabs', 'full'] as const).map((mode) => {
+        const active = value === mode;
+        return (
+          <button
+            key={mode}
+            ref={mode === 'full' ? buttonRef : undefined}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            disabled={disabled}
+            onClick={() => onChange(mode)}
+            className={cn(
+              'rounded-[calc(var(--radius-sm)-2px)] px-1.5 py-0.5 text-[10.5px] font-medium transition-colors disabled:opacity-50',
+              active
+                ? 'bg-[var(--bg-canvas)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]'
+                : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]',
+            )}
+          >
+            {mode === 'tabs' ? copy.reading.tabs : copy.reading.full}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

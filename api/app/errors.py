@@ -116,6 +116,37 @@ class TooManyRuns(AppError):
     message = "当前排队任务过多，请稍后重试"
 
 
+class MonthlyBudgetExceeded(AppError):
+    """★v6（V6-P0-2）：月度预算闸门的**独立**错误类。
+
+    不要复用 `BudgetExceeded`：它是 409、语义是"生成超出 turns / duration 预算"，
+    而 `web/lib/types.ts` 的 `RunStatus` 里已经有一个同名终态字面量在用它。复用会把
+    "本月花超了"伪装成"这次生成超时"，改它的 status 又会静默改写 v1 就存在的行为。
+
+    402 只在**用户显式设了预算**时出现；`BUDGET_MONTHLY_USD=0` 恒放行。
+    """
+
+    code = "monthly_budget_exceeded"
+    status_code = status.HTTP_402_PAYMENT_REQUIRED
+    message = "本月预算已用完"
+
+
+class InvalidRange(AppError):
+    """`/reports/{id}/blocks` 的区间参数非法（`from > to` 或不可解析）。"""
+
+    code = "invalid_range"
+    status_code = 422
+    message = "区间不合法（from 必须不晚于 to，且为 YYYY-MM-DD）"
+
+
+class RangeTooWide(AppError):
+    """跨度超过 5 个日历年——挡住"拿 1900-01-01 做全量扫描"这类用法。"""
+
+    code = "range_too_wide"
+    status_code = 422
+    message = "区间跨度过大（上限 5 个日历年）"
+
+
 class Unavailable(AppError):
     code = "data_provider_unavailable"
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE

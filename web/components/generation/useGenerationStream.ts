@@ -197,7 +197,7 @@ export function generationReducer(state: GenerationState, action: GenerationActi
 
 export interface UseGenerationStreamResult {
   state: GenerationState;
-  start: (instrumentId: string, options?: { force?: boolean }) => Promise<void>;
+  start: (instrumentId: string, options?: { force?: boolean; override?: boolean }) => Promise<void>;
   cancel: () => Promise<void>;
   reset: () => void;
   isActive: boolean;
@@ -206,13 +206,21 @@ export interface UseGenerationStreamResult {
 export interface UseGenerationStreamOptions {
   onDone?: (reportId: string) => void;
   onError?: (code: string, message: string) => void;
+  /**
+   * ★v6 G3：预算闸门被触发（402 `monthly_budget_exceeded`）。
+   *
+   * 它**不是**错误：用户可以选择「仍然生成」（`override: true`），所以这里单独回调，
+   * 而不是走 `onError` 的红色 Toast —— 把一次可覆盖的拦截说成失败，等于教用户
+   * 以后无视所有红色提示。
+   */
+  onBudgetBlocked?: (detail: Record<string, unknown>) => void;
 }
 
 export function useGenerationStream(options: UseGenerationStreamOptions = {}): UseGenerationStreamResult {
   const [state, dispatch] = useReducer(generationReducer, initialGenerationState);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const queryClient = useQueryClient();
-  const { onDone, onError } = options;
+  const { onDone, onError, onBudgetBlocked } = options;
 
   const teardown = useCallback(() => {
     unsubscribeRef.current?.();
@@ -246,12 +254,16 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
   );
 
   const start = useCallback(
-    async (instrumentId: string, startOptions: { force?: boolean } = {}) => {
+    async (instrumentId: string, startOptions: { force?: boolean; override?: boolean } = {}) => {
       teardown();
       dispatch({ type: 'submit', instrumentId });
 
       try {
-        const created = await api.createReport(instrumentId, { force: startOptions.force });
+        const created = await api.createReport(
+          instrumentId,
+          { force: startOptions.force },
+          { override: startOptions.override },
+        );
         dispatch({ type: 'queued', runId: created.runId });
 
         unsubscribeRef.current = subscribeToRun(created.runId, streamOptions(instrumentId));
@@ -266,6 +278,12 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
             unsubscribeRef.current = subscribeToRun(activeRunId, streamOptions(instrumentId));
             return;
           }
+          // ★v6 G3：402 是可覆盖的闸门，不是失败 —— 交给弹窗，界面保持干净。
+          if (error.code === 'monthly_budget_exceeded') {
+            dispatch({ type: 'reset' });
+            onBudgetBlocked?.(error.detail);
+            return;
+          }
           dispatch({ type: 'exception', code: error.code, message: error.message });
           onError?.(error.code, error.message);
           return;
@@ -277,7 +295,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         });
       }
     },
-    [onError, streamOptions, teardown],
+    [onBudgetBlocked, onError, streamOptions, teardown],
   );
 
   const cancel = useCallback(async () => {

@@ -146,6 +146,69 @@ describe('report panel', () => {
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'report-section-thesis');
   });
 
+
+  it('★I-53：点顶层 `keyMetrics` 样本不能把正文变空白'
+    , async () => {
+      // `keyMetrics` 不是 `<sectionId>#<index>`。旧实现把 `sectionIdOf('keyMetrics')`
+      // 原样当成章节去 `setActiveSection`，于是 `visibleSections` 过滤成空数组
+      // —— 读者点一下徽标里的样本，整篇报告就消失了。
+      const user = userEvent.setup();
+      const withSample: ReportDetail = {
+        report: {
+          ...SUMMARY,
+          quality: {
+            ...SUMMARY.quality,
+            grounding: {
+              factClaims: 6,
+              factMissing: 1,
+              totalMissing: 1,
+              projectionClaims: 0,
+              derivedClaims: 0,
+              identifierClaims: 0,
+              skipped: null,
+              samples: [
+                {
+                  blockId: 'keyMetrics',
+                  path: 'keyMetrics[0].value',
+                  raw: '1672.00',
+                  text: '最新价 1672.00 元',
+                },
+              ],
+            },
+          },
+        },
+        doc: {
+          ...DETAIL.doc,
+          keyMetrics: [{ label: '最新价', value: '1672.00' }],
+        },
+      };
+
+      render(
+        <ReportPanel
+          instrumentName="贵州茅台"
+          reports={[withSample.report]}
+          detail={withSample}
+          onGenerate={() => undefined}
+          onSelectVersion={() => undefined}
+          onExport={() => undefined}
+        />,
+      );
+
+      // 先切到一个真实章节，这才是会被“空白化”的那种状态。
+      await user.click(within(screen.getByRole('tablist')).getByRole('tab', { name: '核心逻辑' }));
+      expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'report-section-thesis');
+
+      await user.click(screen.getByTestId('trust-badge'));
+      await user.click(screen.getByRole('link', { name: /1672\.00/ }));
+
+      // 章节 Tab 不能被一个不是章节的 id 改写；正文必须还在。
+      const panel = screen.getByRole('tabpanel');
+      expect(panel).toHaveAttribute('id', 'report-section-thesis');
+      expect(panel.textContent ?? '').toContain('核心段落');
+      // 门面指标卡自己也必须是一个可定位的目标。
+      expect(document.querySelector('[data-block-id="keyMetrics"]')).not.toBeNull();
+    });
+
   it('exposes the report body anchor the skip link points at', () => {
     const { container } = render(
       <ReportPanel

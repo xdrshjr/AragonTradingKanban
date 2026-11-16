@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 
 from ..config import get_settings
 from ..db.session import SessionLocal
-from ..errors import RunConflict, TooManyRuns
+from ..errors import MonthlyBudgetExceeded, RunConflict, TooManyRuns
 from ..logging import get_logger
 from ..models import Instrument
 from .run_manager import get_manager
@@ -99,6 +99,20 @@ class SchedulerTicker:
             except (TooManyRuns, RunConflict):
                 # A manual run got there first:让步 is the specified behaviour (AC-30).
                 scheduler.defer(session, item["id"], minutes=5)
+                return False
+            except MonthlyBudgetExceeded as exc:
+                # ★v6 G3：预算闸门是**暂停**，不是失败。落进下面的 `except Exception`
+                # 会调 `record_failure`，而 `MAX_FAILURES=3` 一到就把这条定时刷新
+                # **永久禁用**（`schedule.enabled = 0`）——用户第二天会发现自己只是
+                # 这个月花超了，却把一年的自动刷新关掉了。语义同 409/429：现在开不了，
+                # 晚点再说。所以这里只 defer + 一条 info，不计失败次数。
+                scheduler.defer(session, item["id"], minutes=5)
+                logger.info(
+                    "scheduled trigger paused by budget schedule=%s spent=%s budget=%s",
+                    item["id"],
+                    (exc.detail or {}).get("spentUsd"),
+                    (exc.detail or {}).get("budgetUsd"),
+                )
                 return False
             manager.schedule(run.id)
             scheduler.mark_triggered(session, item["id"], run.id)

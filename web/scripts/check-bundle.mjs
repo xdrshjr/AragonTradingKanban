@@ -5,8 +5,9 @@
  * 两件事，任一条不过就退出码非 0：
  *   1. `/[symbol]` 首屏 JS（gzip 后）≤ 预算，默认 **240 kB**（§11.2 与 AC-35 同一个数，
  *      见 v4 的 V4-P1-11 修订）；
- *   2. 四块懒加载面板（AskPanel / CompareView / SearchDialog / ScheduleDialog）
- *      **不出现在**首屏 chunk 里（`next/dynamic` 化之后它们的代码不该被静态打进首屏）。
+ *   2. 所有懒加载面板（v4 四块 + ★v6 的 ReadingView / ReportOutline / RangeHint /
+ *      CostPanel）**不出现在**首屏 chunk 里，且 v6 的三块必须能在
+ *      `react-loadable-manifest.json` 里被证明"住在某个 async chunk"（AC-52 双向判据）。
  *
  * 三种输入（都不需要外部依赖，也不 shell out 到 du/grep —— Windows 上也得跑）：
  *   a. 不给参数：读 `<next-dir>/build-manifest.json` + `app-build-manifest.json`
@@ -36,8 +37,33 @@ import { gzipSync } from 'node:zlib';
 /** 首屏预算（kB，gzip）。§11.2 与 AC-35 都是 240 —— 改这里的唯一理由是规格改数字。 */
 const DEFAULT_BUDGET_KB = 240;
 
-/** 必须懒加载的四个面板（§18.3.6 表格）。 */
-const LAZY_PANELS = ['AskPanel', 'CompareView', 'SearchDialog', 'ScheduleDialog'];
+/**
+ * 必须懒加载的面板：v4 的四个（§18.3.6）+ v6 的四个（§19.4.3/§19.4.4）。
+ *
+ * ★v6 AC-52：`ReadingView` / `ReportOutline` / `RangeHint` / `CostPanel` 都是
+ * `next/dynamic`，所以它们必须出现在 `react-loadable-manifest.json` 里，且其 chunk
+ * **不与首屏相交**。
+ */
+const LAZY_PANELS = [
+  'AskPanel',
+  'CompareView',
+  'SearchDialog',
+  'ScheduleDialog',
+  'ReadingView',
+  'ReportOutline',
+  'RangeHint',
+  'CostPanel',
+];
+
+/**
+ * ★v6 AC-52 的**双向**判据：v6 的四个面板必须能被证明在某个 async chunk 里。
+ *
+ * 只断言"不在首屏"是不够的——一个根本没被任何 chunk 包含的模块也不在首屏，但它
+ * 同时意味着这个功能根本不存在。所以这里要求 `react-loadable-manifest.json` 里有
+ * 对应条目（模块 → chunk 映射），而不是去 chunk 正文里搜字符串（改名/注释/字符串
+ * 出现都会误判，I-16 同型）。
+ */
+const MUST_BE_LOADABLE = ['ReadingView', 'RangeHint', 'CostPanel'];
 
 /** 目标路由在 app-build-manifest 里的几种键形态。 */
 const ROUTE_KEYS = ['/[symbol]/page', '/[symbol]', '/[symbol]/layout', '/[symbol]/route'];
@@ -444,9 +470,18 @@ function main() {
     }
   }
 
+  // ★v6 AC-52：v6 的三个面板必须真的被某个 async chunk 承载（不能只是"不在首屏"）。
+  const loadablePanels = new Set(boundary.found.map((item) => item.panel));
+  const unproven = MUST_BE_LOADABLE.filter((panel) => !loadablePanels.has(panel));
+  if (boundary.hasManifest && unproven.length > 0) {
+    result.violations.push('lazy-panel-not-loadable');
+    console.error(`✗ 这些面板没有出现在 react-loadable-manifest 里：${unproven.join(', ')}`);
+    console.error('  它们必须由 next/dynamic 引入（否则要么打进了首屏，要么根本没实现）。');
+  }
+
   if (contentHits.length === 0 && boundary.violations.length === 0) {
     const known = new Set(boundary.found.map((item) => item.panel));
-    console.log('✓ 四个面板都不在首屏 chunk 里');
+    console.log(`✓ ${LAZY_PANELS.length} 个面板都不在首屏 chunk 里`);
     if (!boundary.hasManifest) {
       console.log('  （没有 react-loadable-manifest.json，只能靠 chunk 正文检查——建议用生产构建复跑）');
     } else if (known.size === 0) {

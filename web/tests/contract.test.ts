@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { BLOCK_TYPES } from '@/lib/types';
+import type {
+  BudgetState,
+  Comparability,
+  CostSummary,
+  EngineCapability,
+  EngineInfo,
+  GroundingQuality,
+  GroundingSample,
+  BlockRangeResponse,
+} from '@/lib/types';
 import backendSchema from '../../api/app/agent/schemas/report_doc.schema.json';
 
 /**
@@ -8,6 +18,10 @@ import backendSchema from '../../api/app/agent/schemas/report_doc.schema.json';
  * hand, so this test fails the moment the two drift on what actually crosses the
  * wire. It reads the *backend* JSON Schema directly — the same file the CLI is
  * handed — which makes the drift impossible to hide.
+ *
+ * ★v6 §19.3.1 规则 4 扩表：三个新类型（`GroundingQuality` / `Comparability` /
+ * `CostSummary`）必须与 Pydantic 模型**逐字段同名同可选性**。这里是逐字抄来的
+ * 字段清单，抄错就红 —— 它是唯一能挡住"后端加了字段、前端永远看不到"的东西。
  */
 
 interface JsonSchemaNode {
@@ -61,5 +75,115 @@ describe('report document contract', () => {
   it('forbids unknown top-level fields, matching the TS strictness', () => {
     const root = backendSchema as unknown as { additionalProperties?: boolean };
     expect(root.additionalProperties).toBe(false);
+  });
+});
+
+/**
+ * ★v6 镜像：字段清单与 `api/app/schemas/{report,cost,blocks,capabilities}.py`
+ * 逐字对齐。用 `satisfies` + `keyof` 双重断言：少一个字段编译期就红，多一个运行期
+ * 也不通过 —— 两侧都是"必须一模一样"。
+ */
+describe('v6 mirror fields', () => {
+  it('GroundingQuality mirrors numeric_claims.GroundingReport.as_payload()', () => {
+    const shape: Record<keyof GroundingQuality, true> = {
+      factClaims: true,
+      factMissing: true,
+      totalMissing: true,
+      projectionClaims: true,
+      derivedClaims: true,
+      identifierClaims: true,
+      skipped: true,
+      samples: true,
+    };
+    expect(Object.keys(shape).sort()).toEqual(
+      [
+        'derivedClaims',
+        'factClaims',
+        'factMissing',
+        'identifierClaims',
+        'projectionClaims',
+        'samples',
+        'skipped',
+        'totalMissing',
+      ].sort(),
+    );
+  });
+
+  it('GroundingSample carries the four coordinates the footnote needs', () => {
+    const sample: GroundingSample = { blockId: 'valuation#2', path: 'valuation.table[1].rows[0].pe', raw: '28.4', text: '…' };
+    expect(Object.keys(sample).sort()).toEqual(['blockId', 'path', 'raw', 'text']);
+  });
+
+  it('EngineInfo is exactly four fields — no model, no provider (C-18)', () => {
+    const engine: EngineInfo = { fingerprint: 'abc', cliVersion: '0.6.68', allowTools: [], schemaBytes: 1 };
+    expect(Object.keys(engine).sort()).toEqual(['allowTools', 'cliVersion', 'fingerprint', 'schemaBytes']);
+    expect('model' in engine).toBe(false);
+    expect('provider' in engine).toBe(false);
+  });
+
+  it('EngineCapability mirrors the new top-level /capabilities.engine object', () => {
+    const capability: EngineCapability = { fingerprint: null, drift: false, schemaBytes: 0, allowTools: [] };
+    expect(Object.keys(capability).sort()).toEqual(['allowTools', 'drift', 'fingerprint', 'schemaBytes']);
+  });
+
+  it('Comparability keeps `same` tri-state and the explicit promise', () => {
+    const variants: Comparability[] = [
+      { same: true, changed: [], deltaUnaffected: true, note: '' },
+      { same: false, changed: ['model'], deltaUnaffected: true, note: '两版由不同引擎生成' },
+      { same: null, changed: [], deltaUnaffected: true, note: '其中一版没有引擎指纹（早期报告）' },
+    ];
+    expect(variants.map((item) => item.same)).toEqual([true, false, null]);
+    expect(variants.every((item) => item.deltaUnaffected)).toBe(true);
+  });
+
+  it('budget.state has four members, not three (★V6-P2-5)', () => {
+    const states: BudgetState[] = ['ok', 'near', 'exceeded', 'unlimited'];
+    expect(states).toHaveLength(4);
+    expect(new Set(states).size).toBe(4);
+  });
+
+  it('CostSummary allows a null remainingUsd only through the budget object', () => {
+    const summary: CostSummary = {
+      window: '30d',
+      from: '2026-01-11T00:00:00Z',
+      to: '2026-02-10T00:00:00Z',
+      spentUsd: 3.42,
+      knownRuns: 18,
+      unknownRuns: 4,
+      byKind: { run: 2.91, ask_deep: 0.51 },
+      byModel: [{ model: 'claude-sonnet', usd: 3.42, runs: 18 }],
+      budget: { monthlyUsd: 0, remainingUsd: null, resetAt: null, state: 'unlimited' },
+      ledgerGap: 0,
+    };
+    expect(summary.unknownRuns).toBe(4);
+    expect(summary.budget.remainingUsd).toBeNull();
+  });
+
+  it('BlockRangeResponse mirrors the /reports/{id}/blocks envelope', () => {
+    const response: BlockRangeResponse = {
+      reportId: 'r1',
+      range: { from: '2025-03-01', to: '2025-04-15' },
+      items: [
+        {
+          blockId: 'valuation#2',
+          sectionId: 'valuation',
+          sectionTitle: '估值',
+          kind: 'table',
+          overlapDays: 46,
+          matchKind: 'quarter',
+          text: '…',
+        },
+      ],
+      total: 1,
+      truncated: false,
+      asOf: '2026-02-10T01:00:00Z',
+      reason: null,
+    };
+    expect(Object.keys(response).sort()).toEqual(
+      ['asOf', 'items', 'range', 'reason', 'reportId', 'total', 'truncated'].sort(),
+    );
+    expect(Object.keys(response.items[0]!).sort()).toEqual(
+      ['blockId', 'kind', 'matchKind', 'overlapDays', 'sectionId', 'sectionTitle', 'text'].sort(),
+    );
   });
 });

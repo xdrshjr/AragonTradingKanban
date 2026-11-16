@@ -1,12 +1,23 @@
 import { expect, test } from '@playwright/test';
 
+import { SKIP_REASON, browserAvailable, failIfBrowserRequired } from './fixtures/browser';
+
 /**
  * Main path, end to end, in mock mode (AC-2, AC-4, AC-6, AC-7, AC-15, AC-16).
  *
  * Deliberately runs against a *real* API process in `AGENT_MODE=mock`: the value
  * of this test is that no model, no key and no network is required for a
  * complete demonstration.
+ *
+ * ★v6（§19.3.7 / AC-59）：那个 "API process" 现在是 `tests/e2e/fixtures/fake-api.mjs`
+ * ——零依赖 Node http，数据来自 `api/tests/fixtures/sample_report.json`。于是本条
+ * 用例不再需要 Python、数据库或 aragon，{@link SKIP_REASON} 那一行只是把"没有浏览器"
+ * 从失败改成跳过。
  */
+
+// PW_REQUIRED=1 时缺浏览器必须失败（CI 不接受静默跳过）。
+failIfBrowserRequired();
+test.skip(!browserAvailable, SKIP_REASON);
 
 const SEED_QUERY = '600519';
 
