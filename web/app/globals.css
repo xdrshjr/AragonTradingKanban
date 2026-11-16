@@ -1,0 +1,290 @@
+@import 'tailwindcss';
+
+/* ============================================================================
+   Design tokens — spec §5.5. This block is the single source of truth for
+   proportions, colour and rhythm. Nothing else may hard-code a column ratio
+   (★P2-06) or a palette value.
+   ========================================================================== */
+
+:root {
+  /* ── Layout: 15% rail, then 40/60 of the remaining 85% ───────────────── */
+  --rail-w: clamp(220px, 15vw, 320px);
+  --right-w: calc(100vw - var(--rail-w));
+  --kline-w: calc(var(--right-w) * 0.4);
+  --report-w: calc(var(--right-w) * 0.6);
+  --kline-min: 380px;
+  --report-min: 460px;
+  --header-h: 52px;
+  --splitter-w: 1px;
+
+  /* ── Radii & elevation ──────────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.48);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24);
+
+  /* ── Dark canvas (Supabase console language) ────────────────────────── */
+  --bg-canvas: #0b0c0e;
+  --bg-surface-1: #121316;
+  --bg-surface-2: #17181c;
+  --bg-surface-3: #1e2025;
+  --bg-overlay: rgba(8, 9, 11, 0.72);
+  --bg-hover: rgba(255, 255, 255, 0.035);
+  --bg-active: rgba(255, 255, 255, 0.06);
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --text-primary: #edeef0;
+  --text-secondary: #a0a5ad;
+  --text-tertiary: #6c7178;
+
+  --accent: #3ecf8e;
+  --accent-weak: rgba(62, 207, 142, 0.12);
+  --accent-ring: rgba(62, 207, 142, 0.35);
+  --accent-text: #06281a;
+
+  --info: #4c9aff;
+  --info-weak: rgba(76, 154, 255, 0.12);
+  --warn: #f5a623;
+  --warn-weak: rgba(245, 166, 35, 0.12);
+  --danger: #f4574d;
+  --danger-weak: rgba(244, 87, 77, 0.12);
+
+  /* A-share convention: red up, green down. Toggleable in settings. */
+  --chart-up: #f2564d;
+  --chart-down: #2fbf71;
+  --chart-grid: rgba(255, 255, 255, 0.05);
+
+  --font-sans: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, 'Courier New', monospace;
+
+  --dur-fast: 120ms;
+  --dur-panel: 180ms;
+  --ease-panel: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-theme='light'] {
+  --bg-canvas: #ffffff;
+  --bg-surface-1: #fafafa;
+  --bg-surface-2: #f4f5f6;
+  --bg-surface-3: #eceef0;
+  --bg-overlay: rgba(255, 255, 255, 0.8);
+  --bg-hover: rgba(0, 0, 0, 0.035);
+  --bg-active: rgba(0, 0, 0, 0.06);
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --text-primary: #17181c;
+  --text-secondary: #5a6068;
+  --text-tertiary: #838a93;
+  --accent-text: #ffffff;
+  --chart-grid: rgba(0, 0, 0, 0.06);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-surface-1: var(--bg-surface-1);
+  --color-surface-2: var(--bg-surface-2);
+  --color-surface-3: var(--bg-surface-3);
+  --color-subtle: var(--border-subtle);
+  --color-strong: var(--border-strong);
+  --color-fg: var(--text-primary);
+  --color-fg-dim: var(--text-secondary);
+  --color-fg-faint: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-up: var(--chart-up);
+  --color-down: var(--chart-down);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ============================================================================ */
+
+* {
+  border-color: var(--border-subtle);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--accent-weak);
+  color: var(--text-primary);
+}
+
+/* Focus: always visible, never decorative. */
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Thin, macOS-ish scrollbars that do not shift layout. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  background-clip: content-box;
+}
+
+/* Numeric alignment helper used everywhere a number appears. */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ============================================================================
+   Motion: 120ms hovers, 180ms panels, everything off under reduced-motion.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   Report typography — the reading surface. 15px/1.8 with a 72ch measure.
+   ========================================================================== */
+
+.report-prose {
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--text-primary);
+  text-wrap: pretty;
+}
+
+.report-prose p {
+  margin: 0 0 16px;
+}
+
+.report-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.report-prose a {
+  color: var(--info);
+  text-decoration: none;
+}
+
+.report-prose a:hover {
+  text-decoration: underline;
+}
+
+/* ============================================================================
+   Print — the answer to "PDF export" without a headless browser (§2.2).
+   ========================================================================== */
+
+@media print {
+  :root {
+    --bg-canvas: #ffffff;
+    --bg-surface-1: #ffffff;
+    --bg-surface-2: #ffffff;
+    --text-primary: #111214;
+    --text-secondary: #44484f;
+    --text-tertiary: #6b7280;
+    --border-subtle: rgba(0, 0, 0, 0.14);
+  }
+
+  html,
+  body {
+    overflow: visible !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+
+  [data-print='hide'] {
+    display: none !important;
+  }
+
+  [data-print='full'] {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    overflow: visible !important;
+    height: auto !important;
+    position: static !important;
+  }
+
+  .report-prose {
+    font-size: 11pt;
+    line-height: 1.65;
+  }
+
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+
+  table,
+  figure,
+  blockquote {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 18mm 16mm;
+  }
+}

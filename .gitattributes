@@ -1,0 +1,19 @@
+# One line ending everywhere: LF in the repo, LF in the working tree.
+# Windows tooling (cmd.exe, Node, Python) all read LF fine, and mixed
+# CRLF/LF was making diffs and edits noisy.
+* text=auto eol=lf
+
+# Binary assets must never be converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+
+# Generated / vendored content: never part of a diff review.
+package-lock.json linguist-generated=true -diff
+web/package-lock.json linguist-generated=true -diff

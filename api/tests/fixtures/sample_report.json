@@ -1,0 +1,171 @@
+{
+  "schema": "aragon.research.report/v1",
+  "provisional": false,
+  "instrument": { "symbol": "600519.SH", "name": "贵州茅台", "market": "CN", "currency": "CNY" },
+  "asOf": "2026-02-10T01:00:00Z",
+  "headline": "高端白酒需求见底，直营渠道改革兑现利润弹性",
+  "rating": { "stance": "buy", "conviction": 4, "horizon": "6-12m", "targetPrice": 1980, "upsidePct": 18.4 },
+  "summary": "批价企稳叠加直营占比提升，2026 年利润弹性来自结构而非量增；当前 24 倍 PE 位于三年 31% 分位，风险收益比偏正。",
+  "keyMetrics": [
+    { "label": "PE(TTM)", "value": "24.1×", "deltaPct": -6.2, "tone": "pos", "sourceRefs": ["S1"] },
+    { "label": "PB", "value": "7.2×", "deltaPct": 1.1, "tone": "neutral", "sourceRefs": ["S1"] },
+    { "label": "股息率", "value": "2.1%", "tone": "pos", "sourceRefs": ["S2"] },
+    { "label": "营收同比", "value": "+15.2%", "deltaPct": 2.4, "tone": "pos", "sourceRefs": ["S3"] }
+  ],
+  "sections": [
+    {
+      "id": "thesis",
+      "title": "核心逻辑",
+      "blocks": [
+        { "type": "heading", "level": 2, "text": "一、需求见底，结构升级接棒" },
+        {
+          "type": "paragraph",
+          "text": "2025 年三季度营收同比 +15.2%，净利率维持在 49.3% 的高位 [S3]。我们在 2026-02-10 的行情快照中看到，近一年最大回撤 -18.2%，年化波动 24.6%，估值已完成一轮压缩 [S1]。"
+        },
+        { "type": "callout", "tone": "insight", "title": "本报告的关键判断", "text": "利润增长的驱动力已从「量增 + 提价」切换到「直营占比提升 + 产品结构上移」，因此 2026 年的弹性更依赖渠道而非终端需求。" },
+        {
+          "type": "bullets",
+          "items": [
+            { "text": "直营渠道占比由 2023 年的 39% 提升至 2025Q3 的 46%，每提升 1 个百分点约贡献 0.6 个百分点毛利率。", "sourceRefs": ["S2"] },
+            { "text": "批价在 2,150 元附近企稳，渠道库存回落至 1.2 个月的合理水位。", "sourceRefs": ["S4"] },
+            { "text": "三年期估值分位 31%，低于近五年中枢 1 个标准差以内。", "sourceRefs": ["S1"] }
+          ]
+        },
+        { "type": "divider" },
+        { "type": "quote", "text": "公司将继续推进渠道结构优化，保持价格体系的稳定。", "attribution": "2025 年三季报业绩说明会", "sourceRefs": ["S3"] }
+      ]
+    },
+    {
+      "id": "fundamentals",
+      "title": "基本面",
+      "blocks": [
+        {
+          "type": "metrics",
+          "items": [
+            { "label": "营业收入", "value": "1,234.6 亿", "deltaPct": 15.2, "tone": "pos", "sourceRefs": ["S3"] },
+            { "label": "归母净利", "value": "608.0 亿", "deltaPct": 16.1, "tone": "pos", "sourceRefs": ["S3"] },
+            { "label": "经营现金流", "value": "582.0 亿", "deltaPct": 9.8, "tone": "pos", "sourceRefs": ["S3"] },
+            { "label": "毛利率", "value": "91.3%", "deltaPct": 0.4, "tone": "pos", "sourceRefs": ["S3"] }
+          ]
+        },
+        { "type": "heading", "level": 3, "text": "收入拆解" },
+        {
+          "type": "table",
+          "caption": "近四个季度收入与利润（单位：亿元）",
+          "columns": [
+            { "key": "period", "label": "期间", "align": "left" },
+            { "key": "revenue", "label": "营业收入", "align": "right" },
+            { "key": "yoy", "label": "同比", "align": "right" },
+            { "key": "netProfit", "label": "归母净利", "align": "right" }
+          ],
+          "rows": [
+            { "period": "2024Q4", "revenue": "388.2", "yoy": "12.4%", "netProfit": "187.6" },
+            { "period": "2025Q1", "revenue": "464.8", "yoy": "18.1%", "netProfit": "241.2" },
+            { "period": "2025Q2", "revenue": "396.1", "yoy": "14.3%", "netProfit": "193.4" },
+            { "period": "2025Q3", "revenue": "373.5", "yoy": "16.1%", "netProfit": "185.8" }
+          ]
+        },
+        {
+          "type": "chart",
+          "chart": {
+            "kind": "line",
+            "title": "近 8 个季度营业收入同比",
+            "xAxis": { "type": "category", "labels": ["24Q1", "24Q2", "24Q3", "24Q4", "25Q1", "25Q2", "25Q3", "25Q4E"] },
+            "series": [{ "name": "营收同比", "data": [17.4, 10.8, 8.2, 12.4, 18.1, 14.3, 16.1, 15.0] }],
+            "unit": "%"
+          }
+        },
+        {
+          "type": "timeline",
+          "events": [
+            { "date": "2025-04-29", "title": "2025 年一季报发布", "detail": "营收 464.8 亿元，同比 +18.1%，超市场预期。", "sourceRefs": ["S3"] },
+            { "date": "2025-08-14", "title": "中期分红方案落地", "detail": "每股派现 23.96 元，分红率提升至 75%。", "sourceRefs": ["S2"] },
+            { "date": "2025-10-28", "title": "三季报：直营占比 46%", "detail": "直营渠道收入占比连续四个季度提升。", "sourceRefs": ["S3"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "valuation",
+      "title": "估值",
+      "blocks": [
+        {
+          "type": "comparables",
+          "peers": [
+            { "name": "五粮液", "symbol": "000858.SZ", "pe": 18.2, "pb": 4.1, "growthPct": 8.1, "note": "估值折价，增速更依赖普五批价" },
+            { "name": "泸州老窖", "symbol": "000568.SZ", "pe": 16.8, "pb": 5.2, "growthPct": 11.4 },
+            { "name": "山西汾酒", "symbol": "600809.SH", "pe": 22.6, "pb": 6.8, "growthPct": 14.2 }
+          ]
+        },
+        {
+          "type": "scenario",
+          "scenarios": [
+            { "name": "bear", "targetPrice": 1420, "probability": 0.25, "assumptions": "批价跌破 1,900 元且直营占比停滞，估值回落至 21 倍。" },
+            { "name": "base", "targetPrice": 1980, "probability": 0.55, "assumptions": "直营占比 48%，净利增速 14%，给予 26 倍 PE。" },
+            { "name": "bull", "targetPrice": 2340, "probability": 0.2, "assumptions": "需求超预期并伴随提价，净利增速 19%，给予 29 倍 PE。" }
+          ]
+        },
+        {
+          "type": "chart",
+          "chart": {
+            "kind": "bar",
+            "title": "同业 PE(TTM) 对比",
+            "xAxis": { "type": "category", "labels": ["贵州茅台", "五粮液", "泸州老窖", "山西汾酒"] },
+            "series": [{ "name": "PE(TTM)", "data": [24.1, 18.2, 16.8, 22.6] }],
+            "unit": "×"
+          }
+        }
+      ]
+    },
+    {
+      "id": "risks",
+      "title": "风险",
+      "blocks": [
+        {
+          "type": "callout",
+          "tone": "warn",
+          "title": "需要盯住的第一件事",
+          "text": "批价是需求的前置指标。若飞天散瓶批价连续两个月低于 2,100 元，说明渠道去库存未完成，本报告的 base 情景需要下调。"
+        },
+        {
+          "type": "chart",
+          "chart": {
+            "kind": "scatter",
+            "title": "批价与渠道库存的关系（示意）",
+            "xAxis": { "type": "value", "labels": ["1.0", "1.4", "1.8", "2.2", "2.6"] },
+            "series": [{ "name": "渠道库存(月)", "data": [2.1, 1.7, 1.4, 1.2, 0.9] }],
+            "note": "导出为 HTML 时该图降级为数据表"
+          }
+        }
+      ]
+    },
+    {
+      "id": "catalysts",
+      "title": "催化剂与跟踪项",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            { "text": "2026 年一季报（预计 4 月底）：验证直营占比是否突破 48%。", "sourceRefs": ["S2"] },
+            { "text": "春节后批价回落幅度：3 月是全年压力最大的窗口。", "sourceRefs": ["S4"] },
+            { "text": "渠道改革配套政策：经销商配额与直营电商的比例调整。", "sourceRefs": ["S4"] }
+          ]
+        },
+        { "type": "heading", "level": 4, "text": "跟踪节奏" },
+        { "type": "paragraph", "text": "建议以半月为频率复核批价与库存指标，季度财报为最强验证节点；任一跟踪项恶化即触发 thesis 复核。" }
+      ]
+    }
+  ],
+  "risks": [
+    { "title": "批价下行", "severity": "high", "trigger": "批价 < 2,100 元并持续两个月", "mitigant": "盯渠道库存与直营占比", "sourceRefs": ["S4"] },
+    { "title": "政策与消费场景变化", "severity": "medium", "trigger": "限制性消费政策出台", "mitigant": "关注经销商配额政策", "sourceRefs": ["S3"] },
+    { "title": "估值切换失败", "severity": "low", "trigger": "无风险利率上行超 50bp", "mitigant": "情景估值已含 bear 分支", "sourceRefs": ["S1"] }
+  ],
+  "sources": [
+    { "id": "S1", "title": "行情与估值快照", "publisher": "akshare", "publishedAt": "2026-02-10", "url": "https://akshare.akfamily.xyz/", "retrievedAt": "2026-02-10T00:58:00Z" },
+    { "id": "S2", "title": "2025 年中期分红方案", "publisher": "上交所", "publishedAt": "2025-08-14", "url": "https://www.sse.com.cn/", "retrievedAt": "2026-02-10T00:58:00Z" },
+    { "id": "S3", "title": "2025 年第三季度报告", "publisher": "上交所", "publishedAt": "2025-10-28", "url": "https://www.sse.com.cn/", "retrievedAt": "2026-02-10T00:58:00Z" },
+    { "id": "S4", "title": "白酒渠道月度跟踪", "publisher": "渠道调研汇总", "publishedAt": "2026-02-05", "url": "https://example.com/channel", "retrievedAt": "2026-02-10T00:58:00Z" }
+  ],
+  "disclaimer": "本报告由 AI 生成，仅供研究参考，不构成投资建议。"
+}

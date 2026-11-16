@@ -1,0 +1,45 @@
+# node
+node_modules/
+.next/
+out/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# runtime data (never commit)
+api/data/*.db
+api/data/*.db-*
+api/workspace/runs/*
+!api/workspace/runs/.gitkeep
+api/workspace/.tmp/
+
+# env (keep the example)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# test artifacts
+playwright-report/
+test-results/
+*.log
+
+# typescript build info
+*.tsbuildinfo
+
+# os
+.DS_Store
+Thumbs.db
+
+# agent-orchestration runtime (graph state, task prompts and reports):
+# tooling, not product. Kept on disk, never committed.
+.agentmesh/

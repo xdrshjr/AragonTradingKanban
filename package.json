@@ -1,0 +1,25 @@
+{
+  "name": "aragon-research-terminal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aragon Research Terminal — 一次生成、反复查看的投研报告工作台",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "seed": "node scripts/seed.mjs",
+    "build": "npm --prefix web run build",
+    "start": "npm --prefix web run start",
+    "lint": "npm --prefix web run lint",
+    "typecheck": "npm --prefix web run typecheck",
+    "test": "npm run test:api && npm run test:web",
+    "test:api": "node scripts/pytest.mjs",
+    "test:web": "npm --prefix web run test",
+    "ci": "node scripts/ci.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
