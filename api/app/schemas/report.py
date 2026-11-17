@@ -270,11 +270,22 @@ class GroundingQuality(BaseModel):
     factMissing: int = 0
     #: 全量未接地数；`samples` 只放前 20 个块（R-22）。
     totalMissing: int = 0
+    #: ★A4：按**值**去重的计数（`factMissing` 是引用次数）。面板要能说
+    #: 「43 个不同数值，出现 141 次」，否则读者把"141 处"读成 141 个错误。
+    distinctMissing: int = 0
+    distinctClaims: int = 0
+    #: ★R3-1：`samples` 按 `blockId` 去重 → 块级/值级两个分母，面板的两句话各用一个。
+    sampledBlocks: int = 0
+    sampledValues: int = 0
     projectionClaims: int = 0
     derivedClaims: int = 0
     identifierClaims: int = 0
     skipped: str | None = None
     samples: list[GroundingSample] = Field(default_factory=list)
+    #: ★A6：口径版本与输入指纹。跨口径（或缺少 `rules`）时 UI 不给可比百分比。
+    rules: str | None = None
+    docHash: str | None = None
+    snapshotHash: str | None = None
 
 
 class EngineInfo(BaseModel):

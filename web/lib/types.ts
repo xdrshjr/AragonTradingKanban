@@ -370,12 +370,37 @@ export interface GroundingQuality {
   factMissing: number;
   /** Every un-traceable number; `samples` only carries the first 20 blocks. */
   totalMissing: number;
+  /**
+   * ★A4: distinct values behind `factMissing` (which counts **references**).
+   * Absent on payloads written before `claims-v3` — fall back to `factMissing`.
+   */
+  distinctMissing?: number;
+  /** Distinct values in the denominator (references vs values, again). */
+  distinctClaims?: number;
+  /**
+   * ★R3-1: `samples` is deduped by `blockId`, so `samples.length` counts **blocks**,
+   * not references. These two are the exact denominators the panel needs: how many
+   * blocks actually carry an ungrounded number, and how many distinct values the
+   * emitted samples cover. Absent on older payloads → the panel states nothing about
+   * coverage rather than guessing (see `TrustBadge`).
+   */
+  sampledBlocks?: number;
+  sampledValues?: number;
   projectionClaims: number;
   derivedClaims: number;
   identifierClaims: number;
   /** `'insufficient_sample'` wins over a pretty 1.0 (★V6-P2-8). */
   skipped: string | null;
   samples: GroundingSample[];
+  /**
+   * ★A6: the rules version that produced these numbers (`claims-v3`).
+   * Absent = an earlier rules generation: the counts are **not comparable**
+   * with a current one, so the UI must not show a percentage (`TrustState.legacy`).
+   */
+  rules?: string | null;
+  /** ★A6: input fingerprints — they make the verdict mechanically re-computable. */
+  docHash?: string | null;
+  snapshotHash?: string | null;
 }
 
 /** Mirrors `QualityEngineOut` — four fields, on purpose (★V6-P1-3). */

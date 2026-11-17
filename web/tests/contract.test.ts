@@ -89,21 +89,38 @@ describe('v6 mirror fields', () => {
       factClaims: true,
       factMissing: true,
       totalMissing: true,
+      // ★A4：按值去重（引用次数 vs 数值个数）
+      distinctMissing: true,
+      distinctClaims: true,
+      // ★R3-1：块级 / 值级两个分母（samples 按 blockId 去重）
+      sampledBlocks: true,
+      sampledValues: true,
       projectionClaims: true,
       derivedClaims: true,
       identifierClaims: true,
       skipped: true,
       samples: true,
+      // ★A6：口径版本 + 输入指纹
+      rules: true,
+      docHash: true,
+      snapshotHash: true,
     };
     expect(Object.keys(shape).sort()).toEqual(
       [
         'derivedClaims',
+        'distinctClaims',
+        'distinctMissing',
+        'docHash',
         'factClaims',
         'factMissing',
         'identifierClaims',
         'projectionClaims',
+        'rules',
+        'sampledBlocks',
+        'sampledValues',
         'samples',
         'skipped',
+        'snapshotHash',
         'totalMissing',
       ].sort(),
     );

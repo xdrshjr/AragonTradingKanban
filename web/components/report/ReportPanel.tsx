@@ -8,6 +8,7 @@ import { cn } from '@/lib/cn';
 import { KEY_METRICS_BLOCK_ID, blockIdOf, parseBlockId, sectionIdOf } from '@/lib/blocks';
 import { copy } from '@/lib/copy';
 import { costLabel, dateTime, relativeTime } from '@/lib/format';
+import { missingCounts } from '@/lib/grounding';
 import { useUiStore } from '@/lib/store';
 import type { ReportDetail, ReportSummary, SourceRef } from '@/lib/types';
 
@@ -25,6 +26,11 @@ import { GenerateButton } from '../generation/GenerateButton';
  * ★A1 / AC-35: the ask drawer never enters the first-load chunk. Readers who never
  * ask never download it (§18.3.6).
  */
+/** ★A5：顶层容器 id —— 与后端 `numeric_claims.extract_claims()` 里的 block_id 逐字一致。 */
+const HEADLINE_BLOCK_ID = 'headline';
+const SUMMARY_BLOCK_ID = 'summary';
+const RISK_LIST_BLOCK_ID = 'riskList';
+
 const AskPanel = dynamic(() => import('../ask/AskPanel').then((module) => module.AskPanel), {
   ssr: false,
   loading: () => null,
@@ -361,7 +367,7 @@ export function ReportPanel({
               tone="warn"
               title={`接地率 ${((summary.quality.groundedRatio ?? 0) * 100).toFixed(0)}%${
                 summary.quality.ungroundedCount
-                  ? ` · ${summary.quality.ungroundedCount} 处数字未能在快照中找到来源`
+                  ? ` · ${missingCounts(summary.quality.grounding).distinct || summary.quality.ungroundedCount} 个不同数值（共 ${summary.quality.ungroundedCount} 次引用）未能在快照中找到来源`
                   : ''
               }`}
             >
@@ -524,7 +530,14 @@ export function ReportPanel({
           data-print="full"
         >
           <div className="mb-4">
-            <h1 className="text-[19px] font-semibold leading-snug tracking-tight text-[var(--text-primary)]">
+            {/* ★A5：`headline` / `summary` 是顶层字段，不是块。它们用**不含 `#`** 的容器 id
+                接入「未接地样本可点」，由 `jumpToBlockById` 的安全分支处理（高亮 + 滚动，
+                不切章节 Tab）—— 写成 `summary#0` 会让 `parseBlockId()` 把章节切成 `summary`，
+                正文整篇消失（R-E7）。 */}
+            <h1
+              data-block-id={HEADLINE_BLOCK_ID}
+              className="scroll-mt-4 text-[19px] font-semibold leading-snug tracking-tight text-[var(--text-primary)] transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
+            >
               {doc.headline}
             </h1>
             <p className="mt-1 text-[11px] text-[var(--text-tertiary)]">
@@ -532,7 +545,12 @@ export function ReportPanel({
               {summary?.model ? ` · ${summary.model}` : ''}
               {summary?.durationMs ? ` · ${(summary.durationMs / 1000).toFixed(0)}s` : ''}
             </p>
-            <p className="mt-2 text-[14px] leading-[1.75] text-[var(--text-secondary)]">{doc.summary}</p>
+            <p
+              data-block-id={SUMMARY_BLOCK_ID}
+              className="mt-2 scroll-mt-4 text-[14px] leading-[1.75] text-[var(--text-secondary)] transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
+            >
+              {doc.summary}
+            </p>
             {/* `data-block-id` + `quality` + `blockId`：后端把顶层 `doc.keyMetrics[]`
                 的数字挂在这个 blockId 下（`numeric_claims`），所以门面卡既能显示未接地圆点/脚注，
                 也能被徽标里的样本点中。 */}
@@ -577,7 +595,7 @@ export function ReportPanel({
           </div>
 
           {doc.risks.length > 0 && (activeSection === 'all' || activeSection === 'risks') ? (
-            <section className="mt-6">
+            <section className="mt-6" data-block-id={RISK_LIST_BLOCK_ID}>
               <h2 className="mb-2 border-b border-[var(--border-subtle)] pb-1 text-[15px] font-semibold tracking-tight text-[var(--text-primary)]">
                 {copy.report.riskList}
               </h2>
@@ -585,7 +603,8 @@ export function ReportPanel({
                 {doc.risks.map((risk, index) => (
                   <li
                     key={index}
-                    className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2.5 py-1.5"
+                    data-block-id={`${RISK_LIST_BLOCK_ID}[${index}]`}
+                    className="flex scroll-mt-4 items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2.5 py-1.5 transition-colors data-[highlighted]:bg-[var(--warn-weak)]"
                   >
                     <Badge
                       tone={risk.severity === 'high' ? 'danger' : risk.severity === 'medium' ? 'warn' : 'neutral'}

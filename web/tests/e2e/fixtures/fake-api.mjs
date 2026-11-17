@@ -163,26 +163,48 @@ const GROUNDING_SAMPLE = (() => {
  * 两版的 `ungroundedCount` 都等于 `grounding.factMissing`（AC-61），`samples` 只出现在
  * 真的有未接地数字的那一版里 —— 否则"所有数字都能追溯"和一条样本会互相打脸。
  */
+/**
+ * ★A6：本夹具固定用**当前**判据口径（`api/app/services/numeric_claims.py::RULES_VERSION`）。
+ * 没有 `rules` 的载荷会被 `trustState()` 判成「早期版本 · 口径不可比」，徽标不给百分比。
+ */
+const RULES = 'claims-v3';
+
 const GROUNDING_V1 = {
   factClaims: 12,
   factMissing: 1,
   totalMissing: 1,
+  // ★A4：按值去重（1 个不同数值 / 1 次引用）
+  distinctMissing: 1,
+  distinctClaims: 10,
+  // ★R3-1：块级 / 值级两个分母（这一版只有 1 个块有缺口，样本正好覆盖它）
+  sampledBlocks: 1,
+  sampledValues: 1,
   projectionClaims: 3,
   derivedClaims: 2,
   identifierClaims: 4,
   skipped: null,
   samples: [GROUNDING_SAMPLE],
+  rules: RULES,
+  docHash: 'doc-hash-v1',
+  snapshotHash: 'snap-hash',
 };
 
 const GROUNDING_CLEAN = {
   factClaims: 12,
   factMissing: 0,
   totalMissing: 0,
+  distinctMissing: 0,
+  distinctClaims: 10,
+  sampledBlocks: 0,
+  sampledValues: 0,
   projectionClaims: 3,
   derivedClaims: 2,
   identifierClaims: 4,
   skipped: null,
   samples: [],
+  rules: RULES,
+  docHash: 'doc-hash-v2',
+  snapshotHash: 'snap-hash',
 };
 
 function quality(version) {

@@ -4,12 +4,46 @@ import { Archive, ChevronDown, Download, Pin, PinOff, Trash2 } from 'lucide-reac
 import { useEffect, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
-import { copy } from '@/lib/copy';
+import { copy, fill } from '@/lib/copy';
 import { costLabel, dateTime, relativeTime, versionLabel } from '@/lib/format';
+import { missingCounts } from '@/lib/grounding';
 import type { ReportSummary } from '@/lib/types';
 
 import { Badge, Tag } from '../ui/Badge';
 import { IconButton } from '../ui/Button';
+
+/**
+ * 版本列表里那条质量判词的悬浮文案（★A6）。
+ *
+ * 一道纪律：**跨口径不给可比百分比**。判词是永久落库的，而判据会变 ——
+ * 把两代规则算出来的 `90%` 并排放着，等于宣称它们可比（实测同一份输入：
+ * 旧口径 323/141，新口径 264/24）。所以旧载荷只说「早期版本」，不说数字。
+ */
+function groundingTitle(report: ReportSummary): string {
+  const grounding = report.quality.grounding;
+  if (!grounding) {
+    // 连判词都没有：只有 `groundedRatio` 这一个旧字段，它不是本代口径。
+    return `${copy.trust.rulesUnknown} · ${copy.trust.legacy}`;
+  }
+  if (!grounding.rules) {
+    return `${copy.trust.rulesUnknown} · ${copy.trust.legacy}`;
+  }
+  const counts = missingCounts(grounding);
+  const rules = fill(copy.trust.rules, { rules: grounding.rules });
+  return `${rules} · ${fill(copy.trust.counts, { distinct: counts.distinct, references: counts.references })}`;
+}
+
+/**
+ * 这一版的判词是不是**另一代口径**算的（★R3-4）。
+ *
+ * 列表里每一行都挂一个 `claims-v3` 标签没有信息量（那一列已经挤着 最新/临时/降级/示例），
+ * 而且面板的悬浮里已经说了口径。只有"这个版本与当前口径不同"才是读者必须看见的那一条 ——
+ * 因为**只有它会导致并排比较出错**。参照口径取列表里第一份有判词的报告（列表按新到旧）。
+ */
+function isForeignRules(report: ReportSummary, currentRules: string | null): boolean {
+  if (!report.quality.grounding) return false; // 没有判词 → 由"降级/示例"徽标负责，不重复喊
+  return (report.quality.grounding.rules ?? null) !== currentRules;
+}
 
 export interface VersionSwitcherProps {
   reports: ReportSummary[];
@@ -39,6 +73,9 @@ export function VersionSwitcher({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const active = reports.find((report) => report.id === activeId) ?? reports[0] ?? null;
+  // ★R3-4：当前口径 = 列表里第一份带判词的报告的口径（列表按新到旧）。
+  const currentRules =
+    reports.find((report) => report.quality.grounding?.rules)?.quality.grounding?.rules ?? null;
 
   useEffect(() => {
     if (!open) return;
@@ -112,9 +149,20 @@ export function VersionSwitcher({
                     {report.isLatest ? <Badge tone="accent">最新</Badge> : null}
                     {report.provisional ? <Badge tone="warn">临时</Badge> : null}
                     {report.status === 'degraded' ? (
-                      <Badge tone="warn" title={`接地率 ${(report.quality.groundedRatio * 100).toFixed(0)}%`}>
+                      <Badge tone="warn" title={groundingTitle(report)}>
                         降级
                       </Badge>
+                    ) : null}
+                    {/* ★A6 / ★R3-4：口径标签。只在**与本列表当前口径不同**时出现：
+                        一致时它是噪音（这一列已有 最新/临时/降级/示例），不同时它是
+                        读者唯一必须知道的事 —— 这两个百分比不可比。
+                        这里读 `quality.grounding` 而不是状态列：`superseded` 会把 `status`
+                        覆盖掉（`report_service.py:129`），于是旧版的质量判词在列表里
+                        凭空消失 —— 那正是 N2 点名的"状态列双语义"。 */}
+                    {isForeignRules(report, currentRules) ? (
+                      <Tag title={groundingTitle(report)}>
+                        {report.quality.grounding?.rules ?? copy.trust.rulesUnknown}
+                      </Tag>
                     ) : null}
                     {report.quality.source === 'mock' ? <Badge tone="info">示例</Badge> : null}
                     {report.pinned ? <Pin className="size-2.5 text-[var(--accent)]" aria-label="已置顶" /> : null}

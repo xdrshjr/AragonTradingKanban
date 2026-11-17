@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { copy, fill } from '@/lib/copy';
-import { jumpHref, trustState, trustText, type TrustState } from '@/lib/grounding';
+import { jumpHref, missingCounts, sampleCoverage, trustState, trustText, type TrustState } from '@/lib/grounding';
 import type { GroundingQuality, GroundingSample } from '@/lib/types';
 
 /**
@@ -34,8 +34,9 @@ export interface TrustBadgeProps {
   onJump?: (blockId: string) => void;
 }
 
-/** 三态语义色。琥珀只留给"未接地"，已核验用上涨色，样本不足保持中性（不下判断）。 */
+/** 三态语义色。琥珀只留给"未接地"，已核验用上涨色，样本不足/跨口径保持中性（不下判断）。 */
 const TONE: Record<Exclude<TrustState['kind'], 'absent'>, string> = {
+  legacy: 'border-[var(--border-strong)] text-[var(--text-tertiary)] bg-[var(--bg-surface-2)]',
   insufficient: 'border-[var(--border-strong)] text-[var(--text-secondary)] bg-[var(--bg-surface-2)]',
   verified: 'border-[var(--chart-up)]/40 text-[var(--chart-up)] bg-[var(--chart-up)]/10',
   missing: 'border-[var(--warn)]/40 text-[var(--warn)] bg-[var(--warn-weak)]',
@@ -56,15 +57,28 @@ export function TrustBadge({ quality, reportId, onJump }: TrustBadgeProps) {
 
   const text = trustText(state) ?? '';
   const tone = TONE[state.kind];
+  const counts = missingCounts(quality);
 
-  // 展开区里的次要说明：只在数量 > 0 时出现（0 行没有信息量，会把面板撑空）。
-  // `copy.trust.none` 只在**真的一处未接地都没有**时才成立：I-40 把分支②放宽成
-  // `ratio >= 0.9`，于是 48/51（3 个数字未接地）也是 `verified`——此时再补一句
-  // "所有数字都能在快照里找到依据"就是自相矛盾的假话。
+  // 展开区里的说明行。纪律：**每一行都要说清单位**（数值个数 / 引用次数 / 块数），
+  // 因为 20 个块的样本上限意味着"你看到的"永远不是"全部"（N3）。
   const notes: string[] = [];
+  // ★A0′：面板顶部先给一行汇总 —— `distinct` 个数值 vs `references` 次引用。
+  if (counts.references > 0 && counts.references !== counts.distinct) {
+    notes.push(fill(copy.trust.counts, { distinct: counts.distinct, references: counts.references }));
+  }
+  // ★A6：口径行。跨口径（legacy）时这就是全部可说的事。
+  notes.push(quality.rules ? fill(copy.trust.rules, { rules: quality.rules }) : copy.trust.rulesUnknown);
   if (state.kind === 'verified' && state.ok === state.total) notes.push(copy.trust.none);
-  if (quality.totalMissing > samples.length) {
-    notes.push(fill(copy.trust.more, { shown: samples.length, total: quality.totalMissing }));
+  // ★R3-1：`samples` 按 `blockId` 去重 → `samples.length` 是**块数**。
+  // 所以"是否被截断"只能拿块数比块数：旧载荷没有 `sampledBlocks`，此时**不声称**截断，
+  // 而不是用引用次数去掉块数（那会在一份 6 块 14 次引用的报告上凭空说"还有块没列"）。
+  const coverage = sampleCoverage(quality);
+  if (coverage.blocks !== null && coverage.blocks > samples.length) {
+    notes.push(fill(copy.trust.more, { shown: samples.length, total: coverage.blocks }));
+  }
+  // 只有"已展开的样本确实漏了数值"时才说这句话——旧载荷无从得知，于是不说（不猜）。
+  if (coverage.uncoveredValues !== null && coverage.uncoveredValues > 0) {
+    notes.push(fill(copy.trust.moreValues, { count: coverage.uncoveredValues }));
   }
   if (quality.projectionClaims > 0) {
     notes.push(fill(copy.trust.projections, { count: quality.projectionClaims }));

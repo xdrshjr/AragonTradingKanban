@@ -7,7 +7,15 @@ import { GroundingDot } from '@/components/report/GroundingDot';
 import { MetricGrid } from '@/components/report/blocks/MetricsBlock';
 import { TrustBadge } from '@/components/report/TrustBadge';
 import { copy, fill } from '@/lib/copy';
-import { blockSampleCount, indexSamples, jumpHref, sampleLabel, trustState, trustText } from '@/lib/grounding';
+import {
+  blockSampleCount,
+  indexSamples,
+  jumpHref,
+  missingCounts,
+  sampleLabel,
+  trustState,
+  trustText,
+} from '@/lib/grounding';
 import type { GroundingQuality, GroundingSample } from '@/lib/types';
 
 function sample(overrides: Partial<GroundingSample> = {}): GroundingSample {
@@ -20,16 +28,26 @@ function sample(overrides: Partial<GroundingSample> = {}): GroundingSample {
   };
 }
 
+/** 当前判据口径（镜像后端 `numeric_claims.RULES_VERSION`）。 */
+const RULES = 'claims-v3';
+
 function makeQuality(overrides: Partial<GroundingQuality> = {}): GroundingQuality {
   return {
     factClaims: 51,
     factMissing: 0,
     totalMissing: 0,
+    distinctMissing: 0,
+    distinctClaims: 51,
+    sampledBlocks: 0,
+    sampledValues: 0,
     projectionClaims: 0,
     derivedClaims: 0,
     identifierClaims: 0,
     skipped: null,
     samples: [],
+    rules: RULES,
+    docHash: 'doc-hash',
+    snapshotHash: 'snap-hash',
     ...overrides,
   };
 }
@@ -72,7 +90,32 @@ describe('lib/grounding.ts · trustState（AC-50 三态 + 优先级）', () => {
     expect(trustState(makeQuality({ factClaims: 51, factMissing: 6 })).kind).toBe('missing');
   });
 
-  it('trustText 只对 absent 返回 null；其余三态都有中文文案', () => {
+  it('★A6：有判词但没有口径版本 → legacy（不给可比百分比）', () => {
+    const quality = makeQuality({ factClaims: 51, factMissing: 3, rules: null });
+    expect(trustState(quality)).toEqual({ kind: 'legacy', rules: null });
+    // 旧载荷里"84% 已核验"那个数字**不许**出现：两代判据算出来的东西不可比。
+    expect(trustText({ kind: 'legacy', rules: null })).toBe(copy.trust.legacy);
+    expect(trustText({ kind: 'legacy', rules: null })).not.toContain('%');
+  });
+
+  it('★A6：口径版本优先于"样本不足"结论（口径都不同，任何结论都不成立）', () => {
+    const quality = makeQuality({ factClaims: 3, skipped: 'insufficient_sample', rules: null });
+    expect(trustState(quality).kind).toBe('legacy');
+  });
+
+  it('★A4：未接地按**不同数值**计数，而不是引用次数', () => {
+    // 同一处 -0.25 被 8 个块引用：读者要知道"1 个错误、8 次引用"。
+    const quality = makeQuality({ factClaims: 51, factMissing: 8, totalMissing: 8, distinctMissing: 1 });
+    expect(trustState(quality)).toEqual({ kind: 'missing', missing: 1, total: 51 });
+    expect(missingCounts(quality)).toEqual({ references: 8, distinct: 1 });
+  });
+
+  it('★A4：旧载荷没有 distinctMissing 时退化为引用次数（不猜、不夸大）', () => {
+    const quality = makeQuality({ factClaims: 10, factMissing: 4, totalMissing: 4, distinctMissing: undefined });
+    expect(trustState(quality)).toEqual({ kind: 'missing', missing: 4, total: 10 });
+  });
+
+  it('trustText 只对 absent 返回 null；其余四态都有中文文案', () => {
     expect(trustText({ kind: 'absent' })).toBeNull();
     expect(trustText({ kind: 'insufficient', factClaims: 3 })).toBe(copy.trust.insufficient);
     expect(trustText({ kind: 'verified', ok: 48, total: 51 })).toBe(
@@ -120,6 +163,20 @@ describe('lib/grounding.ts · 样本索引与辅助', () => {
 
   it('jumpHref 复用路由的 ?report=&section=&block= 契约', () => {
     expect(jumpHref('rp_1', 'valuation#2')).toBe('?report=rp_1&section=valuation&block=valuation%232');
+  });
+
+  it('★A5：顶层容器 id（summary / riskList / keyMetrics）不带 section', () => {
+    // 带上 `section=summary` 会让落地页 `setActiveSection('summary')` 把正文过滤成空（R-E7）。
+    expect(jumpHref('rp_1', 'summary')).toBe('?report=rp_1&block=summary');
+    expect(jumpHref('rp_1', 'riskList')).toBe('?report=rp_1&block=riskList');
+    expect(jumpHref('rp_1', 'keyMetrics')).toBe('?report=rp_1&block=keyMetrics');
+  });
+
+  it('★R3-3：风险清单的样本按条定位（`riskList[i]`），仍然不带 section', () => {
+    // 用整个清单的容器名时，按块去重会把三个风险折叠成一条样本，"跳到该处"也只能落到
+    // 清单标题上 —— D5 的原话是"风险清单是审计盲区，**且不可定位**"。
+    expect(jumpHref('rp_1', 'riskList[0]')).toBe('?report=rp_1&block=riskList%5B0%5D');
+    expect(jumpHref('rp_1', 'riskList')).toBe('?report=rp_1&block=riskList');
   });
 
   it('sampleLabel 同时给出原值与出处片段', () => {
@@ -223,7 +280,7 @@ describe('TrustBadge', () => {
     expect(onJump).toHaveBeenCalledWith('valuation#2');
   });
 
-  it('样本被截断时交代「仅列前 N 个块，共 M 处」，并为 >0 的预测/标识符/推算值各留一行', async () => {
+  it('样本被截断时交代「仅列前 N 个块，共 M 块有缺口」，并为 >0 的预测/标识符/推算值各留一行', async () => {
     const user = userEvent.setup();
     render(
       <TrustBadge
@@ -231,6 +288,10 @@ describe('TrustBadge', () => {
           factClaims: 120,
           factMissing: 60,
           totalMissing: 60,
+          distinctMissing: 43,
+          // ★R3-1：40 个块有缺口、只列得出 1 个块；样本只覆盖到 1 个数值。
+          sampledBlocks: 40,
+          sampledValues: 1,
           projectionClaims: 24,
           identifierClaims: 18,
           derivedClaims: 2,
@@ -242,10 +303,14 @@ describe('TrustBadge', () => {
 
     await user.click(badge());
     const panel = screen.getByTestId('trust-badge-panel');
-    expect(within(panel).getByText(fill(copy.trust.more, { shown: 1, total: 60 }))).toBeInTheDocument();
+    expect(within(panel).getByText(fill(copy.trust.more, { shown: 1, total: 40 }))).toBeInTheDocument();
     expect(within(panel).getByText(fill(copy.trust.projections, { count: 24 }))).toBeInTheDocument();
     expect(within(panel).getByText(fill(copy.trust.identifiers, { count: 18 }))).toBeInTheDocument();
     expect(within(panel).getByText(fill(copy.trust.derived, { count: 2 }))).toBeInTheDocument();
+    // ★A0′：面板给出「N 个不同数值，出现 M 次」（两个单位各说一次）。
+    expect(within(panel).getByText(fill(copy.trust.counts, { distinct: 43, references: 60 }))).toBeInTheDocument();
+    // ★R3-1：未展开的数值个数 = distinctMissing − sampledValues（42），不是 43 − 1 个块。
+    expect(within(panel).getByText(fill(copy.trust.moreValues, { count: 42 }))).toBeInTheDocument();
     // 0 行不渲染：不然面板里会出现「另有 0 处…」这种废话。
     expect(within(panel).queryByText(fill(copy.trust.projections, { count: 0 }))).toBeNull();
   });
@@ -259,6 +324,32 @@ describe('TrustBadge', () => {
     expect(within(panel).queryByRole('link')).toBeNull();
   });
 
+  it('★R3-1：旧载荷没有 sampledBlocks / sampledValues 时不声称覆盖情况（不猜）', async () => {
+    // 「另有 N 个数值未展开」是断言性的话：分母不存在就不许说。
+    // v1 的算法是 `distinctMissing − samples.length`（数值减块数），在一份真实报告上
+    // 把 0 说成 2（三个数值就在同一个样本块里），在另一份上把 6 说成 3。
+    const user = userEvent.setup();
+    render(
+      <TrustBadge
+        quality={makeQuality({
+          factClaims: 51,
+          factMissing: 8,
+          totalMissing: 8,
+          distinctMissing: 4,
+          // 上一代载荷：两个分母**根本不存在**（不是 0 —— 0 是一个真实事实）。
+          sampledBlocks: undefined,
+          sampledValues: undefined,
+          samples: [sample()],
+        })}
+        reportId="rp_1"
+      />,
+    );
+    await user.click(badge());
+    const panel = screen.getByTestId('trust-badge-panel');
+    expect(within(panel).queryByText(/个数值未展开/)).toBeNull();
+    expect(within(panel).queryByText(/仅列前/)).toBeNull();
+  });
+
   it('★I-51：ratio ≥ 0.9 但仍有未接地数字时，展开**不得**说「所有数字都能找到依据」', async () => {
     // `verified` 分支在 I-40 里被放宽成 `ratio >= 0.9`，所以 48/51 也算 `verified`。
     // 此时再补一句 `copy.trust.none` 就是自相矛盾的假话：徽标说「已核验 48/51」，
@@ -266,7 +357,15 @@ describe('TrustBadge', () => {
     const user = userEvent.setup();
     render(
       <TrustBadge
-        quality={makeQuality({ factClaims: 51, factMissing: 3, totalMissing: 3, samples: [sample()] })}
+        quality={makeQuality({
+          factClaims: 51,
+          factMissing: 3,
+          totalMissing: 3,
+          distinctMissing: 3,
+          sampledBlocks: 3,
+          sampledValues: 1,
+          samples: [sample()],
+        })}
         reportId="rp_1"
       />,
     );

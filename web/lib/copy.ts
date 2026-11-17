@@ -331,20 +331,39 @@ export const copy = {
 
   /* ── G1 可信度（D2） ────────────────────────────────────────────────────── */
   trust: {
-    /** 三态文案**按固定优先级**取值：skipped → 已核验 → 未接地。 */
+    /** 三态文案**按固定优先级**取值：legacy → skipped → 已核验 → 未接地。 */
     verified: '已核验 {ok}/{total}',
+    /** ★A4：`{count}` 是**不同数值**的个数，不是引用次数（面板里另给次数）。 */
     missing: '{count} 个数字未找到依据',
     insufficient: '数字太少，未评估',
+    /** ★A6：有判词但没有口径版本 —— 不给百分比，因为不可比。 */
+    legacy: '早期版本 · 口径不可比',
     label: '数字可信度',
     expand: '查看未接地的数字',
     collapse: '收起',
     jump: '跳到该处',
-    more: '仅列前 {shown} 个块，共 {total} 处',
+    /** ★A4：面板顶部的一行汇总（数值个数 vs 引用次数）。 */
+    counts: '{distinct} 个不同数值，出现 {references} 次',
+    /**
+     * ★R3-1：`{shown}` 是**已列出的块数**，`{total}` 也是**块数**（`sampledBlocks`）。
+     * v1 写成「共 {total} 次引用」，而 `shown` 是块 —— 两个不同单位并列，读者会算差值
+     * （"6 个块 14 次引用"读起来像还有 8 个没列）。同一句话里只许出现一个单位。
+     */
+    more: '仅列前 {shown} 个块，共 {total} 个块有未接地的数字',
+    /**
+     * ★R3-1：`{count}` = `distinctMissing − sampledValues`，**两个都是数值个数**。
+     * v1 用 `distinctMissing − samples.length`（数值减块数），实测在一份报告上把 6 说成 3、
+     * 另一份把 0 说成 2。
+     */
+    moreValues: '另有 {count} 个数值未展开（样本只列前 20 个块）',
     projections: '另有 {count} 个预测值（同业估值 / 目标价，不进核验）',
-    identifiers: '另有 {count} 处是方法参数或日期',
-    derived: '其中 {count} 个为推算值',
+    identifiers: '另有 {count} 处是方法参数、日期或计数',
+    derived: '其中 {count} 个为推算值（同比 / 轧差 / 空间等可命名推导）',
     none: '所有数字都能在快照里找到依据',
     noData: '这份报告没有数字核验记录（早期版本）',
+    /** ★A6：口径行。跨口径的版本只陈述口径，不并排比百分比。 */
+    rules: '口径 {rules}',
+    rulesUnknown: '口径未知（早期版本）',
     footnoteAll: '{count} 个数字 · 全部可追溯',
     footnoteMissing: '{count} 个数字 · {missing} 个未接地',
     sampleRaw: '原值 {raw}',

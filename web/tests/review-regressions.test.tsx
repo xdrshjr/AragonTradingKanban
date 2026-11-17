@@ -162,6 +162,9 @@ describe('report panel', () => {
               factClaims: 6,
               factMissing: 1,
               totalMissing: 1,
+              distinctMissing: 1,
+              distinctClaims: 5,
+              rules: 'claims-v3',
               projectionClaims: 0,
               derivedClaims: 0,
               identifierClaims: 0,
@@ -238,7 +241,7 @@ describe('report panel', () => {
         onExport={() => undefined}
       />,
     );
-    expect(screen.getByTitle(/3 处数字未能在快照中找到来源/)).toBeInTheDocument();
+    expect(screen.getByTitle(/3 个不同数值（共 3 次引用）未能在快照中找到来源/)).toBeInTheDocument();
   });
 
   it('opens the sources drawer from the footer link (AC-7)', async () => {
