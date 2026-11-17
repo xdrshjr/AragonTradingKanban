@@ -63,10 +63,21 @@ def test_missing_submit_result_switches_to_mock_with_a_reason(capability_client)
     assert body["aragon"]["errors"], "the reason must be explainable, not just a boolean"
 
 
-def test_missing_api_key_switches_to_mock(capability_client) -> None:
+def test_missing_api_key_switches_to_mock(capability_client, monkeypatch) -> None:
+    """★v9（V10-P0-1 / I-12 的同型陷阱）：**必须显式清空** `aragon_api_key`。
+
+    开发机的 `.env` 里恰好有 `ARAGON_API_KEY` 时，这条断言会**误红**（keySource == "env"
+    ⇒ real），而它想证明的是"CLI 说没钥匙、我们也没有"这一种情形。不清空的断言
+    证明不了任何事。
+    """
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(get_settings(), "aragon_api_key", SecretStr(""), raising=False)
     body = capability_client("no_key")
     assert body["agentMode"] == "mock"
     assert body["aragon"]["degradedReason"] == "no_api_key"
+    assert body["aragon"]["keySource"] == "none"
+    assert body["aragon"]["keyPresent"] is False
 
 
 def test_missing_cli_switches_to_mock(capability_client) -> None:
@@ -95,6 +106,9 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
         "limits",
         "priceVersion",
         "lastFailure",
+        # ★v9（K2）：最近一次自检的摘要（`{ok, ms, at, code}`）。model/provider 仍然
+        # 不进 `engine` —— 唯一真源在 `aragon`（H-19）。
+        "lastProbe",
     }
     assert "model" not in body["engine"] and "provider" not in body["engine"]
     assert body["engine"]["posture"] in ("lean", "full")
@@ -102,7 +116,12 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
     # AC-70：深度余量 = 1 这件事必须能在 /capabilities 上读到。
     assert body["engine"]["schema"]["depth"] == 11
     assert body["engine"]["schema"]["headroom"] == 1
-    assert body["engine"]["limits"]["retryMax"] == 6
+    # ★v9（K4）：CLI 层重试默认 6 → **0**（实测 E-69：第二层重试不认 `--retry-max`，
+    # 一次坏端点吃掉 2m03s）。重试权收回 runner（`agentAttempts`）。
+    assert body["engine"]["limits"]["retryMax"] == 0
+    assert body["engine"]["limits"]["agentAttempts"] >= 1
+    # >0 时才会出现这条告警（此刻是 0 ⇒ 干净）。
+    assert body["engine"]["limits"]["retryLayersWarning"] is None
     assert body["engine"]["limits"]["repairTurns"] == 2
     assert body["engine"]["priceVersion"]
     assert body["engine"]["lastFailure"] is None, "这个库里还没有失败记录"

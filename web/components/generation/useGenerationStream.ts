@@ -189,11 +189,19 @@ export function generationReducer(state: GenerationState, action: GenerationActi
           const attempt = typeof payload.attempt === 'number' ? payload.attempt : null;
           const max = typeof payload.maxRetries === 'number' ? payload.maxRetries : null;
           const errorType = typeof payload.errorType === 'string' ? payload.errorType : 'unknown';
-          const message = fill(copy.generation.retryNotice, {
-            attempt: attempt ?? '—',
-            max: max ?? '—',
-            errorType,
-          });
+          // ★v9（K4 / AC-100）：`layer` 是新增字段。没有它（CLI 那一层）走原话术；
+          // 有它（本服务自己的重试）换一句，否则一次 runner 重试会被说成"引擎重试"。
+          const message =
+            payload.layer === 'runner'
+              ? fill(copy.generation.retryNoticeRunner, {
+                  attempt: typeof payload.attempt === 'number' ? payload.attempt : '—',
+                  of: typeof payload.of === 'number' ? payload.of : '—',
+                })
+              : fill(copy.generation.retryNotice, {
+                  attempt: attempt ?? '—',
+                  max: max ?? '—',
+                  errorType,
+                });
           return {
             ...state,
             retryCount: state.retryCount + 1,
@@ -268,13 +276,20 @@ export interface UseGenerationStreamOptions {
    * 以后无视所有红色提示。
    */
   onBudgetBlocked?: (detail: Record<string, unknown>) => void;
+  /**
+   * ★v9（K6）：接到了一次**接管**（409 `run_conflict` + `activeRunId`）。
+   *
+   * 过去这里静默 `return`：用户不知道自己点的那次没有生效。现在两句一起说——
+   * "已为你接管进行中的那次"（`copy.errors.runConflict`）。
+   */
+  onTakeover?: (activeRunId: string) => void;
 }
 
 export function useGenerationStream(options: UseGenerationStreamOptions = {}): UseGenerationStreamResult {
   const [state, dispatch] = useReducer(generationReducer, initialGenerationState);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const queryClient = useQueryClient();
-  const { onDone, onError, onBudgetBlocked } = options;
+  const { onDone, onError, onBudgetBlocked, onTakeover } = options;
 
   const teardown = useCallback(() => {
     unsubscribeRef.current?.();
@@ -330,6 +345,10 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
             const activeRunId = error.detail.activeRunId;
             dispatch({ type: 'queued', runId: activeRunId });
             unsubscribeRef.current = subscribeToRun(activeRunId, streamOptions(instrumentId));
+            // ★v9（K6 / §21.3.7）：**不再静默**。过去这里直接 `return`，用户不知道
+            // 自己点的那次没有生效（虽然接管了进度）；现在两句一起说：接管了 + 这是
+            // 别人的那一次。文案用 `copy.errors.runConflict`（它写了两年从没被用过）。
+            onTakeover?.(activeRunId);
             return;
           }
           // ★v6 G3：402 是可覆盖的闸门，不是失败 —— 交给弹窗，界面保持干净。
@@ -349,7 +368,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         });
       }
     },
-    [onBudgetBlocked, onError, streamOptions, teardown],
+    [onBudgetBlocked, onError, onTakeover, streamOptions, teardown],
   );
 
   const cancel = useCallback(async () => {

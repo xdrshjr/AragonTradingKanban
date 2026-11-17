@@ -201,4 +201,42 @@ describe('run.retry 的订阅（AC-85）', () => {
     expect(state.costSource).toBe('estimated');
     expect(state.costUsdEst).toBeCloseTo(0.0172);
   });
+
+  /**
+   * ★v9（K4 / AC-100 的前端半边）：`run.retry` 新增了 `layer` 字段。
+   *
+   * 为什么这条断言必须在**前端**：后端发 `{layer:"runner",attempt:2,of:2}` 完全正确，
+   * 但 reducer 若不读它，界面上就还是"引擎重试 3/6"——一次本服务自己的重试被说成
+   * 引擎在重试，与 V8-P1-3 同型（后端发了、前端丢了，而只测后端时全绿）。
+   */
+  it('carries the retry layer so the UI can say 本服务 vs 引擎', () => {
+    let state = generationReducer(initialGenerationState, { type: 'queued', runId: 'r' });
+
+    // CLI 那一层：v7 的载荷原样（没有 layer），话术不变。
+    state = generationReducer(state, {
+      type: 'event',
+      event: {
+        seq: 1,
+        type: 'run.retry',
+        at: 1,
+        payload: { attempt: 3, maxRetries: 6, errorType: 'network_error', retries: 3 },
+      },
+    });
+    expect(state.logs.at(-1)?.message).toContain('第 3/6 次重试');
+
+    // 本服务自己的重试：新增 layer / attempt / of。
+    state = generationReducer(state, {
+      type: 'event',
+      event: {
+        seq: 2,
+        type: 'run.retry',
+        at: 2,
+        payload: { layer: 'runner', attempt: 2, of: 2, code: 'provider_unavailable', backoffMs: 2500 },
+      },
+    });
+    const runnerLine = state.logs.at(-1)?.message ?? '';
+    expect(state.retryCount).toBe(2);
+    expect(runnerLine).toContain('2/2');
+    expect(runnerLine).not.toContain('第 3/6');
+  });
 });

@@ -7,11 +7,13 @@ Every value has a working default, so the API boots with no `.env` at all
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from dotenv import dotenv_values
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .logging import get_logger
@@ -66,6 +68,14 @@ class Settings(BaseSettings):
     aragon_self_check: bool = True
     aragon_provider: str = ""
     aragon_model: str = ""
+    # ── ★v9 K1：第三方 OpenAI 兼容端点（spec §21.3.2）────────────────────
+    # 为什么必须进 argv：实测（E-72/E-73）`OPENAI_BASE_URL` / `OPENAI_API_KEY` 环境变量
+    # **不被 CLI 采纳**——base URL 与 key 都只能走 `--base-url` / `--api-key` 全局 flag。
+    # 空值 = 用 CLI 自己的 profile，此时行为与 v8 完全一致（一个字都没改）。
+    aragon_base_url: str = ""
+    # `SecretStr` 而不是 `str`：`repr(settings)` / `model_dump()` 永远打印 `**********`，
+    # 这一条就消掉了"某天有人把 settings 打进日志"的整类事故（spec §21.3.2）。
+    aragon_api_key: SecretStr = SecretStr("")
     aragon_max_turns: int = 40
     aragon_max_duration_ms: int = 900_000
     aragon_idle_timeout_ms: int = 180_000
@@ -85,7 +95,13 @@ class Settings(BaseSettings):
     #: CLI default is 10 with up to 30 s backoff each; 10 attempts can eat the whole
     #: `ARAGON_MAX_DURATION_MS` and turn "the network was down" into "the model was
     #: too slow" (E-45: 6 attempts ≈ 44 s). 6 keeps the two distinguishable.
-    aragon_retry_max: int = 6
+    #: ★v9（K4 / §21.3.5）：默认 6 → **0**。实测（E-69）CLI 有**第二层**重试不认
+    #: `--retry-max`（`maxRetries=10`、每次退避 60 s），一次"端点不可达"花掉 2 分 03 秒
+    #: 并以 `exit 3 / stopReason=timeout / isError=false` 结束——会被报成"模型不肯提交"。
+    #: `--retry-max 0` 走的是另一条路（E-70）：2.0 s 返回、`exit 1`、`stream_error`，
+    #: 这才可归因。重试权因此收回 runner（`AGENT_ATTEMPTS`）。配置 >0 仍允许（运维出口），
+    #: 但会在 capabilities 里带一条 `retryLayersWarning` 并在启动时 warn。
+    aragon_retry_max: int = 0
     #: Replaces the hard-coded `--max-tokens auto`. Measured max output 34586, so
     #: 40000 makes CLI truncation predictable instead of invisible.
     aragon_max_output_tokens: int = 40_000
@@ -106,6 +122,17 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("ARAGON_PRICE_OVERRIDE", "PRICE_OVERRIDE", "price_override"),
     )
+
+    # ── ★v9 K2/K4：引擎自检与重试（spec §21.3.3 / §21.3.5）────────────────
+    #: runner 层总尝试次数（1 = 关闭重试）。重试权从 CLI 收回之后，这里是**唯一**
+    #: 会重试的地方：只重试 `provider_unavailable` / `result_missing`（RETRYABLE_BY_RUNNER）。
+    agent_attempts: int = 2
+    #: `AGENT_PROBE_ENABLED=0` ⇒ `POST /agent/probe` 回 503 `probe_disabled`。
+    agent_probe_enabled: bool = True
+    #: 已验且在 TTL 内 ⇒ 不重复 spawn（一次探针 ≈ $0.0016 / 10 秒，见 §21.3.3）。
+    agent_probe_ttl_sec: int = 300
+    #: `engine_probes` 的硬上限（只追加表，超过按 created_at 倒序保留最新的）。
+    agent_probe_keep: int = 200
 
     # ── Market data ──────────────────────────────────────────────────────
     data_providers: str = "akshare,yfinance,synthetic"
@@ -240,8 +267,60 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()  # type: ignore[call-arg]  # values come from env/.env
+    # ★实施发现（I-92）：**空字符串的环境变量不许盖掉 `.env` 里的值**。
+    # 实测于本轮真机探针：把 `ARAGON_PROVIDER=openai` / `ARAGON_MODEL=deepseek-flash` 写进
+    # `.env`，进程环境里却已经有 `ARAGON_PROVIDER=''`（任何 launcher / docker-compose 的
+    # `- ARAGON_PROVIDER=` 都会这样），而 pydantic-settings 的优先级是"环境变量 > .env"
+    # ⇒ 用户填的值被一个空串静默盖掉。这与本轮 K1 修的"假绿"是同一类事故：
+    # **配置项存在，但没生效，而且不报错**（第六条纪律）。
+    settings = _restore_empty_placeholders(settings)
     # Make sure the runtime directories exist before anything writes to them.
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     settings.asks_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings
+
+
+#: 这些字段是"引擎是谁"的身份项：空串 = "没填"，不是"填了空值"。
+#: 只修这七个：其余的字符串设置（如 `ALLOW_ORIGINS`）里空串是有语义的（=同源）。
+_EMPTY_MEANS_UNSET: tuple[str, ...] = (
+    "aragon_provider",
+    "aragon_model",
+    "aragon_bin",
+    "aragon_home",
+    "aragon_base_url",
+    "aragon_api_key",
+    "workspace_root",
+)
+
+
+def _restore_empty_placeholders(settings: Settings) -> Settings:
+    """环境变量给了空串、而 `.env` 里有非空值时，用 `.env` 的值（`I-92`）。
+
+    只处理 `_EMPTY_MEANS_UNSET` 里的七个身份项；读不到 `.env` 就原样返回（永不抛）。
+
+    读的是与 `model_config.env_file` **同一个列表、同一个顺序**（后面的文件覆盖前面的，
+    与 pydantic-settings 的优先级一致）：只读仓库根那一份，会让"`api/.env` 里填了引擎"
+    这个同样合法的部署在修完 I-92 之后仍然被空串吃掉。
+    """
+    values: dict[str, str] = {}
+    for candidate in (REPO_DIR / ".env", API_DIR / ".env"):
+        try:
+            values.update({key: value for key, value in dotenv_values(candidate).items() if value is not None})
+        except Exception:  # pragma: no cover - python-dotenv 缺失或文件不可读
+            continue
+    changed = False
+    for name in _EMPTY_MEANS_UNSET:
+        if os.environ.get(name.upper(), None) != "":
+            continue
+        fallback = (values.get(name.upper()) or "").strip()
+        if not fallback:
+            continue
+        if name == "aragon_api_key":
+            setattr(settings, name, SecretStr(fallback))
+        else:
+            setattr(settings, name, fallback)
+        changed = True
+    if changed:
+        logger.info("检测到空的环境变量覆盖了 .env 里的引擎身份设置，已按 .env 修正（I-92）")
     return settings

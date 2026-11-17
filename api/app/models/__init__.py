@@ -4,6 +4,7 @@ from .alias import SymbolAlias
 from .ask import ASK_ACTIVE_STATUSES, ASK_TERMINAL_STATUSES, AskEvent, ReportAsk
 from .bar import Bar
 from .cost import LEDGER_KINDS, CostLedger
+from .engine_probe import PROBE_REASONS, EngineProbe
 from .instrument import Instrument
 from .quote import Quote
 from .report import Report
@@ -16,10 +17,12 @@ __all__ = [
     "ASK_ACTIVE_STATUSES",
     "ASK_TERMINAL_STATUSES",
     "LEDGER_KINDS",
+    "PROBE_REASONS",
     "TERMINAL_STATUSES",
     "AskEvent",
     "Bar",
     "CostLedger",
+    "EngineProbe",
     "Instrument",
     "Quote",
     "Report",

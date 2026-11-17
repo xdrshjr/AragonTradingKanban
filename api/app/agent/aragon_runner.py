@@ -19,7 +19,9 @@ import json
 import os
 import re
 import sys
-from collections.abc import AsyncIterator, Callable
+import time
+from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,13 +29,23 @@ from ..config import get_settings
 from ..logging import get_logger
 from . import schema_budget
 from .failure import (
-    AUTH_HINTS,
     CLI_ERROR_CODE_MAP,
     EXIT_MAP,
+    RETRYABLE_BY_RUNNER,
     STDERR_REFINE,
+    STOP_REASON_MAP,
     hint_for,
+    looks_like_auth,
+    mask_secrets,
 )
-from .preflight import AragonCapability, check_aragon
+from .preflight import (
+    AragonCapability,
+    base_url_problem,
+    check_aragon,
+    host_of,
+    normalize_base_url,
+    provider_problem,
+)
 from .runner_base import AgentError, AgentEvent, AgentEventType, AgentRequest, AgentResult, AgentUsage
 
 logger = get_logger("aragon_runner")
@@ -113,6 +125,28 @@ def clamp_repair_turns(configured: int, capability: AragonCapability) -> int:
     return configured
 
 
+#: ★v9（K1 / §21.3.2"打码是安全半条命"）：`--api-key` 的下一位与非 flag 位置的兜底都走
+#: `failure.mask_secrets()` —— 打码只有**一份**正则（`failure._SECRET_RE`），本文件不再
+#: 复制第二份：两份词表必然漂移，而这一份守的是"密钥不落盘"。
+_REDACTED = "***"
+
+
+def redact_argv(argv: Sequence[str]) -> list[str]:
+    """`--api-key` 的下一位一律换成 `***`；其余位置再做一次正则兜底。
+
+    **只产出显示用副本**。三个允许的落盘点（V10-P0-2 / 裁决 K-16）：
+    `argv.json` 的 `write_text` 之前、`run.log` 的启动行、任何 SSE / `run_events` 载荷。
+    绝不允许在 `build_argv()` 的 `return` 前调用它——那个返回值**就是**子进程命令行，
+    打码等于把 `***` 当密钥交给引擎（E-76：每一次生成与深答都会以 401 结束，
+    而 AC-90/AC-91 照样全绿）。
+    """
+    masked = list(argv)
+    for index, item in enumerate(masked[:-1]):
+        if item in ("--api-key", "--apikey"):
+            masked[index + 1] = _REDACTED
+    return [mask_secrets(item) for item in masked]
+
+
 def build_argv(request: AgentRequest, capability: AragonCapability, binary: str) -> list[str]:
     """Assemble the exact command line described in spec §5.4 / §20.5.3.
 
@@ -126,11 +160,31 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
     settings = get_settings()
     argv: list[str] = [binary]
 
+    # ── 进门前闸门 0/3：K1 的两条**静态**配置检查（spawn 之前，不联网）─────────
+    # 为什么在这里拦（§21.3.2）：E-68 实测 `--provider deepseek` 的结局是 2 秒后
+    # `error.code="config"` + exit 2，而该码不在映射表里 ⇒ 会被报成 `agent_error`
+    # （"引擎返回了一个我们没见过的错误形态"），其实只是一句"你填了个不存在的 provider"。
+    problem = provider_problem(settings.aragon_provider)
+    if problem:
+        raise AgentError("usage_error", problem)
+    problem = base_url_problem(settings.aragon_base_url)
+    if problem:
+        raise AgentError("usage_error", problem)
+
     # ── global flags: MUST come before `exec` ─────────────────────────────
     if settings.aragon_provider:
-        argv += ["--provider", settings.aragon_provider]
+        argv += ["--provider", settings.aragon_provider.strip().lower()]
     if settings.aragon_model:
         argv += ["--model", settings.aragon_model]
+    # ★v9（K1 / AC-90）：顺序写死 provider → model → base-url → api-key，全在 `exec` 之前。
+    # 位置错了的表现是 `error: unknown option`（exit 2），§20.5.3 已经踩过一次。
+    # **空值不传**（AC-92）：`--api-key ""` 会让 CLI 认为"给了一个空密钥"，比"不给"更难诊断。
+    base_url = normalize_base_url(settings.aragon_base_url)
+    if base_url:
+        argv += ["--base-url", base_url]
+    api_key = settings.aragon_api_key.get_secret_value().strip()
+    if api_key:
+        argv += ["--api-key", api_key]
     argv += ["--cwd", str(request.workspace)]
     argv += ["--tool-timeout", str(settings.aragon_tool_timeout_ms)]
     # ★v8 评审（§20.5.3 的"显式保证"）：`--idle-timeout` 必须比 `--tool-timeout` 至少多
@@ -149,10 +203,15 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
     argv += ["--idle-timeout", str(idle_timeout)]
     # ★v7 H1：`auto` 的含义是"用模型上限"，于是"截断"变得不可预测；
     # 实测 5 次真实成功生成的 output tokens 最大 34586，给 40000 让截断可解释。
-    argv += ["--max-tokens", str(max(1, int(settings.aragon_max_output_tokens)))]
+    # ★v9（V10-P1-9）：`request` 上的三个可空覆盖让探针（K2）能设自己的预算。
+    # `None` ⇒ 跟 `settings`，所以生成路径的行为一个字都没变。
+    max_tokens = settings.aragon_max_output_tokens if request.max_output_tokens is None else request.max_output_tokens
+    argv += ["--max-tokens", str(max(1, int(max_tokens)))]
     # ★v7 H1：CLI 默认 10 次重试 + 每次退避上限 30s，最坏会撞上我们自己的
     # `--max-duration`，把一个网络问题记成"模型太慢"（E-45：6 次已吃 44s）。
-    argv += ["--retry-max", str(max(0, min(20, int(settings.aragon_retry_max))))]
+    # ★v9（K4）：默认改为 0（重试权收回 runner）；探针（K2）也用它关掉 CLI 重试。
+    retry_max = settings.aragon_retry_max if request.retry_max is None else request.retry_max
+    argv += ["--retry-max", str(max(0, min(20, int(retry_max))))]
     if settings.aragon_agent_posture == "lean":
         # ★v7 H1：六个 `--no-*` 全在全局段。放在 `exec` 之后是 exit 2。
         argv += list(LEAN_FLAGS)
@@ -193,7 +252,9 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
     argv += ["--append-system-prompt-file", str(request.system_prompt_path)]
     argv += ["--result-schema", str(request.schema_path)]
     # ★v7 H1：配置化但默认不变；并且被 CLI 自己的 `maxRepairTurns` 夹取。
-    argv += ["--result-repair-turns", str(clamp_repair_turns(settings.aragon_repair_turns, capability))]
+    # ★v9（K2）：探针要的是"一次就成"，不是"修几次能成" ⇒ `repair_turns=0`。
+    repair_turns = settings.aragon_repair_turns if request.repair_turns is None else request.repair_turns
+    argv += ["--result-repair-turns", str(clamp_repair_turns(repair_turns, capability))]
     argv += ["--on-result-unsatisfied", "error"]
 
     argv += ["--max-turns", str(request.max_turns)]
@@ -226,6 +287,134 @@ def _preview(value: Any, limit: int = 400) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     text = text.replace("\n", " ⏎ ")
     return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _salvageable(result_payload: dict[str, Any]) -> Any | None:
+    """★v9（K5）：`result.result` 里的原始 JSON（未清洗）。解析不了就是 `None`。
+
+    实测成功侧的形状是 `"result": "{\\"ok\\":true,…}"`（字符串，不是对象），所以这条路
+    不是猜的。**只解析，不判定**——是否抢救由 `report_validator.salvage_doc()` 决定。
+    """
+    raw = result_payload.get("result")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _write_engine_json(
+    workspace: Path,
+    engine: dict[str, Any] | None,
+    capability: AragonCapability,
+) -> None:
+    """★v9（K7 / AC-105）：`engine.json` —— **这次真的用了什么**。
+
+    为什么另立一个文件：`capabilities.aragon` 是**静态**预检（装没装、版本对不对），
+    而这里记的是本次 `system` 事件里的实况。两者不一致（同一 `quality.engine.fingerprint`
+    却不同 `baseUrlHost`）正是 G4 可比性最怕的情形——同时也说明"有人换了端点但没换模型名"。
+
+    `system` 事件缺失时写 `{"missing": true}` 而**不是不写**：一个"文件不存在"与
+    "这次没有 system 事件"是两件事，前者会让排查的人去查磁盘。
+    """
+    base_url = (engine or {}).get("baseUrl") or (get_settings().aragon_base_url or None)
+    payload: dict[str, Any] = {
+        "provider": (engine or {}).get("provider") or capability.provider,
+        "model": (engine or {}).get("model") or capability.model,
+        "baseUrlHost": host_of(base_url),
+        "permissionMode": "strict",
+        "tools": list(capability.extraAllowTools),
+        "capabilities": {
+            "cli": capability.cli,
+            "core": capability.core,
+            "versionOk": capability.versionOk,
+            "canStructured": capability.canStructured,
+            "hasSubmitResult": capability.hasSubmitResult,
+            "keySource": capability.keySource,
+        },
+        "cli": capability.cli,
+    }
+    if not engine:
+        payload["missing"] = True
+    try:
+        (workspace / "engine.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:  # pragma: no cover - 工作区被删
+        logger.debug("engine.json 写入失败（工作区不可写）")
+
+
+def _with_attempt(request: AgentRequest, attempt: int, attempt_dir: Path) -> AgentRequest:
+    """★v9（K4）：把一次 attempt 的视图做出来（不改调用方传进来的那个对象）。
+
+    单次尝试时 `attempt_dir is request.workspace`，返回的就是**同一个对象**
+    （零行为变化：既有测试断言的 argv.json / ndjson 位置一个字都没动）。
+    """
+    if attempt_dir == request.workspace:
+        return request
+    return replace(request, workspace=attempt_dir, attempt=attempt, attempt_dir=attempt_dir)
+
+
+#: 每次 attempt 的审计文件（重试时整批归档到 `attempt-<n>/`）。
+ATTEMPT_ARTIFACTS: tuple[str, ...] = (
+    "argv.json",
+    "schema_budget.json",
+    "engine.json",
+    "aragon.ndjson",
+    "aragon.stderr.log",
+    "result.json",
+)
+
+
+def _archive_attempt(workspace: Path, attempt: int) -> Path | None:
+    """把根目录下第一次尝试的产物挪进 `attempt-<n>/`（重试前调用）。
+
+    为什么这样做而不是"一开始就把每次 attempt 放进子目录"：单次尝试（绝大多数情况）的
+    产物路径必须与 v8 完全一致 —— 那是 `run_diagnostics`、审计脚本、既有的 12 条测试
+    共同依赖的布局。只有真的发生重试时才付出"多两层目录"的代价（AC-100）。
+    """
+    target = workspace / f"attempt-{attempt}"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:  # pragma: no cover
+        return None
+    for name in ATTEMPT_ARTIFACTS:
+        source = workspace / name
+        if not source.exists():
+            continue
+        try:
+            source.replace(target / name)
+        except OSError:  # pragma: no cover - 文件被占用
+            logger.debug("归档 %s 失败（跳过）", name)
+    return target
+
+
+def _accumulate_usage(total: AgentUsage, usage: AgentUsage) -> None:
+    """★v9（K4 / R-48）：usage 跨 attempt 累加，成本不丢（`run.done.costUsd` 是总和）。"""
+    for field_name in ("input_tokens", "output_tokens", "total_tokens", "turns", "tool_calls"):
+        incoming = getattr(usage, field_name, None)
+        if incoming is None:
+            continue
+        current = getattr(total, field_name, None) or 0
+        setattr(total, field_name, int(current) + int(incoming))
+
+
+def _merge_usage(total: AgentUsage, last: AgentUsage) -> AgentUsage:
+    """总和 ≥ 最后一次：只有当累加器什么都没收到时才退回最后一次的数。"""
+    if total.input_tokens is None and total.output_tokens is None and total.total_tokens is None:
+        return last
+    merged = AgentUsage(
+        input_tokens=total.input_tokens,
+        output_tokens=total.output_tokens,
+        total_tokens=total.total_tokens,
+        turns=total.turns if total.turns is not None else last.turns,
+        tool_calls=total.tool_calls if total.tool_calls is not None else last.tool_calls,
+    )
+    return merged
 
 
 async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label: str = "-") -> None:
@@ -271,11 +460,14 @@ class AragonRunner:
     name = "aragon"
     source = "aragon"
 
-    def __init__(self, capability: AragonCapability | None = None) -> None:
+    def __init__(self, capability: AragonCapability | None = None, *, max_attempts: int | None = None) -> None:
         self.capability = capability or check_aragon()
         self._process: asyncio.subprocess.Process | None = None
         self._cancelled = False
         self._run_id = "-"
+        #: ★v9（K4）：`None` ⇒ 跟 `settings.agent_attempts`。探针（K2）传 1 ——
+        #: 一次自检不值得再花一次 token，也不该把"通不通"这件事拖成两倍时间。
+        self._max_attempts = max_attempts
 
     # ── public API ───────────────────────────────────────────────────────
     async def run(
@@ -298,6 +490,101 @@ class AragonRunner:
 
     # ── streaming core ───────────────────────────────────────────────────
     async def stream(
+        self,
+        request: AgentRequest,
+        on_event: Callable[[AgentEvent], None] | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """★v9（K4 / §21.3.5）：**重试权收回 runner**。
+
+        为什么是这里而不是 CLI：实测（E-69）`--retry-max` 管不住 CLI 的第二层重试
+        （`maxRetries=10`、每次退避 60 s），一次"端点不可达"花掉 2 分 03 秒并撞上时长
+        预算，最终以 `exit 3 / stopReason=timeout / isError=false` 结束——会被报成
+        "模型不肯提交"。关掉 CLI 重试后（E-70）同样的问题 **2.0 秒**返回且可归因。
+
+        三条纪律：
+        1. 只重试 `RETRYABLE_BY_RUNNER`（`provider_unavailable` / `result_missing`）；
+        2. 每次 attempt 用 `attempt-<n>/` 留档（argv / ndjson / stderr / engine.json），
+           事后能证明"第一次网络断、第二次成功"；单次尝试时**不建子目录**（行为不变）；
+        3. usage 跨 attempt 累加，`run.done.costUsd` 是全部 attempt 之和（成本不丢）。
+        """
+        settings = get_settings()
+        total = max(1, int(self._max_attempts if self._max_attempts is not None else settings.agent_attempts))
+        started = time.monotonic()
+        usage_total = AgentUsage()
+        result: AgentResult | None = None
+        attempts_made = 0
+
+        for attempt in range(1, total + 1):
+            if self._cancelled:
+                break
+            if attempt > 1:
+                # 预算守卫（§21.3.5 第 3 条）：不满足就**不重试**，把第一次的错误交出去
+                # —— 比"重试到超时"诚实。
+                expected_ms = max(1_000, int(request.max_duration_ms) // 3)
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                if elapsed_ms + expected_ms >= int(request.max_duration_ms):
+                    logger.info(
+                        "runner retry skipped run=%s attempt=%s elapsed=%sms budget=%sms",
+                        request.run_id,
+                        attempt,
+                        elapsed_ms,
+                        request.max_duration_ms,
+                    )
+                    break
+                backoff_ms = min(10_000, max(1_500, 1_500 * (attempt - 1) + 1_000))
+                logger.info(
+                    "runner retry run=%s attempt=%s/%s code=%s",
+                    request.run_id,
+                    attempt,
+                    total,
+                    result.error_code,
+                )
+                yield AgentEvent(
+                    AgentEventType.retry,
+                    {
+                        # ★v9（K4）：`layer` 是新增字段（v7 的载荷一字不改）。
+                        # 前端按它显示"引擎重试 x/10" vs "本服务重试 1/2"。
+                        "layer": "runner",
+                        "attempt": attempt,
+                        "of": total,
+                        "code": (result.error_code if result else None),
+                        "backoffMs": backoff_ms,
+                    },
+                )
+                await asyncio.sleep(backoff_ms / 1000)
+
+            attempt_dir = request.workspace if attempt == 1 else request.workspace / f"attempt-{attempt}"
+            if attempt == 2:
+                # ★v9（K4）：第一次尝试的文件留在**根目录**（与 v8 完全一致：单次尝试时
+                # 布局一个字都没动），只在真的发生重试时才归档到 `attempt-1/`，
+                # 于是 AC-100 要的"两次的 attempt-<n>/ 都存在"与既有产物路径同时成立。
+                _archive_attempt(request.workspace, 1)
+            attempt_request = _with_attempt(request, attempt, attempt_dir)
+            attempts_made = attempt
+            result = None
+            async for event in self._stream_once(attempt_request, on_event):
+                if event.type == AgentEventType.log and (candidate := event.payload.get("__result")):
+                    result = candidate  # type: ignore[assignment]
+                    continue
+                yield event
+            if result is None:  # pragma: no cover - _stream_once always yields one
+                result = AgentResult(
+                    error_code="internal", error_message="runner produced no result", source=self.source
+                )
+            _accumulate_usage(usage_total, result.usage)
+
+            if self._cancelled or result.ok:
+                break
+            if result.error_code not in RETRYABLE_BY_RUNNER:
+                break
+
+        if result is None:  # pragma: no cover - defensive
+            result = AgentResult(error_code="internal", error_message="runner produced no result", source=self.source)
+        result.usage = _merge_usage(usage_total, result.usage)
+        result.attempts_made = max(1, attempts_made)
+        yield AgentEvent(AgentEventType.log, {"__result": result, "level": "info", "message": "生成引擎已退出"})
+
+    async def _stream_once(
         self,
         request: AgentRequest,
         on_event: Callable[[AgentEvent], None] | None = None,
@@ -347,12 +634,24 @@ class AragonRunner:
 
         argv = build_argv(request, self.capability, binary)
 
+        # ★v9（V10-P0-2 / 裁决 K-16）：**打码只发生在落盘点**。
+        # `build_argv()` 的返回值就是下面 `create_subprocess_exec` 的实参，
+        # 所以在它的 `return` 前打码等于把 `***` 当密钥交给引擎（E-76：每一次生成
+        # 与深答都会以 401 结束，而 AC-90/AC-91 照样全绿）。这里落的是**副本**。
         argv_path = request.workspace / "argv.json"
-        argv_path.write_text(json.dumps(argv, indent=2, ensure_ascii=False), encoding="utf-8")
+        argv_path.write_text(json.dumps(redact_argv(argv), indent=2, ensure_ascii=False), encoding="utf-8")
 
         self._emit(
             on_event,
-            AgentEvent(AgentEventType.log, {"level": "info", "message": f"启动生成引擎：{' '.join(argv[:3])} …"}),
+            AgentEvent(
+                AgentEventType.log,
+                {
+                    "level": "info",
+                    # ★v9（V10-P2-12）：过去是 `argv[:3]`，安全**只是碰巧**（密钥排在第 7 位），
+                    # 而 v7 已经调过一次 flag 顺序。改成先打码再看前 5 项。
+                    "message": f"启动生成引擎：{' '.join(redact_argv(argv)[:5])} …",
+                },
+            ),
         )
 
         emit_event, event_queue = self._make_queue(on_event)
@@ -381,6 +680,9 @@ class AragonRunner:
             "retries": 0,
             "engine": None,
             "last_retry": None,
+            # ★v9（K3）：`stopReason` 是 CLI 的原话，过去**从未被消费**
+            # （`grep -rn stopReason api/app` 只有注释）。它是 R-2b 系列规则的唯一输入。
+            "stop_reason": None,
         }
         readers = [
             asyncio.create_task(
@@ -434,7 +736,9 @@ class AragonRunner:
         if result.text and not result.doc:
             # Surface the model's last words even on failure (★P1-10 input).
             emit_event(AgentEvent(AgentEventType.text, {"delta": result.text[:4000], "final": True}))
-        yield AgentEvent(AgentEventType.log, {"__result": result, "level": "info", "message": "生成引擎已退出"})
+        # ★v9（K4）：最终结果由 `stream()` 统一 yield（它要跨 attempt 累加 usage 与
+        # `attempts_made`）。这里只把结果交给它 —— 两次 yield 会让 `run()` 拿到两份。
+        yield AgentEvent(AgentEventType.log, {"__result": result, "level": "info", "message": "本次尝试已退出"})
 
     # ── helpers ──────────────────────────────────────────────────────────
     @staticmethod
@@ -559,6 +863,10 @@ class AragonRunner:
 
         if kind == "result":
             observed["result"] = payload
+            # ★v9（K3 / §21.3.4）：`stopReason` 是"怎么停的"，`error.code` 是"为什么"。
+            # 前者优先级**低于**后者（裁决 K-7），但它是 R-2b 系列规则唯一能看见的事实。
+            if payload.get("stopReason") is not None:
+                observed["stop_reason"] = str(payload.get("stopReason") or "") or None
             usage = payload.get("usage") or {}
             observed["usage"] = AgentUsage(
                 input_tokens=usage.get("inputTokens") or usage.get("input_tokens"),
@@ -658,11 +966,11 @@ class AragonRunner:
         if isinstance(structured, dict) and isinstance(structured.get("value"), dict):
             doc = structured["value"]
         else:
-            # ★v8（V8-P1-1）：分类入口是 `_classify_failure(observed, …)`，不是
+            # ★v8（V8-P1-1）：分类入口是 `classify_failure(observed, …)`，不是
             # `_classify_exit`。`_finalize` 过去写成 `elif result_payload:` →
             # `result_schema_unsatisfied`，把"有 result 行 + error.code=network_error"
             # 也归成"模型没提交"——而那正是 AC-73 ② 要守的路径。
-            error_code, error_message = self._classify_failure(observed, exit_code, stderr_path)
+            error_code, error_message = classify_failure(observed, exit_code, stderr_path)
 
         if result_payload.get("isError") and error_code is None and doc is None:
             error_code = "agent_error"
@@ -683,8 +991,10 @@ class AragonRunner:
             cost_usd=cost_usd,
             cost_known=cost_known,
             exit_code=exit_code,
+            # ★v9（K1 的安全半条命）：`error_message` 会进 `runs.error_message`、SSE 与
+            # 失败卡片。上游原文里可能带密钥形态（E-71 的 401 原文），出门前统一打码。
             error_code=error_code,
-            error_message=error_message,
+            error_message=mask_secrets(error_message) if error_message else error_message,
             provider=self.capability.provider,
             model=self.capability.model,
             source=self.source,
@@ -692,17 +1002,24 @@ class AragonRunner:
             engine_info=observed.get("engine"),
             retries=int(observed.get("retries") or 0),
             structured_attempts=attempts if isinstance(attempts, int) else None,
+            # ★v9（K3）：CLI 原样；映射表在 `failure.STOP_REASON_MAP`，这里是事实。
+            stop_reason=observed.get("stop_reason"),
+            # ★v9（K5）：`result.result` 是 CLI 把提交内容放在那个字符串字段里的地方
+            # （成功侧形状实测：`{"ok":true,"echo":"…"}`）。解析失败就是 `None`。
+            salvageable_raw=_salvageable(result_payload),
         )
         (request.workspace / "result.json").write_text(
             json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        _write_engine_json(request.workspace, observed.get("engine"), self.capability)
         logger.info(
-            "aragon finished run=%s exit=%s error=%s doc=%s retries=%s",
+            "aragon finished run=%s exit=%s error=%s doc=%s retries=%s stop=%s",
             request.run_id,
             exit_code,
             error_code,
             doc is not None,
             final.retries,
+            final.stop_reason,
         )
         return final
 
@@ -712,47 +1029,97 @@ class AragonRunner:
         exit_code: int | None,
         stderr_path: Path,
     ) -> tuple[str, str]:
-        """★v8（V8-P1-1 / O-14）：失败的**唯一**判定入口。
+        """★v9（V10-P1-9）：**一行委托**。规则表与实现都在模块级 `classify_failure()`。
 
-        四条规则按顺序生效（§20.3.4）：
-
-        1. 有 `result` 行 + `structured.value` 是 dict → 成功（在 `_finalize` 里判定）。
-        2. 有 `result` 行但没提交结构化结果：
-           a. **先看 `result.error.code`** —— CLI 是唯一知道"为什么没提交"的一方，
-              它给的码永远优先于我们对 exit code 的猜测；
-           b. 有码但不在映射表里 → `agent_error`，把原码与原文放进去；
-           c. 完全没有 `error` 对象 → `result_schema_unsatisfied`（exit 1 的正常形态）。
-        3. 没有 `result` 行：
-           a. 观察到 `retry`（`retries > 0`）→ `provider_unavailable`（P-4）；
-           b. 引擎日志里有凭证类特征 → `provider_auth`；
-           c. 否则按 `EXIT_MAP` + `STDERR_REFINE`。
-        4. 以上都不成立 → `agent_error`（保留 `_finalize` 里 `isError` 那条的老行为）。
-
-        **为什么必须写第 2a 条**：`--retry-max 0` + 一个坏 base URL 会给出
-        "有 result 行、`error.code=network_error`、`retries=0`"。若只在"无 result 行"
-        的分支里认 `provider_*`，它就会落到 exit 1 → `result_schema_unsatisfied`，
-        把网络问题报成"模型不肯提交报告"。
+        保留这个方法名是因为既有代码（`_finalize`）与 v8 的注释都指向它；但判定只有
+        一份实现——探针（K2）与 AC-73/97/98 的夹具调**同一个函数**。两套判定必然漂移，
+        而漂移的方向永远是"面板说好、生成说坏"（裁决 K-5）。
         """
-        result_payload = observed.get("result") or {}
-        if result_payload:
-            error_block = result_payload.get("error")
-            cli_code = None
-            cli_message = ""
-            if isinstance(error_block, dict):
-                cli_code = error_block.get("code")
-                cli_message = str(error_block.get("message") or "")
-            elif isinstance(error_block, str) and error_block:
-                cli_message = error_block
-            if cli_code:
-                mapped = CLI_ERROR_CODE_MAP.get(str(cli_code))
-                if mapped is not None:
-                    return mapped, (cli_message or hint_for(mapped))
-                return "agent_error", f"引擎报错 {cli_code}：{cli_message or '（无详情）'}"[:400]
-            return "result_schema_unsatisfied", cli_message or "模型未能提交满足 JSON Schema 的结构化结果"
+        return classify_failure(observed, exit_code, stderr_path)
 
-        retries = int(observed.get("retries") or 0)
-        last_retry = observed.get("last_retry") or {}
+
+#: ★v9（K3 / §21.3.4）：**有序**规则表（代码里的顺序即优先级）。这是失败的
+#: **唯一**判定实现：`AragonRunner._classify_failure` 是一行委托，探针（K2）与
+#: AC-97/98/99/108 的夹具调的都是这个函数（裁决 K-5：两套判定必然漂移）。
+#:
+#: | 序 | 条件（全部可观测） | 结果码 |
+#: | --- | --- | --- |
+#: | R-1 | `structured.value` 是 dict | —（成功，在 `_finalize` 里判定） |
+#: | R-2a-1 | 供应商封套码（stream/network/fetch_error）且 message 命中 `AUTH_MARKERS` | `provider_auth` |
+#: | R-2a-2 | 同上但未命中 `AUTH_MARKERS` | `provider_unavailable` |
+#: | R-2a-3 | `error.code` ∈ 映射表（其余） | 映射值 |
+#: | R-2a-4 | `error.code` 存在但不在表里 | `agent_error` |
+#: | R-2b-1 | 无 `error.code`，`stopReason=timeout` | `provider_unavailable` |
+#: | R-2b-2 | 无 `error.code`，`stopReason=max_turns` | `budget_exceeded` |
+#: | R-2b-3 | 无 `error.code`，`stopReason` 是结论且不在表里（`error`/`aborted`） | 映射值 |
+#: | R-2b-4 | 无 `error.code`，`stopReason` 缺失/`end_turn`，且 `retries > 0` | `provider_unavailable` |
+#: | R-2c | 无 `error.code`，`stopReason` 空/缺失/`end_turn`，`retries == 0` | `result_schema_unsatisfied` |
+#: | R-3 | 没有 `result` 行 | 现状（fatal_code → auth 提示 → `EXIT_MAP`） |
+#:
+#: **这张表必须穷尽**（V10-P1-2 / AC-108）：对 `{code ∈ map, code ∉ map, 无 code}` ×
+#: `{timeout, max_turns, end_turn, aborted, 缺失}` × `{retries 0, 3}` 的 **30 种组合**，
+#: 本函数必须返回且只返回一个合法码，永不返回 `None`、永不抛。v9 草案在
+#: `end_turn + retries==0`（正是 AC-99 的夹具）与 `timeout + retries==0` 两处留了洞。
+_PROVIDER_ENVELOPE_CODES = frozenset({"stream_error", "network_error", "fetch_error"})
+
+
+def classify_failure(
+    observed: dict[str, Any],
+    exit_code: int | None,
+    stderr_path: Path,
+) -> tuple[str, str]:
+    """失败的**唯一**判定入口（规则表见上方注释）。返回 `(code, message)`。"""
+    result_payload = observed.get("result") or {}
+    retries = int(observed.get("retries") or 0)
+    last_retry = observed.get("last_retry") or {}
+    stop_reason = str(observed.get("stop_reason") or "").strip()
+    stop_mapped = STOP_REASON_MAP.get(stop_reason, "")
+
+    if result_payload:
+        error_block = result_payload.get("error")
+        cli_code = None
+        cli_message = ""
+        if isinstance(error_block, dict):
+            cli_code = error_block.get("code")
+            cli_message = str(error_block.get("message") or "")
+        elif isinstance(error_block, str) and error_block:
+            cli_message = error_block
+        if cli_code:
+            code_text = str(cli_code)
+            mapped = CLI_ERROR_CODE_MAP.get(code_text)
+            # R-2a-1 / R-2a-2：`stream_error` 同时表示"网络断了"与"密钥错了"（E-70 vs E-71，
+            # 同一个码一字不差）。判据是 message 的**语义**，而且要求**两个条件同时成立**
+            # （V10-P1-4）：`error.code ∈ 供应商封套码` 且 message 命中 `AUTH_MARKERS`。
+            if code_text in _PROVIDER_ENVELOPE_CODES:
+                if looks_like_auth(cli_message):
+                    return "provider_auth", mask_secrets(
+                        f"模型凭证被拒绝或额度耗尽：{cli_message or '（上游未给出原文）'}", 400
+                    )
+                return "provider_unavailable", mask_secrets(
+                    "模型服务不可用（供应商网络错误）：" + (cli_message or "（无详情）"), 400
+                )
+            if mapped is not None:
+                # R-2a-3
+                return mapped, mask_secrets(cli_message or hint_for(mapped), 400)
+            # R-2a-4
+            return "agent_error", mask_secrets(f"引擎报错 {code_text}：{cli_message or '（无详情）'}", 400)
+
+        # R-2b 系列：没有 `error.code`，只有 `stopReason` 与重试证据。
+        if stop_mapped and stop_mapped not in ("agent_error", ""):
+            # `timeout` → provider_unavailable / `max_turns` → budget_exceeded /
+            # `aborted` → cancelled（R-2b-1 / R-2b-2 / R-2b-3）。
+            if stop_mapped == "provider_unavailable":
+                return "provider_unavailable", (
+                    f"引擎重试 {retries} 次后停止（stopReason={stop_reason or 'timeout'}）"
+                    f"，最后一次 errorType={last_retry.get('errorType') or 'unknown'}"
+                )
+            return stop_mapped, hint_for(stop_mapped)
+        # ★实施发现（I-90）：`stopReason == "error"` **不**单独推导成 `agent_error`。
+        # 既有 AC-9 的夹具（`stopReason:"error"` + `structured:null` + exit 1，E-42 的成功侧
+        # 之外那一条）必须继续得到 `result_schema_unsatisfied`；"引擎异常"这条语义由
+        # `_finalize` 里 `isError` 的兜底与 `EXIT_MAP` 承担，不在这里重复推断一次。
         if retries > 0:
+            # R-2b-4
             return "provider_unavailable", (
                 "模型服务连续不可用："
                 f"lastErrorType={last_retry.get('errorType') or 'unknown'}，"
@@ -760,25 +1127,38 @@ class AragonRunner:
                 f"attempts={retries}（本地累计，CLI 的 attempt 会重置），"
                 f"lastDelayMs={last_retry.get('delayMs') or 0}"
             )
+        # R-2c：真机成功侧的 `stopReason` 恒为 `end_turn`（E-78/E-86），所以这一条
+        # 必须把它当"不是结论"来处理，不能当成"未知错误"。
+        return "result_schema_unsatisfied", cli_message or "模型未能提交满足 JSON Schema 的结构化结果"
 
-        # ★v7（I-63）：没有 result 行时，CLI 的致命 `error` 行仍然是第一手证据。
-        fatal_code = observed.get("fatal_code")
-        if fatal_code and str(fatal_code) in CLI_ERROR_CODE_MAP:
-            mapped = CLI_ERROR_CODE_MAP[str(fatal_code)]
-            return mapped, f"引擎报告 {fatal_code}（未产出 result 行）"
+    if retries > 0:
+        return "provider_unavailable", (
+            "模型服务连续不可用："
+            f"lastErrorType={last_retry.get('errorType') or 'unknown'}，"
+            f"maxRetries={last_retry.get('maxRetries') if last_retry.get('maxRetries') is not None else '?'}，"
+            f"attempts={retries}（本地累计，CLI 的 attempt 会重置），"
+            f"lastDelayMs={last_retry.get('delayMs') or 0}"
+        )
 
-        detail = _read_stderr(stderr_path)
-        lowered = detail.lower()
-        # ★v8 评审（B-2）：凭证扫描**只在退出码不是"确定结论"时才做**。
-        # `AUTH_HINTS` 里是 `401` / `403` / `quota` 这类裸子串，而一次用户取消
-        # （130/143）或撞预算（3）的 stderr 完全可能带一个端口号 `4013` 或一句
-        # "quota will reset at…"。那两件事的结论是**已知的**（cancelled / budget_exceeded），
-        # 不该被一次子串匹配改写——改写的结果是用户点了取消却看到"凭证被拒"。
-        definitive = exit_code in _EXIT_CODES_WITH_CERTAINTY
-        if not definitive and any(hint in lowered for hint in AUTH_HINTS):
-            return "provider_auth", f"模型凭证被拒绝或额度耗尽：{detail[:300]}"
+    # ★v7（I-63）：没有 result 行时，CLI 的致命 `error` 行仍然是第一手证据。
+    fatal_code = observed.get("fatal_code")
+    if fatal_code and str(fatal_code) in CLI_ERROR_CODE_MAP:
+        mapped = CLI_ERROR_CODE_MAP[str(fatal_code)]
+        return mapped, f"引擎报告 {fatal_code}（未产出 result 行）"
 
-        return _classify_exit(exit_code, stderr_path, detail=detail)
+    detail = _read_stderr(stderr_path)
+    # ★v8 评审（B-2）：凭证扫描**只在退出码不是"确定结论"时才做**。
+    # 一次用户取消（130/143）或撞预算（3）的 stderr 完全可能带一个端口号 `4013` 或一句
+    # "quota will reset at…"。那两件事的结论是**已知的**（cancelled / budget_exceeded），
+    # 不该被一次匹配改写——改写的结果是用户点了取消却看到"凭证被拒"。
+    definitive = exit_code in _EXIT_CODES_WITH_CERTAINTY
+    # ★v9（V10-P1-4）：判据是**分词正则**（`looks_like_auth`），不是子串 —— 旧写法
+    # `hint in lowered` 在 `AUTH_HINTS` 变成正则之后恒不命中（也正因为如此，
+    # 裸 `401` 那类"把已知结论改写掉"的 B-2 事故从源头消失）。
+    if not definitive and looks_like_auth(detail):
+        return "provider_auth", mask_secrets(f"模型凭证被拒绝或额度耗尽：{detail[:300]}", 400)
+
+    return _classify_exit(exit_code, stderr_path, detail=detail)
 
 
 def _read_stderr(stderr_path: Path) -> str:

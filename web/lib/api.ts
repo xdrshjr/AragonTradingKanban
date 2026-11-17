@@ -31,6 +31,8 @@ import type {
   ScheduleCreate,
   ScheduleListResponse,
   ScheduleOut,
+  ProbeOutcome,
+  ProbeStatus,
   SearchResponse,
   SymbolSearchHit,
   WatchlistEntry,
@@ -213,6 +215,15 @@ export const api = {
   /** ★v6 G3: `null` means "cannot estimate" — never a fake 0 (`/runs/estimate`). */
   estimateRun: (body: { symbol: string; kind?: 'run' | 'ask_deep' }) =>
     request<EstimateResponse>('/runs/estimate', { method: 'POST', body }),
+
+  /* ── engine self-check (★v9 K2) ───────────────────────────────────────── */
+
+  /** 跑一次最小真实生成（≈10 秒 / ≈$0.0016）。失败也是 200：结论也是结果。 */
+  probeEngine: (force = false) =>
+    request<ProbeOutcome>('/agent/probe', { method: 'POST', body: { force }, timeoutMs: 120_000 }),
+
+  /** 纯读：面板打开一次不该花掉一次自检。 */
+  probeStatus: (revalidate = 0) => request<ProbeStatus>('/agent/probe', { revalidate }),
 
   /* ── cost ledger (G3) ────────────────────────────────────────────────── */
 

@@ -301,6 +301,39 @@ class EngineInfo(BaseModel):
     schemaBytes: int = 0
 
 
+class SalvageQuality(BaseModel):
+    """★v9（K5）：`quality.salvage` —— 抢救记录（进了 `quality` 信封，**不进**报告文档）。
+
+    L6 的硬边界：`report_doc.schema.json` 顶层 `additionalProperties: false`，12 个键
+    一个字都不许加；所以"这份报告是抢救来的"这个事实只能落在我们自己的 quality 里。
+    三个计数器互不重叠（未知块归 `prunedBlocks`，见 `SalvageReport` 的文档）。
+    """
+
+    used: bool = False
+    droppedKeys: int = 0
+    droppedSections: int = 0
+    droppedBlocks: int = 0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class CostQuality(BaseModel):
+    """★v7 H4：`quality.cost` 的三态（`reported | estimated | unknown`）。"""
+
+    source: str = "unknown"
+    reportedUsd: float | None = None
+    estimatedUsd: float | None = None
+    usd: float | None = None
+    priceVersion: str | None = None
+
+
+class PromptQuality(BaseModel):
+    """★v7 H5：`quality.prompt` —— 提示词指纹（只做展示与追溯，**不进**引擎指纹）。"""
+
+    version: int | None = None
+    sha1: str | None = None
+    bytes: int = 0
+
+
 class ReportQuality(BaseModel):
     groundedRatio: float = 1.0
     missingSections: list[str] = Field(default_factory=list)
@@ -312,6 +345,13 @@ class ReportQuality(BaseModel):
     #: ★v6: both optional —老报告没有它们，读路径必须按"可缺失"处理（不回填）。
     grounding: GroundingQuality | None = None
     engine: EngineInfo | None = None
+    #: ★v9（V10-P2-7，顺带发现的存量缺陷）：`cost` / `prompt` 自 v7 起就一直写在
+    #: `ValidationOutcome.quality` 里，却**从未**在响应模型上声明 —— pydantic 静默丢弃，
+    #: 于是 H4/H5 的字段一次都没到过前端（"第二道门"的第三次）。本轮补齐三个字段，
+    #: 并加一条反射守卫用例（`test_every_quality_key_has_a_field`）：下次再加键时它先红。
+    cost: CostQuality | None = None
+    prompt: PromptQuality | None = None
+    salvage: SalvageQuality | None = None
 
 
 class ReportSummary(BaseModel):

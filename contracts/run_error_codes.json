@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "_comment": "★v9（K6/K7 / AC-104）：前后端码表的**唯一跨语言真源**。pytest 断言 `set(RUN_ERROR_CODES) == codes`（18 条，集合相等不是子集），vitest 断言 `RUN_ERROR_ACTIONS ⊇ codes` 且 `HTTP_ERROR_ACTIONS ⊇ httpCodes`。任何一侧新增码而另一侧漏改，测试直接红。历史上这套码表已漂移两次（v7 的 V8-P1-3、`run_conflict` 静默）。",
+  "codes": [
+    { "code": "provider_auth", "severity": "config", "retryable": false, "action": "checkKey" },
+    { "code": "provider_unavailable", "severity": "transient", "retryable": true, "action": "wait" },
+    { "code": "usage_error", "severity": "config", "retryable": false, "action": "openSettings" },
+    { "code": "aragon_unavailable", "severity": "config", "retryable": false, "action": "openSettings" },
+    { "code": "structured_result_unsupported", "severity": "config", "retryable": false, "action": "openSettings" },
+    { "code": "schema_over_budget", "severity": "config", "retryable": false, "action": "openLog" },
+    { "code": "schema_drift", "severity": "config", "retryable": false, "action": "retry" },
+    { "code": "prompt_over_budget", "severity": "config", "retryable": false, "action": "openLog" },
+    { "code": "result_schema_unsatisfied", "severity": "model", "retryable": true, "action": "retry" },
+    { "code": "result_missing", "severity": "engine", "retryable": true, "action": "retry" },
+    { "code": "snapshot_missing", "severity": "internal", "retryable": true, "action": "retry" },
+    { "code": "budget_exceeded", "severity": "engine", "retryable": true, "action": "openSettings" },
+    { "code": "agent_error", "severity": "engine", "retryable": true, "action": "retry" },
+    { "code": "cancelled", "severity": "user", "retryable": false, "action": "none" },
+    { "code": "interrupted", "severity": "internal", "retryable": true, "action": "retry" },
+    { "code": "internal", "severity": "internal", "retryable": true, "action": "retry" },
+    { "code": "data_provider_unavailable", "severity": "transient", "retryable": false, "action": "wait" },
+    { "code": "instrument_not_found", "severity": "user", "retryable": false, "action": "none" }
+  ],
+  "httpCodes": [
+    { "code": "monthly_budget_exceeded", "status": 402, "action": "openSettings" },
+    { "code": "probe_in_progress", "status": 409, "action": "wait" },
+    { "code": "probe_busy", "status": 409, "action": "wait" },
+    { "code": "probe_disabled", "status": 503, "action": "openSettings" },
+    { "code": "agent_mock_mode", "status": 503, "action": "openSettings" }
+  ],
+  "sseEvents": [
+    "run.stage",
+    "run.progress",
+    "agent.tool",
+    "agent.text",
+    "run.log",
+    "run.retry",
+    "run.done",
+    "run.error"
+  ]
+}

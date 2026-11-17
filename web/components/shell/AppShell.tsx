@@ -15,7 +15,14 @@ import {
   computeWidths,
 } from '@/lib/layout';
 import { useUiStore } from '@/lib/store';
-import type { ChartView, Instrument, ReportDetail, ReportSummary, WatchlistEntry } from '@/lib/types';
+import type {
+  AragonCapability,
+  ChartView,
+  Instrument,
+  ReportDetail,
+  ReportSummary,
+  WatchlistEntry,
+} from '@/lib/types';
 
 import { PricePanel } from '../chart/PricePanel';
 import type { UseGenerationStreamResult } from '../generation/useGenerationStream';
@@ -60,6 +67,12 @@ const CommandPalette = dynamic(() => import('./CommandPalette').then((module) =>
  * 按 §11.2 的既有口径处理（"浮层一律懒加载"），而不是把 240 kB 这个数往上调：
  * 那个数存在的意义就是逼着人做这个选择。
  */
+// ★v9（K6）：密钥抽屉按需加载 —— 它只在「检查密钥 / 去设置」时出现，
+// 而首屏预算（AC-35，240 kB gzip）是硬线（§11.2 的手段：next/dynamic）。
+const KeyDrawer = dynamic(() => import('./KeyDrawer').then((module) => module.KeyDrawer), {
+  ssr: false,
+});
+
 const GenerationOverlay = dynamic(
   () => import('../generation/GenerationOverlay').then((module) => module.GenerationOverlay),
   { ssr: false, loading: () => null },
@@ -73,6 +86,8 @@ export interface AppShellProps {
   reportDetail: ReportDetail | null;
   agentMode: 'real' | 'mock';
   degradedReason?: string | null;
+  /** ★v9（K2）：端点徽标要读它（`provider/model @ host` + 三态点）。 */
+  aragon?: AragonCapability | null;
   onSelectInstrument: (instrumentId: string) => void;
   onSelectVersion: (reportId: string) => void;
   onTogglePin?: (reportId: string, pinned: boolean) => void;
@@ -144,6 +159,7 @@ export function AppShell({
   reportDetail,
   agentMode,
   degradedReason,
+  aragon,
   onSelectInstrument,
   onSelectVersion,
   onTogglePin,
@@ -255,6 +271,11 @@ export function AppShell({
 
   const activeLabel = activeInstrument?.name ?? copy.brand;
 
+  const setOverlayCollapsed = useUiStore((store) => store.setOverlayCollapsed);
+  // ★v9（K6）：密钥抽屉 —— `checkKey` / `openSettings` 与端点徽标三个入口的落地处。
+  // 探针的状态与 mutation 住在抽屉里（它是懒加载的），所以首屏不多一次 /agent/probe。
+  const [keyDrawerOpen, setKeyDrawerOpen] = useState(false);
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <header
@@ -275,7 +296,13 @@ export function AppShell({
         <span className="truncate text-[12px] text-[var(--text-secondary)]">{activeLabel}</span>
 
         <div className="ml-auto flex items-center gap-2">
-          <RunStatusBadge generation={generation} agentMode={agentMode} degradedReason={degradedReason} />
+          <RunStatusBadge
+            generation={generation}
+            agentMode={agentMode}
+            degradedReason={degradedReason}
+            aragon={aragon}
+            onOpenKeyDrawer={() => setKeyDrawerOpen(true)}
+          />
           {klineCollapsed ? (
             <IconButton
               label={klineDrawerOpen ? copy.chart.closeDrawer : copy.chart.openDrawer}
@@ -403,7 +430,11 @@ export function AppShell({
           if (activeInstrument) startGeneration(activeInstrument.id);
         }}
         onOpenReport={(reportId) => onSelectVersion(reportId)}
+        onOpenKeyDrawer={() => setKeyDrawerOpen(true)}
+        onOpenLog={() => setOverlayCollapsed(false)}
       />
+
+      <KeyDrawer open={keyDrawerOpen} onClose={() => setKeyDrawerOpen(false)} aragon={aragon} />
 
       <CommandPalette
         instruments={instruments}

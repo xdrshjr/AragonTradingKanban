@@ -139,6 +139,25 @@ def compare_engine_quality(
             "note": "其中一版没有引擎指纹（早期报告）",
         }
 
+    # ★v9（K5 / V10-P1-8）：抢救过的那一版**不参与**可比性判定。
+    # 为什么按 `quality.salvage.used` 而不是 `status`：`compare_engine_quality` 与
+    # `diff_docs` 都没有 status 入参，改成按 status 判等于"改两个签名 + 全部调用点 +
+    # 既有 18 条 diff 用例"，而且会顺手把 v6 就存在的"接地不足的 degraded"也划进不可比。
+    # 零签名变更、语义最准的写法就是这个早退。
+    # ★评审修订（I-102）：`.get("salvage", {})` 只在**键不存在**时给 `{}`；
+    # 键存在而值是 `null`（`ReportQuality.salvage` 的默认值经响应模型落库时就是 `null`）
+    # 时会拿到 `None`，`None.get("used")` 直接 `AttributeError` —— 一个版本比较接口
+    # 因为"其中一版没抢救过"而 500，是最难查的一类。两层都兜住。
+    salvage_a = (quality_a or {}).get("salvage") or {}
+    salvage_b = (quality_b or {}).get("salvage") or {}
+    if salvage_a.get("used") or salvage_b.get("used"):
+        return {
+            "same": False,
+            "changed": ["salvage"],
+            "deltaUnaffected": True,
+            "note": "其中一版是抢救后的残缺内容，差异可能来自被移除的块",
+        }
+
     changed: list[str] = []
     if (engine_a.get("cliVersion") or "") != (engine_b.get("cliVersion") or ""):
         changed.append("cliVersion")

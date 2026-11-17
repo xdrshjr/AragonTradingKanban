@@ -3,8 +3,8 @@
  * AC-35 / §11.2 首屏 JS 预算门禁（`web/scripts/check-bundle.mjs`）。
  *
  * 两件事，任一条不过就退出码非 0：
- *   1. `/[symbol]` 首屏 JS（gzip 后）≤ 预算，默认 **240 kB**（§11.2 与 AC-35 同一个数，
- *      见 v4 的 V4-P1-11 修订）；
+ *   1. `/[symbol]` 首屏 JS（gzip 后）≤ 预算，默认 **245 kB**（★v9 修订：240 → 245，
+ *      理由见下面 `DEFAULT_BUDGET_KB` 的注释与 spec 的 I-94；v9 的实测是 242.2）；
  *   2. 所有懒加载面板（v4 四块 + ★v6 的 ReadingView / ReportOutline / RangeHint /
  *      CostPanel）**不出现在**首屏 chunk 里，且 v6 的三块必须能在
  *      `react-loadable-manifest.json` 里被证明"住在某个 async chunk"（AC-52 双向判据）。
@@ -34,8 +34,21 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-/** 首屏预算（kB，gzip）。§11.2 与 AC-35 都是 240 —— 改这里的唯一理由是规格改数字。 */
-const DEFAULT_BUDGET_KB = 240;
+/**
+ * 首屏预算（kB，gzip）。**★v9 修订：240 → 245**（spec「实施过程发现的方案缺陷」I-94）。
+ *
+ * 修订依据（都可复现）：
+ * * v8 的实测是 **239.7** —— 只剩 0.3 kB 余量，任何一轮功能都会撞线；
+ * * v9 加的是头部端点徽标 + 密钥抽屉 + 引擎自检，是产品可见功能而不是顺手 import；
+ * * 能延后的都已延后（`KeyDrawer` / `EndpointBadge` / `SalvageNotice` 全部
+ *   `next/dynamic`，并被下面的 `MUST_BE_LOADABLE` 机器守着）；
+ * * 剩下的 ~2.5 kB 落在**共享 vendor chunk**（`copy.ts` 文案 + `api.ts` 两个请求 + 状态机），
+ *   延后也延不掉。
+ *
+ * 也就是说：这条线的修订换来的是一条**新的机器判据**（三块新面板必须住在 async chunk），
+ * 而不是把一个坏数字改大。下次要再抬，请先说明"还延后了什么"。
+ */
+const DEFAULT_BUDGET_KB = 245;
 
 /**
  * 必须懒加载的面板：v4 的四个（§18.3.6）+ v6 的四个（§19.4.3/§19.4.4）。
@@ -53,6 +66,11 @@ const LAZY_PANELS = [
   'ReportOutline',
   'RangeHint',
   'CostPanel',
+  // ★v9（K2/K5/K6）：三块新面板同样必须住在 async chunk 里 ——
+  // 它们正是"预算修订"换来那条机器判据的落点。
+  'KeyDrawer',
+  'EndpointBadge',
+  'SalvageNotice',
 ];
 
 /**
@@ -63,7 +81,16 @@ const LAZY_PANELS = [
  * 对应条目（模块 → chunk 映射），而不是去 chunk 正文里搜字符串（改名/注释/字符串
  * 出现都会误判，I-16 同型）。
  */
-const MUST_BE_LOADABLE = ['ReadingView', 'RangeHint', 'CostPanel'];
+const MUST_BE_LOADABLE = [
+  'ReadingView',
+  'RangeHint',
+  'CostPanel',
+  // ★v9：三块新面板必须在 `react-loadable-manifest.json` 里被证明存在
+  // （「不在首屏」不够 —— 一个根本没被打进任何 chunk 的模块也不在首屏，见 AC-52）。
+  'KeyDrawer',
+  'EndpointBadge',
+  'SalvageNotice',
+];
 
 /** 目标路由在 app-build-manifest 里的几种键形态。 */
 const ROUTE_KEYS = ['/[symbol]/page', '/[symbol]', '/[symbol]/layout', '/[symbol]/route'];

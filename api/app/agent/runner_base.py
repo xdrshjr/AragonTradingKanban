@@ -76,6 +76,15 @@ class AgentResult:
     retries: int = 0
     #: `result.structured.attempts`（CLI 侧已用掉的修复轮），失败时也带出来。
     structured_attempts: int | None = None
+    #: ★v9（K3）：CLI 原样给出的 `stopReason`（`end_turn` / `timeout` / `max_turns` /
+    #: `error` / `aborted`，实测只有这五个）。**不推导、不改写**：映射表在 `failure.py`。
+    stop_reason: str | None = None
+    #: ★v9（K4）：实际 spawn 了几次（1 = 没重试）。`run.retry` 的 `attempt/of` 之外
+    #: 还需要一个"总共几次"的事实，否则事后无法证明"第一次网络断、第二次成功"。
+    attempts_made: int = 1
+    #: ★v9（K5）：`result.result` 解析出来的原始 dict（**未清洗**，可能不合 schema）。
+    #: L1 salvage 的输入；`None` = 没有可抢救的东西（那就直接走 L2 provisional）。
+    salvageable_raw: Any | None = None
 
     @property
     def ok(self) -> bool:
@@ -102,6 +111,16 @@ class AgentRequest:
     #: （943B）。硬编码真源会让每一次深度追问都判成漂移。所以真源是**入参**：
     #: 生成传 report_doc，追问传 ask，`None` 表示这条路径不做身份断言。
     schema_source_path: Path | None = None
+    #: ★v9（V10-P1-9 / K2）：三个**可空覆盖**，`None` ⇒ 跟 `settings`。
+    #: 没有它们，探针的参数表（`--max-tokens 1500` / `--retry-max 0` /
+    #: `--result-repair-turns 0`）无处落地 —— 那三项全是从 settings 读的，探针设不了
+    #: 自己的预算，于是 v9 草案只能自己再写一个 spawn 点（违反硬约束 1）。
+    max_output_tokens: int | None = None
+    retry_max: int | None = None
+    repair_turns: int | None = None
+    #: ★v9（K4）：这次是第几次尝试与它的工作区。`attempt_dir` 为 `None` ⇒ 用 `workspace`。
+    attempt: int = 1
+    attempt_dir: Path | None = None
 
 
 @runtime_checkable

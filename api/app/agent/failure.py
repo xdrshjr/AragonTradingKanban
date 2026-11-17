@@ -103,14 +103,18 @@ RUN_ERROR_CODES: dict[str, FailureSpec] = {
         severity="transient",
         hint=(
             "模型服务连续不可用（网络错误或对方 429/5xx）。稍等 1–2 分钟再试；"
-            "若每次都这样，检查网络/代理与 ARAGON_BASE_URL。"
+            "若每次都这样，检查网络/代理与 ARAGON_BASE_URL（第三方端点请填到 /v1 或根地址），"
+            "并在面板上点一次「引擎自检」确认端点此刻是通的。"
         ),
     ),
     "provider_auth": FailureSpec(
         code="provider_auth",
         retryable=False,
         severity="config",
-        hint="模型凭证被拒绝或额度耗尽。检查 OPENAI_API_KEY / DEEPSEEK_API_KEY 是否有效、余额是否充足。",
+        hint=(
+            "模型凭证被拒绝或额度耗尽。检查 .env 里的 ARAGON_API_KEY（或 CLI 自己 profile 里的密钥）"
+            "是否有效、余额是否充足；改完重启服务，再点一次「引擎自检」。"
+        ),
     ),
     "budget_exceeded": FailureSpec(
         code="budget_exceeded",
@@ -209,7 +213,73 @@ STDERR_REFINE: tuple[tuple[str, str], ...] = (
 )
 
 #: 没有 result 行时，从引擎日志里认凭证类失败。
-AUTH_HINTS: tuple[str, ...] = ("401", "403", "invalid api key", "insufficient", "quota", "unauthorized")
+#: ★v9（V10-P1-4）：v9 草案里的裸子串 `"401"` / `"403"` 会把 v8 的 B-2 修过的东西请回来
+#: （`aragon_runner.py`：裸 `401` / `quota` 曾把"用户取消"改写成"凭证被拒"）。这次的
+#: 后果更重——`provider_auth` **不在** `RETRYABLE_BY_RUNNER` 里，误判一次就少一次重试。
+#: 所以判据是**分词正则**，不是子串；`AUTH_HINTS` 从此是同一份词表的别名（消灭第二份）。
+AUTH_MARKERS: tuple[re.Pattern[str], ...] = (
+    # 成词才认：`14013` / `port 4013` 不命中（`\b` 在数字串里不成立）。
+    re.compile(r"\b401\b|\b403\b", re.I),
+    # 上游 401 的原文里出现两次（E-71 / E-80）：`check your API key`、`Your api key: …`
+    re.compile(r"api[ _-]?key", re.I),
+    re.compile(r"\bunauthori[sz]ed\b|\bforbidden\b", re.I),
+    re.compile(r"\bauthenticat", re.I),
+    re.compile(r"\binsufficient\b|\bquota\b|\bbalance\b|\bbilling\b", re.I),
+)
+
+#: v8 的 `AUTH_HINTS`（用于 stderr 的无 result 行路径）与上面的 message 判据是**同一件事**，
+#: 收敛成一份（V10-P1-4）：保留旧名字，消灭第二份可漂移的词表。
+AUTH_HINTS: tuple[str, ...] = tuple(pattern.pattern for pattern in AUTH_MARKERS)
+
+#: `AUTH_MARKERS` 的**反面**判据（V10-P1-4 的第二道保险）。
+#: 一条人造的 `max tokens 401 is not a limit` 不是凭证问题；把 `--max-tokens 401`
+#: 这类"预算数字"读成 HTTP 401，会让用户跑去改一把完全正常的密钥。
+AUTH_ANTI_MARKERS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:max|token|tokens|limit)[\s:=_\-]{0,3}\b(?:401|403)\b", re.I),
+    re.compile(r"\b(?:401|403)\b.{0,16}\b(?:tokens?|not a limit|rate limit)\b", re.I),
+)
+
+
+def looks_like_auth(text: str | None) -> bool:
+    """message 是否像"凭证被拒/额度耗尽"。**只做判定，不做推导。**
+
+    正面词表命中 **且** 反面词表不命中。两条都必要：`401` 在"max tokens 401"里是预算
+    数字，不是 HTTP 状态码，而 `provider_auth` 不参与 runner 重试（误判一次就少一次重试）。
+    """
+    value = text or ""
+    if any(pattern.search(value) for pattern in AUTH_ANTI_MARKERS):
+        return False
+    return any(pattern.search(value) for pattern in AUTH_MARKERS)
+
+
+#: ★v9（K3 / §21.3.4）：`stopReason` → run 级码。**实测出现的三个值 + 两个保守预留**。
+#: 空串 = "这不是结论，往下走"（R-2c）。未知值**不推导**（R-46：CLI 的词表随版本变化），
+#: 落到 EXIT_MAP 兜底并记一条 info —— 这张表是数据，不是分支。
+STOP_REASON_MAP: dict[str, str] = {
+    "timeout": "provider_unavailable",
+    "error": "agent_error",
+    "max_turns": "budget_exceeded",
+    "aborted": "cancelled",
+    "end_turn": "",
+}
+
+#: ★v9（K3 / §21.3.5）：runner 层**唯一**允许重试的码。明确不重试的理由：
+#: `provider_auth`（改密钥才有用）、`cancelled`（用户意图）、`budget_exceeded`（要改配置）、
+#: `result_schema_unsatisfied`（重试同一模型多半同样结局，且成本翻倍 —— 留给用户显式再生成）。
+RETRYABLE_BY_RUNNER: frozenset[str] = frozenset({"provider_unavailable", "result_missing"})
+
+#: ★v9（K3）：密钥打码的兜底正则（与 `aragon_runner._SECRET_RE` 同一份形态）。
+#: 只打**完整**的 `sk-…` / `ar-…`；上游回显的 `****O5p6`（后 4 位）**放过**（E-80）。
+_SECRET_RE = re.compile(r"(?:sk|ar|ak)-[A-Za-z0-9_\-]{8,}")
+
+
+def mask_secrets(text: str | None, limit: int | None = None) -> str:
+    """把 `result.error.message` 里的密钥形态打掉再带出去（K1 的安全半条命）。
+
+    `run.error_message` / NDJSON 回显 / SSE 载荷上凡是把上游原文带出去的地方都过它。
+    """
+    value = _SECRET_RE.sub("***", text or "")
+    return value[:limit] if limit is not None else value
 
 #: CLI 自己写进 `result.error.code` 的码 → 我们的 run 级码。
 #: 实测：探针 C 的 result 行是 `{"isError": true, "stopReason": "error",
@@ -235,6 +305,11 @@ CLI_ERROR_CODE_MAP: dict[str, str] = {
     "invalid_api_key": "provider_auth",
     "context_overflow": "usage_error",
     "invalid_request": "usage_error",
+    #: ★v9（K3 / E-68）：`--provider deepseek` 的 result 行是
+    #: `error.code="config"`（"Provider \"deepseek\" has no adapter…"）+ exit 2。
+    #: 这个码过去不在表里 ⇒ 落成 `agent_error`（"没见过的错误形态"），
+    #: 而它其实是一句清清楚楚的"你填了一个不存在的 provider"。
+    "config": "usage_error",
 }
 
 
@@ -285,15 +360,20 @@ def failure_fingerprint(code: str, message: str | None, exit_code: int | None) -
 
 __all__ = [
     "AUTH_HINTS",
+    "AUTH_MARKERS",
     "CLI_ERROR_CODE_MAP",
     "EXIT_MAP",
     "FailureSpec",
+    "RETRYABLE_BY_RUNNER",
     "RUN_ERROR_CODES",
     "STDERR_REFINE",
+    "STOP_REASON_MAP",
     "Severity",
     "failure_fingerprint",
     "hint_for",
     "is_retryable",
+    "looks_like_auth",
+    "mask_secrets",
     "normalize_message",
     "spec_for",
 ]

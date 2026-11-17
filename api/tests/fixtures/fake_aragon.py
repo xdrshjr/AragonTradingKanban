@@ -24,6 +24,9 @@ Modes (`FAKE_ARAGON_MODE`):
   ask_ok                 a schema-valid ask answer citing a real source (v3 §18.3.2)
   ask_denied             the same shape with `denied: true`  (「报告没写」must be sayable)
   ask_badcite            cites a source id that does not exist (R-16 must drop it)
+  probe_ok               K2 self-check: structured `{"ok":true,"echo":"PROBE-ECHO-OK"}` (2 turns)
+  probe_bad_echo         the same shape but `echo` is rewritten (a gateway mangling JSON)
+  probe_auth             E-71's 401 text, `error.code=stream_error`, exit 1 (K2 failure side)
 
 ★v7（§20.4 / P-8）：五个新剧本的退出码以**实测**为准，不是从 `--help` 猜的——
 `unsatisfied` 过去写 exit 3，真实 CLI 用 exit **1**（E-42），于是"exit 1 该落哪个码"
@@ -131,6 +134,77 @@ def handle_info() -> int:
 
 
 ASK_MODES = {"ask_ok", "ask_denied", "ask_badcite"}
+
+#: ★v9（K2）：探针剧本。形状抄自真机（E-86）：一次工具调用 + 一次结构化提交。
+PROBE_MODES = {"probe_ok", "probe_bad_echo", "probe_auth"}
+
+
+def handle_probe(mode: str) -> int:
+    emit({"type": "system", "subtype": "init", "text": "自检开始"})
+    emit({"type": "tool_call", "name": "read_file", "input": {"path": "probe.txt"}})
+    echo = "PROBE-ECHO-OK" if mode != "probe_bad_echo" else "PROBE-ECH0-Rewritten-By-Gateway"
+    emit(
+        {
+            "type": "tool_result",
+            "name": "read_file",
+            "input": {"path": "probe.txt"},
+            "output": echo,
+            "isError": False,
+            "durationMs": 3,
+        }
+    )
+    if mode == "probe_auth":
+        # E-71 的逐字形状：`error.code` 是 `stream_error`，真正的病在 message 里。
+        emit(
+            {
+                "type": "error",
+                "fatal": True,
+                "code": "stream_error",
+                "message": "Authentication failed - check your API key.",
+            }
+        )
+        emit(
+            {
+                "type": "result",
+                "isError": True,
+                "error": {
+                    "code": "stream_error",
+                    "message": (
+                        "Authentication failed - check your API key. (openai API error 401: "
+                        '{"error":{"message":"Authentication Fails, Your api key: ****O5p6 is invalid"}})'
+                    ),
+                },
+                "stopReason": "error",
+                "exitCode": 1,
+                "text": "",
+                "structured": None,
+                "usage": {"inputTokens": 4100, "outputTokens": 12, "totalTokens": 4112},
+                "cost": {"amount": 0, "currency": "USD", "known": False},
+            }
+        )
+        return 1
+
+    payload = {"ok": True, "echo": echo}
+    emit(
+        {
+            "type": "result",
+            "isError": False,
+            "error": None,
+            "stopReason": "end_turn",
+            "exitCode": 0,
+            "text": "自检完成。",
+            "structured": {
+                "value": payload,
+                "schemaName": "schema.json",
+                "schemaBytes": 153,
+                "attempts": 1,
+                "acceptedAt": "2026-02-21T09:12:03Z",
+            },
+            "usage": {"inputTokens": 11251, "outputTokens": 215, "totalTokens": 11466},
+            "cost": {"amount": 0, "currency": "USD", "known": False},
+        }
+    )
+    return 0
 
 
 def ask_payload(mode: str) -> dict:
@@ -250,6 +324,9 @@ def handle_exec(argv: list[str]) -> int:
             }
         )
         return 0
+
+    if mode in PROBE_MODES:
+        return handle_probe(mode)
 
     if mode == "budget":
         emit({"type": "system", "text": "starting"})

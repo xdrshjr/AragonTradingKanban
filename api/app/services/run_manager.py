@@ -126,6 +126,15 @@ class RunManager:
     def is_active(self, run_id: str) -> bool:
         return run_id in self._tasks and not self._tasks[run_id].done()
 
+    def has_active_runs(self) -> bool:
+        """★v9（K2 / V10-P2-11）：有没有真实生成在跑。
+
+        引擎自检与真实生成必须互斥：单 worker 下两者会各自 spawn、各烧各的 token；
+        更麻烦的是探针的 `system` 事件会经 `note_base_url()` 回填进程级能力快照，
+        把"这个端点生成了那份报告"的实证链搅浑。
+        """
+        return any(not task.done() for task in self._tasks.values())
+
     # ── event log (DB is the durable half, queues are the live half) ─────
     def _record(
         self,
@@ -407,16 +416,54 @@ class RunManager:
         if run.cancel_requested or result.error_code == "cancelled":
             self._finalize_failure(session, run, "cancelled", "用户取消了本次生成", bundle.snapshot, result=result)
             return
-        if result.doc is None:
+
+        # ── ★v9 K5（§21.3.6）：L1 抢救 ─────────────────────────────────────
+        # L0（CLI 的 --result-repair-turns）已经跑过；走到这里说明仍然没有 structured。
+        # 真实失败里最常见的一类不是"模型没提交"，而是"提交了、但多一个键 / 少一个必填
+        # 字段 / 有一个我们不认识的块类型"——那时用户花掉 3 万 token，却只拿到一句
+        # "这不是一份可用的投研报告"。
+        doc = result.doc
+        salvage_report: report_validator.SalvageReport | None = None
+        if doc is None and isinstance(result.salvageable_raw, dict):
+            salvaged, salvage_report = report_validator.salvage_doc(result.salvageable_raw, bundle.snapshot)
+            if salvaged is not None:
+                doc = salvaged
+                self._record(
+                    session,
+                    run,
+                    "run.log",
+                    {
+                        "level": "warn",
+                        "message": (
+                            f"模型产出有 {salvage_report.total} 处格式不合法，已抢救后展示（"
+                            f"{salvage_report.droppedKeys} 个多余字段 / "
+                            f"{salvage_report.droppedBlocks} 个块 / "
+                            f"{salvage_report.droppedSections} 个章节）"
+                        ),
+                    },
+                    touch_run=False,
+                )
+            else:
+                salvage_report.reasons = salvage_report.reasons or ["unsalvageable"]
+
+        if doc is None:
             code = result.error_code or "result_schema_unsatisfied"
             message = result.error_message or "生成引擎没有返回结构化报告"
-            self._finalize_failure(session, run, code, message, bundle.snapshot, result=result)
+            self._finalize_failure(
+                session,
+                run,
+                code,
+                message,
+                bundle.snapshot,
+                result=result,
+                salvage=salvage_report,
+            )
             return
 
         # ── 5. validate ──────────────────────────────────────────────────
         self._advance(session, run, "validate")
         outcome = report_validator.validate_doc(
-            result.doc,
+            doc,
             bundle.snapshot,
             mock=result.source == "mock",
             source=result.source,
@@ -426,6 +473,11 @@ class RunManager:
             # ★v8（V8-P0-1 / AC-88）：用**当次交给 CLI 的那份**校验。mock 路径下
             # 工作区里同样有那份副本（`write_snapshot_files` 写的），所以两条路一致。
             schema_path=request.schema_path,
+            # ★v9（K5）：抢救过的文档必须降 status 到 degraded，并带上计数器。
+            salvage=salvage_report,
+            # ★实施发现（I-91）：未知块是在 `salvage_doc()` 内部裁掉的，把它转交回来，
+            # `quality.prunedBlocks` 才不会因为"抢救过一次"而变成 0（AC-102 / AC-109）。
+            pruned_blocks=salvage_report.prunedBlocks if salvage_report is not None else None,
         )
         for repair in outcome.repairs[:6]:
             self._record(session, run, "run.log", {"level": "info", "message": f"结构修补：{repair}"}, touch_run=False)
@@ -620,6 +672,7 @@ class RunManager:
         snapshot: dict[str, Any] | None,
         *,
         result: AgentResult | None = None,
+        salvage: report_validator.SalvageReport | None = None,
     ) -> None:
         """★P1-10: persist a readable provisional report *before* recording the error."""
         session.rollback()
@@ -643,6 +696,13 @@ class RunManager:
                         provisional_cost.as_payload() if provisional_cost is not None else UNKNOWN_COST_PAYLOAD
                     ),
                 }
+                # ★v9（K5）：L1 抢救也失败时，`quality.salvage.used = false` 且
+                # `reasons = ["unsalvageable"]` —— "试过了、救不回来"必须可读，
+                # 否则用户会以为我们根本没试。
+                if salvage is not None:
+                    if not salvage.used:
+                        salvage.reasons = salvage.reasons or ["unsalvageable"]
+                    quality_payload["salvage"] = salvage.as_payload()
                 report = report_service.create_version(
                     session,
                     session.get(Instrument, run.instrument_id),  # type: ignore[arg-type]

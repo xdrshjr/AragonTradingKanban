@@ -60,6 +60,9 @@ const RangeHint = dynamic(() => import('./RangeHint').then((module) => module.Ra
  * 所以它是一个 async chunk —— 没有核验记录的报告（早期版本、临时版、mock）
  * 连这几 KB 都不下载。AC-35 的首屏预算因此不变（AC-52 同理）。
  */
+const SalvageNotice = dynamic(() => import('./SalvageNotice').then((module) => module.SalvageNotice), {
+  ssr: false,
+});
 const TrustBadge = dynamic(() => import('./TrustBadge').then((module) => module.TrustBadge), {
   ssr: false,
   loading: () => null,
@@ -379,6 +382,8 @@ export function ReportPanel({
           {summary ? (
             <TrustBadge quality={summary.quality.grounding ?? null} reportId={summary.id} onJump={jumpToBlockById} />
           ) : null}
+          {/* ★v9（K5）：抢救可见。`used === false` 或老报告没有这个键 ⇒ 什么都不渲染。 */}
+          {summary ? <SalvageNotice salvage={summary.quality.salvage ?? null} /> : null}
 
           <div className="ml-auto flex items-center gap-1">
             {/* ★v6 G2b：模式切换。`router.replace` 只改 `view`，不动 `range`（AC-64）。 */}

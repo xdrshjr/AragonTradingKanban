@@ -1,9 +1,9 @@
-# Aragon Research Terminal · 投研报告工作台 — 设计方案 v8
+# Aragon Research Terminal · 投研报告工作台 — 设计方案 v10
 
 > 特性 slug：`investment-research-report`
-> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ Subtask #1 设计评审（Iteration 3/3）修订 → Subtask #0 方案设计（Iteration 4/3）→ **Subtask #1 设计评审（Iteration 4/3）修订（本节点）**
+> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ Subtask #1 设计评审（Iteration 3/3）修订 → Subtask #0 方案设计（Iteration 4/3）→ Subtask #1 设计评审（Iteration 4/3）修订 → **Subtask #0 方案设计（Iteration 5/3，本节点）**
 > 交付物：`web/`（Next.js 阅读器）+ `api/`（FastAPI + `aragon exec` 生成器）+ 工程脚手架
-> 文档状态：**v8 · Iteration 4 增量设计 + 评审修订（Agent 与生成链路稳健可用）**（v7 的 §20 主体保留；本节点修 **V8-P0 ×2 + V8-P1 ×7 + V8-P2 ×11**，就地在原位置标注 `v8 修订（V8-Pxx）`；补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、证据 **E-52~E-64**；**未改动任何源码**）
+> 文档状态：**v9 · Iteration 5 增量设计（Agent 接入面、引擎自检、归因 v2、重试权、解析抢救）**（v8 的 §20 主体保留；本节点新增 **§21**：Q-1~Q-4 四条可测定义、**K1~K7** 七条机制、**AC-90~AC-105**、**R-43~R-52**、裁决 **K-1~K-14**、实测证据 **E-65~E-74**；**未改动任何源码**）
 >
 > **版本号口径（避免误读）**：任务书的"bump 到 v2"以被评审文档为基准，而本图每个迭代的评审节点各推进一个主版本号（v1→v2→v3→v4→v5→v6→v7→**v8**）。本节点评审对象是 **v7**，因此本次提升为 **v8**。历史对应关系见 §0 的版本表。（顺带修掉一个陈旧标记：v7 节点把状态行写成了 v7，却没改文档标题，标题一直停在 v6——本轮一并归位。）
 >
@@ -19,6 +19,9 @@
 >
 > **v8 的第五条纪律（本轮新增，评审节点提出）**
 > 5. **"既有守卫"必须先跑一次，再决定新代码放在哪。** v7 的三处机制缺陷全部同型：*结构本身不允许那种写法*——`assert_schema_identity` 被指定定义在 `services/` 却在 `agent/` 调用（`test_boundaries` 会红）、`down_revision` 写成 `"0003"`（真实 id 是 `"0003_cost_ledger"`，`alembic` 找不到）、分类的第 2a 条被写进一个拿不到 `result` 的函数。它们都不是"想错了"，而是**没把已有守卫当约束**：依赖方向有测试、迁移链有约定、`_finalize` 有既定的分支顺序。所以本轮的评审方法是：**先找出"这里已经有一条不许违反的规则"，再判断新设计是否与它相容。**
+>
+> **v9 的第六条纪律（本轮新增）**
+> 6. **"某个配置项存在"与"某个配置项生效"是两件事，必须分开证。** 本轮 10 条实测里有 3 条推翻了"理所当然"的写法：`OPENAI_BASE_URL` 环境变量**不被采纳**（E-72）、`--retry-max` **管不住第二层重试**（E-69）、`error.code=stream_error` **同时**表示"网络断了"和"密钥错了"（E-70 vs E-71）。三者都不是笔误，是"照字面写就会在真实端点前面失效"的机制问题。所以本轮的写法是：**每个配置项都配一条"它到底有没有生效"的探针**，探针输出写进 §21.10.1 的证据表。
 
 ## 0. 文档版本与评审记录
 
@@ -31,12 +34,129 @@
 | v5 | 2026-02（Iteration 3） | Subtask #0 方案设计 | **增量设计，不重写 v0–v18**。定位从"功能补齐"转为"可托付"：新增 **§19**——G1 数字分类与接地报告（`fact/projection/identifier/derived` 四分类，修掉"同业估值被当事实比对"的口径不一致，未接地样本可定位到块）、G2 全文视图（`?view=full` + 大纲 + 阅读进度，与 Tab 模式共享渲染器）与区间反查（K 线 brush → `/reports/{id}/blocks`）、G3 成本账本与预算闸门（迁移 0003 · 只追加表 · `NULL ≠ 0` · 可覆盖留痕）、G4 引擎指纹与可比性提示、D7 e2e 脱钩 Python（fake API）。新增 **AC-46~AC-59**、**R-21~R-30**、里程碑 **M13–M18**、oracle 断言 **O-6~O-10**、裁决清单 18 条。本轮只写 `spec.md`，未改任何源码 | 待下游实现验证（本轮只出设计）→ 经 v6 评审为 **有条件通过** |
 | v6 | 2026-02（Iteration 3） | Subtask #1 设计评审 | **评审修订，不重写 v5**。把 §19 的每条"端点/字段/既有行为"断言拿本机实测复核（18 条证据 E-21~E-38，见下一篇），就地修复 **P0×3**（`POST /runs` 从来不存在 ⇒ 预算闸门与 AC-56 不可达；402 错误码 `budget_exceeded` 已被 409 的 turns/duration 预算错误与 `web/lib/types.ts::RunStatus` 占用；"正则单一真源"规则与 `block_id` 依赖形成循环 import 且按字面会让现状判失败）与 **P1×8**（`Peer` 无 `sourceRefs` 使"升格为 fact"分支不可实现且可被模型自证、`diff_docs` 函数名与 `DiffResult` 的 `a/b`·`summary: str` 三处不符使 AC-58 按字面必 500、`capabilities.engine` 不存在且 model/provider 三重副本、`identifier` 分类缺 token 层机制会让日期污染 fact 分母、14 行分类表漏 `doc.keyMetrics[]` 使 `ungroundedCount` 与 `factMissing` 必然不等、`j/k` 已被 `nextSymbol/prevSymbol` 占用、`can_start` 插位会翻转 409/402 并留孤儿工作区、`run_in_progress` 实为 `run_conflict` 且 202 体无 `streamUrl`），并补 **AC-60~AC-66** 与 10 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-13~C-18） |
 | v7 | 2026-02（Iteration 4） | Subtask #0 方案设计 | **增量设计，不重写 v1–v19**。需求："继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健"。做法：把"稳健"拆成 8 条可测性质（P-1~P-8），逐条拿本机实测反驳（13 条证据 E-39~E-51：4 组真实 `aragon exec` 探针、5 类历史失败现象、schema 预算 11/12、成本恒未知、retry 事件被忽略、runs 无 model 列）。新增 **§20**：H1 确定性 spawn 契约（lean 体位省 2551 tokens/轮、`--retry-max 6`、`--max-tokens 40000`）、H2 schema/资料三道前置闸门（`schema_over_budget` / `schema_drift` / `prompt_over_budget`，全部在 spawn 之前）、H3 失败分类学（15 码表 + 逐码 hint + `run.retry` 事件 + 失败指纹）、H4 成本三态（`reported/estimated/unknown`，账本分列，`usd IS NULL` 语义一字不改）、H5 提示词提交纪律（自检 6 条 + 读取预算）、H6 能力与健康（`capabilities.engine` 扩展、doctor/models 只 warn）、H7 前端可见性。新增 **AC-67~AC-84**、**R-31~R-40**、里程碑 **M19–M24**、oracle **O-11~O-16**、裁决 **H-1~H-16**、迁移 **0004**。**本轮只写 `spec.md`，未改任何源码** | 待下游实现验证（本轮只出设计）→ 经 v8 评审为 **有条件通过** |
-| v8 | 2026-02（Iteration 4） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v7**。把 §20 的每条"现状/既有/本机能跑"断言拿本机实测复核（13 条新证据 E-52~E-64：6 次真实 `aragon exec` 探针 + 34 份历史 schema 的字节比对 + 真实 SQLite 的成本分布 + 依赖方向/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`assert_schema_identity` 被指定定义在 `services/snapshot.py` 却在 `agent/aragon_runner.py` 调用 —— `test_boundaries` 必红，且"两处各写一份"正是本轮要消灭的双源；迁移 `0004` 的 `down_revision="0003"` 与真实 revision id `"0003_cost_ledger"` 不符，`alembic upgrade head` 第一步即失败）与 **P1×7**（分类第 2a 条写在拿不到 `result` 的 `_classify_exit` 里、`capabilities.engine` 重新塞入 `provider/model` 推翻 V6-P1-3、`sse.ts` 只加类型联合收不到 `run.retry`、`ask_service` 的账本 `source` 被默认值错标成 unknown、202 体写成 `{runId, streamUrl}`、价格表静默改既有 `deepseek-chat` 价、`models/cost.py` 加 ORM CHECK 与"Alembic 是唯一 schema 真源"冲突），并补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、纪律第 5 条与 11 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-19~C-24） |
+| v8 | 2026-02（Iteration 4） | Subtask #1 设计评审 | **评审修订，不重写 v7**。把 §20 的每条"现状/既有/本机能跑"断言拿本机实测复核（13 条新证据 E-52~E-64：6 次真实 `aragon exec` 探针 + 34 份历史 schema 的字节比对 + 真实 SQLite 的成本分布 + 依赖方向/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`assert_schema_identity` 被指定定义在 `services/snapshot.py` 却在 `agent/aragon_runner.py` 调用 —— `test_boundaries` 必红，且"两处各写一份"正是本轮要消灭的双源；迁移 `0004` 的 `down_revision="0003"` 与真实 revision id `"0003_cost_ledger"` 不符，`alembic upgrade head` 第一步即失败）与 **P1×7**（分类第 2a 条写在拿不到 `result` 的 `_classify_exit` 里、`capabilities.engine` 重新塞入 `provider/model` 推翻 V6-P1-3、`sse.ts` 只加类型联合收不到 `run.retry`、`ask_service` 的账本 `source` 被默认值错标成 unknown、202 体写成 `{runId, streamUrl}`、价格表静默改既有 `deepseek-chat` 价、`models/cost.py` 加 ORM CHECK 与"Alembic 是唯一 schema 真源"冲突），并补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、纪律第 5 条与 11 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-19~C-24） |
+| v9 | 2026-02（Iteration 5） | Subtask #0 方案设计（**本节点**） | **增量设计，不重写 v1–v20**。需求：「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健」，并给出**真实第三方凭证**（`api.deepseek.com` + `deepseek-flash`）作为验收条件。做法：把"可用稳健"拆成四条**可被反驳**的定义 Q-1 接得上 / Q-2 证得了 / Q-3 说得清 / Q-4 丢得少，逐条用本机真实 `aragon exec` 反驳（10 条新证据 E-65~E-74：`aragon info`/`doctor` 的静态假绿、8.7 秒最小生成成功侧、坏端点 2 分钟被 CLI 第二层重试吃光、坏密钥与坏网络**同码不同病**、环境变量 `OPENAI_BASE_URL`/`OPENAI_API_KEY` **不被采纳**、`--max-tokens 40000` 不被拒）。新增 **§21**：**K1** 引擎接入面（`ARAGON_BASE_URL`/`ARAGON_API_KEY` 成为一等设置 → argv 唯一入口 → `redact_argv()` 密钥打码 → provider/端点形状预检）、**K2** 引擎自检探针（8.7s 真实最小生成 + 单飞 + TTL + `engine_probes` 只追加表 + `capabilities.aragon.verified`）、**K3** 失败归因 v2（`stopReason` 进分类、`stream_error` 按 message 细分 auth/网络、`result` 存在时不再短路重试证据）、**K4** 重试权收回（CLI 层 `--retry-max 0`、runner 层 2 次、`run.retry.layer`、预算守卫、usage 累加）、**K5** 解析抢救三档阶梯（repair → salvage → provisional，抢救必须降 `degraded` 且可见）、**K6** 前端动作表 + 端点徽标三态（把 `copy.errors` 里 5 条写了从未用的文案接上）、**K7** 记录（`engine.json` + 打码 `argv.json` + 探针表）。新增 **AC-90~AC-105**、**R-43~R-52**、里程碑 **M25–M30**、oracle **O-17~O-21**、裁决 **K-1~K-14**、迁移 **0005**、纪律第 6 条（"配置项存在"≠"配置项生效"，每个都要一条探针）。**本轮只写 `spec.md`，未改任何源码** | 待下游实现验证（本轮只出设计）→ 经 v10 评审为 **有条件通过** |
+| v10 | 2026-02（Iteration 5） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v9**。把 §21 的每条"现状 / 既有 / 本机能跑"断言拿本机实测复核（13 条新证据 E-75~E-87：4 次真实 `aragon exec` 探针 + 真实 `validate_doc` 跑 O-20 的文档 + `report_doc.schema.json` 的 `$defs` 必填项表 + 依赖方向/响应模型/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`fullyCapable`/`degradedReason` 仍只认 `aragon info --json` 的 `hasApiKey` ⇒ 只填 `.env` 的机器上 `auto` 模式**静默返回 MockRunner**，Q-1 不可达且不报错；R-44「打码在 `build_argv()` 出口做一次」与 §21.3.2「`argv.json` 写 `redact_argv(argv)`」互斥，照 R-44 施工 ⇒ spawn 用 `***` 当密钥、每次生成 401 而 AC-90/91 全绿）与 **P1×9**（`schemas/capabilities.py::AragonAragonOut` 缺五个新字段 ⇒ `verified/verifiedAt` 进不了 wire；失败规则表不穷尽使 AC-99 的夹具无规则命中；O-20/AC-102 的 `droppedBlocks` 按现状算不出来且与 `quality.prunedBlocks` 重复计数；`AUTH_MARKERS` 的裸 `401` 重犯 v8 的 B-2 而 `provider_auth` 不重试；`provider_auth` 的 hint 仍指向 E-73 证明无效的 `OPENAI_API_KEY`；`keySource` 三处取值域不一致且被做成配置项；动作表少 4 个真实码多 1 个 HTTP 码；"比较可比性只需把 degraded 归入不可比"而 `compare_engine_quality` 没有 status 入参；探针没有可施工的 spawn 形态——第二 spawn 点、三参数无入口、`_classify_failure` 不可 import），并补 **AC-106~AC-109**、**O-22~O-23**、裁决 **K-15~K-16** 与 13 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-25~C-30） |
 
 > **v3 与 v2 的关系一句话**：v2 回答"怎么把它做出来并且做对"，v3 回答"做对之后，为什么它还不够像一个顶级产品"。两者不冲突——v3 的每一条新能力都建立 v2 的既有不变式之上（成本模型、单 worker、接地校验、依赖方向），并且**不豁免任何一条既有 AC**。
 >
 > **v5 与 v3 的关系一句话**：v3 回答"做对之后为什么还不够像顶级产品"，v5 回答"像顶级产品之后，凭什么让人敢拿它做判断"。v5 的三条主线（可回溯、单一投影真源、降级永不上抛）全部是 v2/v3 既有不变式的**加固与兑现**，没有一条引入新的架构层、新的第三方依赖或第二个并发真源。
 
+
+## 评审记录（Review Notes · Iteration 5）
+
+> **评审对象**：`spec.md` **v9**（Iteration 5 增量设计：§21 把「AI 能力可用」变成一条可验证的链路，K1–K7）。
+> **结论先行**：§21 的**四条定义（Q-1 接得上 / Q-2 证得了 / Q-3 说得清 / Q-4 丢得少）全部指向真问题**，
+> 而且 v9 的证据温度是四轮里最高的——10 条证据里有 **4 条我用任务书给的同一份凭证重放后逐字复现**
+> （`env` 里的 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 确实不被采纳；坏密钥与坏网络确实同为
+> `error.code=stream_error`、只有 message 不同；`--retry-max 0` 确实让失败从 2 分钟缩到 4.7 秒；
+> 最小生成确实能结构化提交）。七条机制（K1–K7）与 v8 的既有不变式（单 worker、结构化文档、
+> 只标不改数、`NULL ≠ 0`、账本只追加、降级永不上抛、argv 唯一 choke point）**一条不冲突**。
+>
+> §21 的问题**不在"想错了"，而在两处"按字面施工会把产品弄坏"，以及一片"功能看起来做了、其实到不了用户手上"**：
+> ①**K1 接上了，但门还是关着的**：`fullyCapable` 与 `degradedReason` 至今只认 `aragon info --json` 的
+> `hasApiKey`（CLI 自己的配置）。在一台只填了 `.env` 的机器上（**这正是本轮要求的字面场景**），
+> `hasApiKey=false` ⇒ `auto` 模式**静默返回 MockRunner**，用户拿到一份"示例"报告而界面上一个红字都没有——
+> Q-1 不是"没做"，是"做了但被上一轮的门挡住，而且挡住时不报错"。
+> ②**R-44 的"打码在 `build_argv()` 出口做一次"会把 `***` 当成密钥交给引擎**：`build_argv()` 的返回值正是
+> `stream()` 里 `create_subprocess_exec` 的实参（`aragon_runner.py:348/361`），而 §21.3.2 自己写的是
+> "`argv.json` 写 `redact_argv(argv)`（`:350-351` 改一行）"。同一份文档给出两种打码位置，照 R-44 施工的结局是
+> **每一次真实生成都以 401 结束**，而 AC-90 的黄金 argv 断言照样全绿。
+> ③**五个新字段进不了 wire**：`schemas/capabilities.py::AragonAragonOut` 没有它们，`routers/capabilities.py:129`
+> 又是 `as_payload()` + `# type: ignore[arg-type]` ⇒ pydantic 静默丢弃。这正是 V8-P2-7 记过的教训，
+> 而 §21.4 的修改表里**没有这个文件**。Q-2（证得了）的核心字段 `verified / verifiedAt` 会一条都出不去。
+>
+> 另外一片"差一口"的问题：④失败规则表**不是穷尽的**——AC-99 那条防回归夹具（`end_turn` + `retries=0`）
+> 和 `timeout` + `retries=0` 这两种组合，按 v9 的九行表**一条都不命中**；⑤AC-102 / O-20 的两个数字按现状
+> **算不出来**（`normalize_doc` 早就裁掉未知块，donut 根本到不了校验器），并且 `salvage.droppedBlocks`
+> 会与既有的 `quality.prunedBlocks` **重复计数**；⑥`AUTH_MARKERS` 里的裸 `401` 把 v8 的 `B-2` 修过的东西
+> 又请了回来，而这一次后果更重：`provider_auth` **不参与 runner 重试**，一次被误判的网络错误会因此**失去重试**。
+>
+> 本轮方法不变：**凡"既有字段 / 既有行为 / 本机能跑"的句子，先引一次源码行号，再跑一次最小实验。**
+
+### 评审方法（读源码 + 本机实测：13 条新证据 E-75~E-87）
+
+1. §21 全文（6497 行文档中的 5552–6497）逐节通读，标出每一条"现状 / 既有 / 实测 / 只须"断言。
+2. **存在性实测**：对每条断言用 grep + 读源文件核对精确行号与签名。重点对象：
+   `preflight.AragonCapability.fullyCapable / degradedReason / as_payload`、`agent/__init__.build_runner / decide_mode`、
+   `aragon_runner.build_argv / stream / _finalize / _classify_failure`、`runner_base.AgentRequest / AgentResult`、
+   `failure.RUN_ERROR_CODES / CLI_ERROR_CODE_MAP / AUTH_HINTS / EXIT_MAP`、
+   `report_validator.normalize_doc / prune_unknown_blocks / validate_doc / build_provisional_doc`、
+   `report_diff.compare_engine_quality`、`schemas/capabilities.py`、`schemas/report.py::ReportQuality`、
+   `routers/capabilities.py`、`errors.py`、`web/lib/sse.ts`、`web/components/generation/*`、迁移 0001–0004。
+3. **可行性实测**：4 次真实 `aragon exec`（CLI **0.6.70** / core 0.2.82，凭证取自任务书：
+   `https://api.deepseek.com` + `deepseek-flash`），外加 2 个纯本地探针（真实 `validate_doc` 跑 O-20 的文档、
+   `report_doc.schema.json` 的 `$defs` 必填项表）。探针脚本留在 `.agentmesh/repro/`
+   （`probe_engine_v10.py` / `probe_o20_salvage.py` / `schema_defs_dump.py`），不入库、不参与构建。
+4. **四维打分**：可行性 / 完整性 / 一致性 / 右则化。每条问题都标注**"若不修，哪条 AC 或哪条既有守卫变红"**。
+
+### 实测证据（v9 断言 vs 本机事实）
+
+环境：Windows 10.0.26200 / Python 3.11 / `aragon` CLI **0.6.70**（core 0.2.82）/ provider `openai` /
+model `deepseek-flash` / `hasApiKey=true`（**注意：这个 `true` 来自本机 `~/.aragon-agent/config.json` 的 profile，
+不是来自 `.env`——它掩盖了 V10-P0-1**）。
+
+| # | v9 的断言（原文位置） | 本机实测（命令 / 源码） | 判定 |
+| --- | --- | --- | --- |
+| E-75 | §21.0.1 Q-1「只写 `.env` 就能跑通一次生成」；§21.3.2 只补了 config 三个设置 + argv 两个 flag | `preflight.py:82` `fullyCapable = available and versionOk and canStructured and hasSubmitResult and **hasApiKey**`；`:94` `degradedReason` 的 `"no_api_key"` 同源；`hasApiKey` 在 `:289` 由 `info.get("hasApiKey")` 赋值（`aragon info --json`，即 **CLI 自己的配置**）；`agent/__init__.py:30` `decide_mode` auto → `fullyCapable`；`:58-69` 不满足就 **`return MockRunner()`**（非 strict 路径不抛）；`main.py:141-147` 启动日志也只打 `capability.fullyCapable` | **Q-1 被上一轮的门挡住，且挡住时不报错** → **V10-P0-1** |
+| E-76 | §21.3.2「`argv.json` 写的是 `redact_argv(argv)`（`:350-351` 改一行）」+ §21.8 R-44「打码只在 `build_argv()` 的**出口**做一次」 | `aragon_runner.py:348` `argv = build_argv(...)` → `:361` `create_subprocess_exec(*argv, …)`；`ask_runner.build_ask_argv:40-52` 只是 `build_argv()` 的转发，且**全仓无调用方**（`grep build_ask_argv` 只命中定义与 `__all__`）⇒ 唯一 spawn 点用的就是 `build_argv()` 的**返回值** | **两处口径互斥；照 R-44 施工 ⇒ 每次生成都用 `***` 当密钥** → **V10-P0-2** |
+| E-77 | §21.4 修改表「`api/app/routers/capabilities.py` — K1/K2 `aragon.baseUrlHost/keyPresent/keySource/verified/verifiedAt`」 | `schemas/capabilities.py::AragonAragonOut`（`:10-30`）**没有**这五个字段；`routers/capabilities.py:129` `aragon=capability.as_payload()  # type: ignore[arg-type]`；pydantic 默认忽略多余键 ⇒ 五个字段到不了响应体。对照：`EngineLimitsOut`（`:96-103`）同样缺 `agentAttempts / probeTtlSec` | **Q-2 的核心字段会被静默丢弃** → **V10-P1-1** |
+| E-78 | §21.3.4 规则表 R-2b-1「`stopReason=timeout` 且 `retries>0`」/ R-2b-3「缺失或 `end_turn` 且 `retries>0`」/ R-2c「无 `stopReason` + `retries==0`」；AC-99 用「`end_turn` + `retries=0`」防回归 | 真机两条成功探针的 `result.stopReason` 都是 **`end_turn`**（不是"缺失"）；失败侧（坏键/坏网）是 `error`；`--retry-max 0` 时 `retries==0`。⇒ 组合「result 行 + 无 `error.code` + `end_turn` + `retries==0`」（= AC-99）**不命中任何一行**；`timeout` + `retries==0` 同样无行 | **表不穷尽，AC-99 照着写不出来** → **V10-P1-2** |
+| E-79 | §21.0.3 O-20 / AC-102「12 键 + 1 多余键 + **1 `type:"donut"` 块** + 1 缺 `text` 的 paragraph ⇒ `droppedBlocks == 2`」 | `report_validator.py:207 prune_unknown_blocks()` 与 `:325` 的调用：未知块**在校验之前就被裁掉**并计入 `prunedBlocks`。真实跑 O-20 的文档（`probe_o20_salvage.py`）：`prunedBlocks=1`、`errors` 只剩 **1** 条（`Additional properties are not allowed ('extraKey' …)`）；去掉多余键后唯一一条是 `sections/0/blocks/1: {'type': 'paragraph'} is not valid` ⇒ salvage 自己要做的只有 **1 键 + 1 块** | **两个数字按现状算不出来，且与 `prunedBlocks` 重复计数** → **V10-P1-3** |
+| E-80 | §21.3.4 R-2a-1「message 命中 `AUTH_MARKERS`」（含裸 `"401"` / `"403"`） | 真机 401 原文：`Authentication failed - check your API key. (openai API error 401: {"error":{"message":"Authentication Fails, Your api key: ****O5p6 is invalid …","type":"authentication_error"…}})`；真机网络断原文：`Network error reaching the provider. (openai network error: fetch failed (ECONNRESET: …))`。两者 `error.code` **同为 `stream_error`**（E-71/E-70 复现）。而 `aragon_runner.py:772-779` 的 v8 注释（B-2）正是因为**裸子串**（`401`/`quota`/`403`）会把已知结论改写掉才加了 `_EXIT_CODES_WITH_CERTAINTY` 守卫 | **判据成立，但裸 `401/403` 会重犯 B-2；且 `provider_auth` 不重试 ⇒ 误判一次就少一次重试** → **V10-P1-4** |
+| E-81 | §21.3.7 动作表「15 个码」；AC-104「Python 码集合 == JSON 码集合；`RUN_ERROR_ACTIONS` ⊇ JSON 码集合」 | `failure.py:49-187` 的 `RUN_ERROR_CODES` 实为 **18** 条：`aragon_unavailable, structured_result_unsupported, schema_over_budget, schema_drift, prompt_over_budget, result_missing, result_schema_unsatisfied, provider_unavailable, provider_auth, budget_exceeded, cancelled, usage_error, agent_error, internal, interrupted` + `instrument_not_found, data_provider_unavailable, snapshot_missing`。v9 的动作表少了 **4** 条（`aragon_unavailable / structured_result_unsupported / schema_drift / snapshot_missing`），多了一条 **不是 run 码**的 `monthly_budget_exceeded`（它是 `errors.py:119` 的 402 HTTP 码） | **按字面 AC-104 必红（或必须偷偷改判据）** → **V10-P1-7** |
+| E-82 | §21.3.6「可比性：`status=degraded` 的报告**不参与** `report_diff` 的引擎可比基准（`compare_engine_quality` 已有三态，**只需**把 `degraded` 归入"内容不可比"一侧）」 | `report_diff.compare_engine_quality(quality_a, quality_b, *, model_a=None, model_b=None)`（`:113-119`）**没有 status 入参**；`diff_docs`（`:170-176`）也没有。要按 v9 说的做，"只需"= 改两个函数签名 + 所有调用点 + `__all__` + 既有 18 条 diff 用例 | **"只需"不成立；且会让"接地不足的 degraded"被误判成"内容不可比"** → **V10-P1-8** |
+| E-83 | §21.3.3「`run_probe()` 自己组装工作区与最小 schema」+ 硬约束 1「不新建第二个 spawn 点」+ 参数表（`--max-turns 3 / --max-duration 90_000 / --max-tokens 1_500 / --retry-max 0 / --result-repair-turns 0`）+「探针复用 `_classify_failure`」 | `runner_base.AgentRequest`（`:85-105`）只有 `max_turns / max_duration_ms` 两个预算字段；`--max-tokens` 取自 `settings.aragon_max_output_tokens`（`aragon_runner.py:152`）、`--retry-max` 取自 `settings.aragon_retry_max`（`:155`）、`--result-repair-turns` 取自 `settings.aragon_repair_turns`（`:196`）⇒ 探针想设这三个数**没有入口**。`_classify_failure` 是 `AragonRunner` 的**实例方法**（`:709`，函数体不用 `self`），`agent/probe.py` 只能 `AragonRunner._classify_failure(None, …)` 这种写法或复制一份 | **"不新建第二个 spawn 点"与"probe.py 自己 spawn"互斥；三参数进不了 argv；复用判定没有可 import 的形态** → **V10-P1-9** |
+| E-84 | §21.3.7 三处前端现状：「`sse.ts:111-122` 手写 8 个事件名」「`GenerationOverlay.tsx:243-244` 原样打印 `{code} · {message}`，唯一特判 `usage_error`」「`useGenerationStream.ts:329-334` `run_conflict` 被静默接管」「`copy.errors` 里 5 条写了从未用」 | 四条**逐字成立**：`sse.ts:111-122` 恰 8 项（含 `run.retry`）；`GenerationOverlay.tsx:243-244` 与描述一致（且 `:253-259` 已经在下发服务端 hint——动作按钮是**追加**，不要重造 hint）；`useGenerationStream.ts:329-334` 与描述一致；`copy.ts:173-176` + `:148` 五条，`grep -r 'errors\.(runConflict\|tooManyRuns\|budgetExceeded\|cancelled\|reconnect)'` **零命中** | **成立**（K6 的三处缺口是真的） |
+| E-85 | §21.6.1 `down_revision="0004_agent_diagnostics"`（S-6）；§21.2 L6「`properties` 12 键 / `required` 11」；§21.6.2「`quality` 的 Pydantic 模型（`schemas/report.py:304-314`）加一个 `salvage`」 | 迁移链实测 `0001_init → 0002_ask_search_schedule → 0003_cost_ledger → 0004_agent_diagnostics` ✔；`report_doc.schema.json` 实测 `properties` **12**、`required` **11**、`additionalProperties:false` ✔；`ReportQuality`（`schemas/report.py:304-314`）✔ 位置准确，**但它至今没有 `cost` / `prompt` 两个字段**（`ValidationOutcome.quality` 写了，响应模型没有 ⇒ 被丢弃） | **口径成立**；顺带发现一处存量缺陷 → **V10-P2-7** |
+| E-86 | §21.10.1 E-67「8.7s / 2 turns / usage 7301+159 / ≈$0.0011」；E-65「`features` 45 项」；§21.0.3 O-21「20 秒内返回」 | 4 次真机探针（`probe_engine_v10.py`）：**argv 路径**（`--base-url/--api-key`，= K2 将要走的路径）`exit 0 / 10.23s / usage 11251+215 / attempts 1 / stopReason end_turn / cost{amount:0,known:false}`；**profile 路径**（不传两个 flag，只设坏 `OPENAI_BASE_URL` + 坏 `OPENAI_API_KEY`）`exit 0 / 7.29s / 7361+95 / baseUrl=https://api.deepseek.com`（⇒ E-72/E-73 **复现**：env 不被采纳）；坏键 `exit 1 / 4.71s / stream_error + Authentication…`；坏端点 `exit 1 / 4.66s / stream_error + Network error…`。`aragon info --json` 的 `features` 实测 **25** 项（不是 45）、`tools` 34 项含 `submit_result`、`cli 0.6.70`、`schemaDepth 12` | O-21 成立（10.2s < 20s）；**但成本提示的 token 数与"45 项"是错的** → **V10-P2-1 / V10-P2-2** |
+| E-87 | §21.0.2 硬约束 3 / §21.3.2 打码 / §21.10.3 的 argv 顺序假设 | `aragon --help` 实测：`--provider <id> anthropic \| openai \| google`、`--base-url <url>`、`--api-key <key>` 均在**全局 Options** 段（`exec` 之前），与 §21.3.2 的白名单与顺序一致 ✔；`--max-tokens` 也是全局段 ✔（`build_argv:152` 放在全局段正确）。**但** `aragon_runner.py:355` 的启动日志是 `' '.join(argv[:3])`——今天安全只是因为密钥在第 7 位，属于"碰巧安全" | 白名单/顺序**成立**；日志行**无断言保护** → **V10-P2-12** |
+
+**顺带确认的既有事实**（v9 引用无误、构成 v10 修订的安全边界）：
+`build_argv` 是纯函数且 `stream()` 在它之前先落 `schema_budget.json`（`V8-P2-5` 的落地形态）；`build_argv:116-202` 行号区间、
+`:130-133` 的 provider/model 两行、`:350-351` 的 `argv.json` 逐字落盘、`:709-735` 的 `_classify_failure` docstring 四条规则、
+`failure.py:104-107` 的 `provider_unavailable` hint（确实点了 `ARAGON_BASE_URL`）、`:113` 的 `provider_auth` hint、
+`:133-138` 的 `agent_error`、`:229` 的 `stream_error → provider_unavailable`、`:235` 的 `invalid_api_key`、
+`report_validator.py:461-508` 的 `build_provisional_doc`、`preflight.py:77/118/357-370` 与 `run_manager.py:391` 的 `baseUrl` 回填、
+`capabilities` 的 `engine` 四件套（`provider/model` 确实不在其中）、`useGenerationStream` 的 `monthly_budget_exceeded` 分支、
+`pricing.py:42` 的 `deepseek-flash` 0.00014/0.00028（据此 7300+200 确实 ≈ $0.0011）、
+`report_doc.schema.json` 的 `sections` `minItems 1 / maxItems 8`、`paragraph` 必填 `text`（minLength 1）、
+`section` 必填 `id/title/blocks`、`test_no_secret_in_run_artifacts.py`（AC-84 的产物扫描器，已存在）、
+`.env.example:52` 的 `ARAGON_RETRY_MAX=6`、`config.py:88` 的 `aragon_retry_max: int = 6`。
+
+### 问题清单（V10-P0 ×2、V10-P1 ×9、V10-P2 ×13）
+
+| ID | 级别 | 位置（v9） | 问题 | 若不修的后果 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| **V10-P0-1** | **P0** | §21.0.1 Q-1「只写 `.env` 就能跑通一次生成」；§21.3.2 只补了 `config` 三个设置与 argv 两个 flag | 生成链路上有**两道门**，v9 只开了第一道。第二道是 `preflight.AragonCapability.fullyCapable`（`preflight.py:82`）与 `degradedReason`（`:94`）：它们的 `hasApiKey` 只来自 `aragon info --json`（`preflight.py:289`），也就是 **CLI 自己的配置**。`agent/__init__.build_runner` 在 `auto` 模式下 `fullyCapable=False` 就 **`return MockRunner()`**（`:58-69`），**不抛、不报**。于是一台只填了 `ARAGON_BASE_URL/ARAGON_API_KEY/ARAGON_MODEL` 的机器（本轮需求的字面场景）：K1 的密钥**一次都没机会上 argv**，产品安静地生成一份"示例"报告 | Q-1「接得上」**不可达**，而且是**四轮里最坏的一种失败形态**：不是红，是绿——用户以为拿到的是真实投研报告（`quality.source` 会诚实地写 `mock`，但顶部横幅在"能力全绿"的机器上是**不出现**的，而那台机器现在报告的是 `fullyCapable=false` 之后又退回 mock 的第三种状态）。下游会以为"K1 做完了，Q-1 自然成立"，直到有人真的填一个干净的 `.env` | **已修**（§21.3.2 末 `v10 修订（V10-P0-1）`）：新增 `effective_key_present = hasApiKey or bool(settings.aragon_api_key)`，`fullyCapable` / `degradedReason("no_api_key")` **只用它**；`keyPresent/keySource` 由**同一个**函数派生（一个真源，不设第三个配置项）；补 **AC-106** 与 **O-22**；并写明既有 `test_preflight` / `test_capabilities_api` 的 `no_api_key` 用例必须 `monkeypatch settings.aragon_api_key=""` 才不误绿 |
+| **V10-P0-2** | **P0** | §21.8 R-44「打码只在 `build_argv()` 的**出口**做一次（`redact_argv`）」vs §21.3.2「`argv.json` 写的是 `redact_argv(argv)`（`:350-351` 改一行）」 | 同一份文档给出两个互斥的打码位置。`build_argv()` 的返回值**就是** spawn 的实参（`aragon_runner.py:348 → :361`），`ask_runner.build_ask_argv` 更是直接转发它且**全仓无调用方**。照 R-44 写（在 `build_argv` 的 `return` 前打码）⇒ 子进程收到的是 `--api-key ***` | **每一次真实生成与每一次深答都以 401 结束**，而症状**正好是 K3 要分类的那个 `provider_auth`**——用户会去换一把好钥匙；更坏的是 AC-90（黄金 argv 顺序）与 AC-91（产物不含 `sk-`）**都会变绿**，CI 完全拦不住 | **已修**：R-44 重写为"打码只在**三个落盘点**做（`argv.json` 写入前 / 日志行 / SSE 载荷），`build_argv()` 永远返回**真实** argv"；§21.3.2 增一条守护（`redact_argv` 只做"显示用副本"，并断言 spawn 的 argv 与 `redact_argv(spawn argv)` 是两个不同的对象）；补 **AC-107**（spawn 实参含真 key、`argv.json` 不含）与 **O-23** |
+| **V10-P1-1** | P1 | §21.4 修改表（缺 `api/app/schemas/capabilities.py`）；§21.5.1 的 JSON | `AragonAragonOut`（`schemas/capabilities.py:10-30`）没有 `baseUrlHost / keyPresent / keySource / verified / verifiedAt`；`EngineLimitsOut` 没有 `agentAttempts / probeTtlSec`；`routers/capabilities.py:129` 是 `as_payload()` + `# type: ignore[arg-type]`，pydantic 默认丢弃多余键 ⇒ 五个字段**到不了响应体** | Q-2「证得了」的核心（`verified/verifiedAt`）与 K6 的端点徽标**一条都出不去**；而 `test_capabilities_api` 如果直接断言 `capability.as_payload()` 会**全绿**——这正是 V8-P2-7 记过的"字段在 ORM 里有、在 API 上没有" | **已修**：修改表补 `api/app/schemas/capabilities.py`（两个模型共 7 个字段）；AC-93/94 改为**经 HTTP 响应**断言；§21.5.1 标注"这一份是 wire 契约，`as_payload()` 只是它的来源" |
+| **V10-P1-2** | P1 | §21.3.4 规则表 R-2b-1 / R-2b-3 / R-2c；AC-99 | 表不穷尽：①AC-99 的夹具（`result` 行 + 无 `error` + `stopReason:"end_turn"` + `retries==0`）不命中任何一行（R-2c 要求"`stopReason` **缺失**"，E-78 实测成功侧恒为 `end_turn`）；②`stopReason:"timeout"` + `retries==0`（`--retry-max 0` 且 `--max-duration` 到点）也不命中；③没有任何机制阻止"新增一个 `stopReason` 值就静默落到 `agent_error`" | AC-99 是**唯一**守住"模型没提交 ≠ 基础设施坏了"的反向夹具。它写不下去 ⇒ 实现者要么把 R-2c 写成"无 error 就算"，把 ① 的区分抹掉；要么让这两种情形落进 R-3（"没有 result 行"那一支，而它**有** result 行） | **已修**：R-2c 改为"`STOP_REASON_MAP` 给出**空值**（缺失 / `end_turn`）或不在表里，且 `retries == 0`"；R-2b-1 明确**不要求** `retries > 0`（`timeout` 本身就是结论）；新增 §21.3.4 末尾的"表必须穷尽"自检（`{code ∈ map, code ∉ map, 无 code}` × 5 个 `stopReason` 值 × `retries{0,3}` 共 **30 组合**，每组合恰有一个码）与 **AC-108** |
+| **V10-P1-3** | P1 | §21.0.3 O-20、§21.3.6 七步、AC-102 | `normalize_doc` 早就在校验**之前**裁掉未知块（`prune_unknown_blocks`，`report_validator.py:207/325`）并把它计进 `quality.prunedBlocks`。实测 O-20 的文档：`prunedBlocks=1`、去掉多余键后唯一错误是"缺 text 的 paragraph"⇒ salvage 自己只丢 **1** 个块。AC-102 要求的 `droppedBlocks == 2` 算不出来；而如果硬凑成 2，就是**同一件事计两次**（`prunedBlocks` + `salvage.droppedBlocks`） | 一条"必过 AC 恒假"（本项目已经踩过三次：V4-P1-7 / I-16 / V6-P0-3），实现者会去改 AC 而不是改代码；两个计数器重叠会让前端的"模型产出有 N 处不合法"这个文案**长期偏大**，而它正是 K5 敢降级的唯一依据 | **已修**：O-20 与 AC-102 改为 `{droppedKeys: 1, droppedBlocks: 1}`，并写死分工——**未知 `type` 归 `quality.prunedBlocks`（既有），salvage 只数"合法 type 但缺必填字段"的那一步**；补 **AC-109**（`prunedBlocks + salvage.droppedBlocks == 原始丢弃块数`） |
+| **V10-P1-4** | P1 | §21.3.4 `AUTH_MARKERS`（含裸 `"401"` / `"403"`） | v8 的 B-2 已经证明裸子串会改写已知结论（`aragon_runner.py:772-779` 的注释就是那条教训），v9 在**另一个字符串**上原样请回来了：`"401"` 会命中 token 数、端口、request-id 片段。而 K4 之后 `provider_auth` **不在 `RETRYABLE_BY_RUNNER` 里** ⇒ 一次被误判成 auth 的网络错误会**连重试都没有** | 与 v8 那次相反方向但同类的伤害：过去是"用户点了取消却看到凭证被拒"，这一次是"网络抖动一次就判定你的密钥坏了，且不重试"。而两次都发生在**最需要它别再骗人的时刻** | **已修**：改成正则 + 分词判据（`\b(401｜403)\b`、`api[ _-]?key`、`authentication`、`unauthorized`、`billing` …），并明确"`error.code` 必须是 provider 类码**且** message 命中"，两条**同时**成立才判 auth；补一条反面夹具（`max_tokens=401` 之类的文本**不得**判 auth）；同时把 `AUTH_HINTS` 收敛成 `AUTH_MARKERS` 的别名（消灭第二份词表） |
+| **V10-P1-5** | P1 | §21.4 修改表「`failure.py` … 修正 `provider_unavailable` 的 hint」 | 只修了 `provider_unavailable`，**没修 `provider_auth`**：`failure.py:113` 至今让用户"检查 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` 是否有效"——而 E-72/E-73 刚刚证明这两个环境变量**不被采纳**。这正是 v9 自己立的第 6 条纪律（"配置项存在 ≠ 配置项生效"）在同一张表里的第二次犯 | K3 把 401 第一次**真的**映射成 `provider_auth` 之后，这条 hint 会成为用户看到的第一句建议，而它指向两个改了不起作用的变量。用户改完 `OPENAI_API_KEY` 再点一次，还是 401——比不提示更坏 | **已修**：`provider_auth` 的 hint 改为 `ARAGON_API_KEY`（`.env`）与"CLI profile"两种来源，并指向 K6 的密钥抽屉 |
+| **V10-P1-6** | P1 | §21.3.2 `aragon_api_key_source: Literal["auto","env","none"]` vs §21.5.1 `keySource: "env" \| "cli_profile" \| "none"` | 两处取值域不一致（`env` vs `cli_profile`），而且 **`keySource` 被做成了一个配置项**。它本质是**推导出来的事实**（"这一把 key 是从哪来的" = 看 env 有没有 + CLI 有没有），配置项只能写 `auto` 再由某处回填 ⇒ 立刻多出第三份真源，且 `auto` 这个值本身没有对外语义 | 三条取值域迟早漂移（本项目为双源付过三次代价：I-20 / V4-P1-10 / V8-P1-2）；更实际的是 `keySource` 在 `capabilities` 里会出现 `"auto"` 这个前端无法渲染的值 | **已修**：删掉 `aragon_api_key_source` 配置字段；`keySource ∈ {"env","cli_profile","none"}` 由 `effective_key_present` 的**同一个**函数推导（一处定义，`preflight` 拥有），并写进 §21.5.1 的唯一取值域 |
+| **V10-P1-7** | P1 | §21.3.7 动作表（15 条）；AC-104 | 实有 **18** 条 run 码（E-81），动作表少了 `aragon_unavailable / structured_result_unsupported / schema_drift / snapshot_missing`，又多了一个**不是 run 码**的 `monthly_budget_exceeded`（`errors.py:119` 的 402）。AC-104 要求"Python 码集合 == JSON 码集合"且"`RUN_ERROR_ACTIONS` ⊇ JSON 码集合" | 按字面写夹具 ⇒ `pytest` 必红（集合不等）或实现者把夹具从**动作表**生成（于是 18 条里 4 条没有动作，前端对这 4 个码继续无动作）；`aragon_unavailable` 恰恰是"没装 CLI"这条路，是**首次上手**最可能撞的码 | **已修**：动作表补齐 18 条；`monthly_budget_exceeded` 移进夹具的第二个数组 `httpCodes`（402 级，不属于 `RUN_ERROR_CODES`）；AC-104 明确"码集合的真源是 `failure.RUN_ERROR_CODES`（18 条），动作表是它的函数" |
+| **V10-P1-8** | P1 | §21.3.6 末「可比性：`status=degraded` 不参与 `compare_engine_quality`……**只需**把 `degraded` 归入"内容不可比"一侧」 | `compare_engine_quality` 与 `diff_docs` **都没有 status 入参**（E-82），所以"只需"= 改两个签名 + 调用点 + 既有 18 条 diff 用例；而且它会把**"接地不足的 degraded"**（v6 就存在的合法状态）一起划进"内容不可比"，把 v6 的可比性口径改坏 | 要么 breaking change（`DiffResult`/`__all__`/前端类型一起动，正是 V6-P1-2 花三条 P1 收掉的那类），要么悄悄不做 ⇒ K5 的 `degraded` 报告被当成可比基准，一份**少了两块**的报告成为"引擎差异"的参照系（R-47 的高危场景） | **已修**：改为按 **`quality.salvage.used`** 判定（`compare_engine_quality` 本来就收两个 `quality` 字典，**零签名变更**）：任一方 `salvage.used` ⇒ `same=false, changed += ["salvage"]`，note 写明"其中一版是抢救后的残缺内容"；`status` 一字不用 |
+| **V10-P1-9** | P1 | §21.3.3「`run_probe()` 自己组装工作区与最小 schema」+ 硬约束 1 + 参数表 + 「复用 `_classify_failure`」 | 三处按字面写不下去：①`probe.py` 自己 `create_subprocess_exec` = **第二个 spawn 点**，直接违反硬约束 1，也绕掉 `argv.json` / `schema_budget.json` / `engine.json` / 打码四处共性；②参数表里的 `--max-tokens 1_500` / `--retry-max 0` / `--result-repair-turns 0` 都从 `settings` 读（`aragon_runner.py:152/155/196`），`AgentRequest` 没有覆盖入口 ⇒ 探针**设不了自己的参数**；③`_classify_failure` 是实例方法（函数体不用 `self`），`probe.py` 没有可 import 的形态 | 探针会变成"第三套 spawn + 第三套判定"，而 K5/K3 的全部价值都建立在"只有一套"上；`--result-repair-turns 2`（settings 的默认）会让探针在失败侧**多烧两轮修复**，"探针 = 8 秒一次"这个成本承诺当场失效 | **已修**：写死 `run_probe()` = 组装 `AgentRequest`（新增三个 `int \| None` 覆盖字段，`None` ⇒ 跟 settings）+ `AragonRunner(capability).run(request)`（**零新增 spawn 点**，`argv.json`/打码/`engine.json` 全白拿）；`_classify_failure` 提成模块级 `classify_failure(observed, exit_code, stderr_path)`，实例方法保留一行委托（AC-73/97/98 的夹具直接调模块级函数） |
+| V10-P2-1 | P2 | §21.10.1 E-65「`features` 45 项」 | `aragon info --json` 实测 `features` **25** 项（`tools` 34 项） | 数字对不上，复核者要重数一遍（同 V8-P2-4 的 `19 → 21`） | 已改 25 |
+| V10-P2-2 | P2 | §21.3.3 / §21.3.9 / E-67「8.7s / 7301+159 ⇒ $0.0011」；§21.7.1「每页 8 秒 busy 态」 | 真机 argv 路径（K2 要走的路径）实测 **10.23s / 11251+215**（≈ $0.0016）；7301+159 更接近 **profile 路径**（7361+95 / 7.29s）。把 token 数写死进"成本提示"本身也会漂移 | 成本提示低报约 1.5 倍；而"10 秒 busy 态"是按 8.7s 定的，真实 10.2s 会把按钮停在"进行中"之外 | 已改为"**优先用上一条探针实测的 tokens**（`engine_probes` 里有），价表缺失或没有历史时才回退 7300+200 的常量"，并把 busy 态改成 15 秒、正文数字补齐为 10.2s |
+| V10-P2-3 | P2 | §21.6.2「`AgentResult` … 既有 17 个字段不动」 | 实测 `runner_base.AgentResult`（`:49-78`）**15** 个字段 | 数错会让实现者怀疑漏抄了两个（同 V8-P2-4） | 已改 15 |
+| V10-P2-4 | P2 | §21.6.1「保留：… `DELETE … WHERE id NOT IN (SELECT id ORDER BY created_at DESC LIMIT 200)`」 | 子查询少了 `FROM engine_probes`，不是合法 SQL（SQLite 会报 `no such table: id`） | 照抄运行时报错；而这行是"无界增长"的唯一防线（R-50） | 已补全 `FROM engine_probes` 并注明 SQLite / PG 同一写法 |
+| V10-P2-5 | P2 | §21.4 修改表「`web/lib/types.ts`：`CapabilitiesAragon` 五个可选字段」 | 前端的接口名是 `AragonCapability`（`types.ts:671-692`），没有 `CapabilitiesAragon` | 实现者 grep 不到会自己新建一个接口（于是类型双源） | 已改名为 `AragonCapability` |
+| V10-P2-6 | P2 | §21.5.1 三个新 HTTP 码（`probe_in_progress` 409 / `probe_disabled` 503 / `agent_mock_mode` 503）；§21.4 修改表 | 修改表没有 `api/app/errors.py`。`AppError` 支持 `code=` 覆盖（`errors.py:29-41`），所以不是死路，但**没人被告知该走哪条** | 有人会用裸 `HTTPException(409)` ⇒ 走 `_http_handler` 的 `{409: "conflict"}`，前端拿到的是 `conflict` 而不是 `probe_in_progress` | 已补 `errors.py` 一行（三个子类），并在 §21.5.1 注明"走 `AppError` 子类，不裸抛 `HTTPException`" |
+| V10-P2-7 | P2 | §21.6.2「`quality` 的 Pydantic 模型加一个 `salvage`」 | 顺手发现：`ReportQuality`（`schemas/report.py:304-314`）**至今没有 `cost` / `prompt`**，而 `ValidationOutcome.quality` 两个都写了 ⇒ v7 H4/H5 的字段在响应体里一直被丢弃（"第二道门"第三次） | `quality.salvage` 会走**同一条**路：写进 JSON、被 pydantic 丢掉、前端永远看不到"这份是抢救过的" —— 正好是 K5 最不能失手的那一条 | 已改为"`ReportQuality` 一次补齐 `cost / prompt / salvage` 三项"，并补一条守卫用例（**`quality` 的每个键都必须在 `ReportQuality` 里有同名字段**，用反射断言，未来新增键也不会再漏） |
+| V10-P2-8 | P2 | §21.5.2「`run.retry` 只增字段 `layer`」；AC-100 | 只提了服务端载荷。`web/lib/types.ts` 的 `RunStreamEvent` 载荷类型与 `web/tests/retry-event.test.ts`（v8 的 AC-85 就靠它守"事件真的进了 state"）都没在修改表里 | AC-100 只断言后端 SSE ⇒ 前端 reducer 丢字段也绿（V8-P1-3 的同型问题换了个字段复发） | 已在修改表补两行，并写明 AC-100 的 vitest 半边要断言 `state.layer === 'runner'` |
+| V10-P2-9 | P2 | §21.0.2 硬约束 3（密钥永不落盘）与 §21.3.2 的打码范围 | E-73 之后 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` 的 **env 透传已无收益**（不被采纳），却仍然在 `ENV_ALLOWLIST` 里被交给子进程（`test_no_secret_in_run_artifacts.py:52-54` 还专门断言它必须在） | 白拿一份"子进程可见的明文密钥"，与 R-43 的缓解方向相反；这不是新漏洞，是 K1 之后**多余**的那一份 | 已加一条：`ARAGON_API_KEY` 非空时**不再透传**这两个变量（无 key 时保持现状以兼容老部署），并写进 `.env.example` 的注释 |
+| V10-P2-10 | P2 | §21.4 新增 `api/tests/test_agent_endpoint.py`；AC-91 五处扫描 | `api/tests/test_no_secret_in_run_artifacts.py`（AC-84）**已经是**产物扫描器（扫 workspace 全部文件 + `/capabilities` 响应体，三种 `sk-`/`Bearer`/裸 hex 模式），文件表没提它 | 会写出第二个扫描器，两套模式迟早不同（第三个双源）；而且新的五处（`argv.json`/`engine.json`）本来只要加两行 | 已改为"扩 AC-84 的既有扫描器（补 `engine.json` + `redact_argv` 单测），不新开扫描器" |
+| V10-P2-11 | P2 | §21.3.3 单飞（`_inflight` 只是探针之间的锁） | 探针与**真实生成**之间没有互斥：单 worker 下一个探针 spawn 会与正在跑的 run 并行，两条子进程各烧各的 token，而 `MAX_CONCURRENT_RUNS` 不管它 | 用户在生成中手滑点一下自检，就多一次真实计费调用；更麻烦的是 `preflight._remember()` 的 60 秒缓存会被探针的 `system` 事件回填（`note_base_url`），"哪个端点生成了这份报告"的实证链被搅浑 | 已在 §21.3.3 加一条：有活动 run 时 `probe_now()` 直接返回 `ok=false, code="busy", ms=0`（**不 spawn**），前端按钮置灰 |
+| V10-P2-12 | P2 | §21.3.2「打码」与 §21.7.2 AC-91 的"五处" | `aragon_runner.py:355` 的启动日志用 `argv[:3]`——今天安全只是因为密钥排在第 7 位；AC-91 的五处里**没有**这条 SSE 日志行 | 任何一次 flag 顺序调整（v7 就调过一次）都会把密钥带进 `run_events` 与 SSE，而 CI 不会红 | 已把该日志改成 `' '.join(redact_argv(argv)[:5])`，并纳入 AC-91 的第六处 |
+| V10-P2-13 | P2 | §21.3.3 `PROBE_FILE = "PROBE-ECHO-OK"` 与 `--cwd probes/<ts>/` 里的 `probe.txt` | 一个常量同时表示"文件名"与"文件内容"（`PROBE_FILE = "PROBE-ECHO-OK" # 内容即断言`），而那行 `read_file ./probe.txt` 里的文件名是**字面写在提示词里**的 | 改名只改一处 ⇒ 探针恒报 `probe_echo_mismatch`，而这个码的含义是"网关在改写 JSON"，会把人带去查网关 | 已拆成 `PROBE_FILENAME = "probe.txt"` 与 `PROBE_ECHO = "PROBE-ECHO-OK"` 两个常量，提示词用 f-string 拼 |
+
+> **处理口径**：P0 与 P1 共 11 条**全部已在正文就地修复**（每处在原位置带 `v10 修订（V10-Pxx）` 标记，照读即可施工）；
+> P2 共 13 条**全部已顺手改掉**。本轮同样不保留"文档内待议"项——§21.2 的 L 层纪律在文档上的应用。
+
+---
 
 ## 评审记录（Review Notes · Iteration 4）
 
@@ -4326,6 +4446,13 @@ def assert_prompt_budget(request: AgentRequest, max_bytes: int) -> None:
 
 #### 20.3.4 关键代码路径 3：失败分类学与诊断（H3）
 
+> **★v9 补丁（必读，§21.3.4 / K-7~K-9）**：本节的**四条规则（①~④）仍然成立，但不够用**。
+> 本轮实测发现三处缺口：①`stopReason` 从未被解析（§21.10 的 S-4），于是 `isError:false + stopReason:timeout + exit 3`
+> 被本节第 ② 条报成"模型不肯提交"（E-68）；②`error.code=stream_error` 同时表示"网络断"与"密钥错"，
+> 必须叠加 message 级细分才能分开（E-70 vs E-71）；③`result` 存在时提前返回会**吞掉** `retries>0` 这条证据。
+> 因此 v9 把判定表扩写为 **9 行**（`§21.3.4` 的 R-1 ~ R-3），本节 ①~④ 作为其子集保留，
+> AC-99 专门守"`exit 1 + 无 error + stopReason=end_turn + retries=0 → result_schema_unsatisfied`"不回归。
+
 **现状**：`_finalize_failure` 把一切非 `cancelled` / 非 `budget_exceeded` 的失败写成 `status="failed"`
 （`run_manager.py:588`），真正的分类只发生在两处：`aragon_runner._finalize` 的 `structured` 判定
 （`:501-513`）与 `_classify_exit` 的 exit code 查表（`:549-569`）。后者只有 6 个分支，缺三个实测存在的分支：
@@ -4640,6 +4767,12 @@ result: required (nothing was submitted)
 
 #### 20.3.7 关键代码路径 6：能力与健康（H6）
 
+> **★v9 续写**：v9 在 `capabilities.aragon` 上新增 `baseUrlHost` / `keyPresent` / `keySource` /
+> `verified` / `verifiedAt`（§21.3.3、§21.5.1），它们是"这个端点此刻通不通"的唯一真源；
+> `capabilities.engine` 仍然**只有**四元组 + `schemaSha1` + `schema` + `limits` + `priceVersion` + `lastFailure`
+> （新增 `lastProbe` 摘要与 `limits.agentAttempts` / `probeTtlSec`），**不**新增第三份 `provider/model`（H-19 不变）。
+> `aragon.baseUrl`（既有，`preflight.py:77`）语义不变，只是 v9 之后**由探针在 8.7 秒内**就能回填，不必等一次完整生成。
+
 `/capabilities` 是前端一切开关的真源（v6 起 5 个布尔）。本轮扩展 `engine`（**不改既有字段的语义**，
 ★v8 修订 V8-P1-2：**`model`/`provider` 不进 `engine`**——`EngineCapabilityOut` 的类注释与
 `fingerprint.as_capability()` 都写着"V6-P1-3：那两个字段在 `aragon` 子对象与 `reports.model` 里"，
@@ -4841,7 +4974,7 @@ data: {"seq":42,"type":"run.retry","at":1794841300000,
 | exec | `--append-system-prompt-file` | 不变 | ★P1-11 |
 | exec | `--result-schema` | 不变；**前置** `schema_budget.measure` + `assert_schema_identity` | E-46 / E-47 |
 | exec | `--result-repair-turns 2`（硬编码） | `min(ARAGON_REPAIR_TURNS=2, info.result.maxRepairTurns)` | E-39 |
-| exec | （未设，CLI 默认 10） | `--retry-max <ARAGON_RETRY_MAX=6>` | E-45：6 次已吃 44s |
+| exec | （未设，CLI 默认 10） | `--retry-max <ARAGON_RETRY_MAX=6>` → **★v9 改为默认 0**（§21.3.5 / K-9：E-69 实测 `--retry-max` 管不住 CLI 的第二层重试，`maxRetries=10` / 60s 退避，一次坏端点吃掉 2 分 03 秒；E-70 实测 0 时 2.0 秒快速失败且带 `error.code`） | E-45 / E-69 / E-70：6 次已吃 44s |
 | exec | `--on-result-unsatisfied error` | 不变 | 我们要拿到 exit 1 而不是空报告 |
 | exec | `--max-turns` / `--max-duration` / `--prompt-file` | 不变 | — |
 
@@ -4889,6 +5022,9 @@ data: {"seq":42,"type":"run.retry","at":1794841300000,
 ### 20.6 数据模型
 
 #### 20.6.1 迁移 `0004_agent_diagnostics`（SQLite / PostgreSQL 双兼容）
+
+> **★v9 续链**：v9 的迁移编号是 **`0005_engine_probes`**，`down_revision = "0004_agent_diagnostics"`
+> （不是 `"0004"`）。见 §21.6.1；0004 的 `upgrade/downgrade` 一个字符都不改。
 
 ```python
 # api/app/db/migrations/versions/0004_agent_diagnostics.py
@@ -5528,3 +5664,1687 @@ TS 镜像补齐三个字段；删掉真正无人使用的 `retryBadge` 与 `gene
 `pytest` 789 → **802 passed / 3 skipped**（+13 条回归用例）；`vitest` 225 → **232 passed / 1 skipped**（+7）；
 `ruff` / `tsc --noEmit` / `next lint --max-warnings=0` 全清；`next build` 成功，
 `check-bundle` **239.8 kB ≤ 240 kB**（8 个面板仍不在首屏 chunk 里）。
+
+## 21. Iteration 5 增量设计：把「AI 能力可用」变成一条可验证的链路（K1–K7）
+
+> **本轮需求原文**：「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健。」附带了一组**真实第三方凭证**
+> （`https://api.deepseek.com` + `deepseek-flash`）。这不是一句功能需求，而是一次**验收条件**：
+> 用户给了一个"应该能跑"的端点与密钥，那么产品必须能（1）把它接上、（2）证明它现在是通的、
+> （3）不通时说清是哪一环、（4）即使报告没解析成功也别把模型给的东西整份扔掉。
+>
+> **v9 与 v8 的关系一句话**：v8 回答"失败了能不能说清为什么"，v9 回答"**凭什么说它现在是好的**"。
+> v8 的 8 条性质（P-1~P-8）、hint 表、三态成本、单 worker、结构化文档、只标不改数、降级永不上抛
+> **一条都不改**；本轮新增的 7 条（Q-1~Q-4 的四分法与 K1–K7 的机制）全部是**在 v8 的骨架上补两个洞**：
+> 引擎的"接入面"和"解析的最后一公里"。
+>
+> **本轮纪律（v9 新增，第 6 条）**：
+> 6. **"某个配置项存在"与"某个配置项生效"是两件事，必须分开证。** 本轮 4 条实测证据里，
+>    3 条推翻了"理所当然"的写法：`OPENAI_BASE_URL` 环境变量**不被采纳**（E-73）、
+>    `--retry-max` **管不住第二层重试**（E-69）、`error.code=stream_error` **同时**表示"网络断了"
+>    和"密钥错了"（E-70 vs E-71）。三者都不是笔误，是"照字面写就会在真实端点前面失效"的机制问题。
+>    所以本轮的写法是：**每个配置项都配一条"它到底有没有生效"的探针**，探针输出写进证据表。
+
+### 21.0 本轮的定位、硬约束与 oracle 口径
+
+#### 21.0.1 「AI 能力可用稳健」的四条可测定义（Q-1 ~ Q-4）
+
+| 编号 | 一条能被反驳的断言 | 反驳方式（本轮实测） | 现状 |
+| --- | --- | --- | --- |
+| **Q-1 接得上** | 用 `.env` 里的 base-url + api-key + model，不碰 CLI 的全局配置，就能跑通一次生成 | 只写 `.env`，跑一次真实生成 | **做不到**（`config.py` 没有 base-url / api-key 字段，`aragon_runner.py:116` 的 argv 里没有 `--base-url` / `--api-key`，E-65/E-73）。**★v10 补（V10-P0-1）：还有第二道门——`fullyCapable` 的 `hasApiKey` 判据，只开第一道门等于没开门，见 §21.3.2 末** |
+| **Q-2 证得了** | 系统能回答"这个端点此刻是通的吗、上次验证是什么时候" | `GET /capabilities` 里能不能读出 `verified / verifiedAt` | **做不到**（`aragon.baseUrl` 确实有——`preflight.py:77` 的字段 + `:118` 的输出 + `run_manager.py:391` 的 `note_base_url`——但它只在**一次成功生成之后**才有值，而 `verified/verifiedAt` 根本不存在；E-65） |
+| **Q-3 说得清** | 密钥错、端点错、额度空、网络断、模型不提交 —— 五种失败给出**五个不同**的码与建议 | 五种坏输入各跑一次，比对码 | **做不到**（401 与网络错误都是 `stream_error` → 都变成 `provider_unavailable`；`stopReason=timeout` 被报成"模型不肯提交"，E-68/E-69/E-71） |
+| **Q-4 丢得少** | 模型给了一份 90% 合规的报告时，用户不会只看到"这不是一份可用的投研报告" | 构造一份"多一个非法键 + 一个非法 block"的合法 JSON 交给校验器 | **做不到**（`build_provisional_doc()` 只保留 `result.text`，结构化内容一个字段都不留，`report_validator.py:461-508`） |
+
+这四条就是本轮的 oracle：**Q-1 是"能不能用"，Q-2 是"敢不敢信"，Q-3 是"坏了能不能修"，Q-4 是"坏了亏多少"**。
+四条全部可在本机用真实凭证跑出来，不需要用户参与。
+
+#### 21.0.2 硬约束（写进代码之前先写死的六条）
+
+1. **不加第二个并发真源**：探针（K2）复用 `RunManager` 的进程内单飞语义与 `aragon_runner` 的 spawn 路径，
+   不新建"第二个 spawn 点"（argv 的唯一 choke point 仍是 `build_argv`，裁决 H-2 不变）。
+2. **降级永不上抛**（v6 纪律）：探针失败**不阻断**生成，只让 `capabilities` 变红；`provider_auth` 也不阻断重试，
+   只是提示语不同。任何探针异常都被吞成一条 `ok=false` 的记录。
+3. **密钥永不落盘**：`argv.json` 逐字落盘（`aragon_runner.py:350-351`），而 API key 必须进 argv（E-73 证明环境变量不生效）
+   ⇒ **打码是硬要求，不是优化**。任何日志、SSE、数据库列、`quality` 记录、报告导出都不得出现明文密钥。
+4. **不回填历史**：`engine_probes` 是新表；老报告没有 `quality.salvage` 就是没有（读路径按"可缺失"处理，沿用 v6 口径）。
+5. **不引入新依赖**：探针不需要新的 HTTP 客户端（它跑的是 CLI），密钥打码用标准库 `re`。
+6. **既有 AC 一条不豁免**：`test_boundaries.py` 的四条依赖方向规则（`agent/` 不 import `services/`、
+   `api/app` 无 `create_all`、web 不 import `openai/aragon`）在 K1–K7 的每一处都成立。
+
+#### 21.0.3 oracle 断言（写完自检，见 §21.10）
+
+- **O-17**：`.env` 里写 base-url + key + model ⇒ `argv.json` 中出现 `--base-url` 与 `--api-key`，且
+  `argv.json` 与 `aragon.stderr.log`、NDJSON 三份落盘文件中**不含** `sk-[A-Za-z0-9]{16,}`。
+- **O-18**：同一份"401 文本"与"网络断文本"的 `result` 行（E-71 / E-70 原样）走 `_classify_failure`，
+  必须得到两个不同的码（`provider_auth` / `provider_unavailable`）。
+- **O-19**：E-68 原样的 `result` 行（`isError:false` + `stopReason:timeout` + `exitCode:3` + `retries=3` + 无 `error` 对象）
+  必须得到 `provider_unavailable`，且 hint 里出现"重试了 N 次"——**绝不**是 `result_schema_unsatisfied`。
+- **O-20**：一份"11 个必填键 + 1 个多余键 + 1 个 `type:"donut"` 块 + 1 个缺 `text` 的 paragraph"的 JSON
+  经 `salvage_doc()` 后**过 schema 校验**，`quality.salvage.droppedKeys == 1`、`quality.salvage.droppedBlocks == 1`、
+  `status == "degraded"`；未知块（donut）仍由既有的 `prune_unknown_blocks()` 裁掉并计入 `quality.prunedBlocks == 1`
+  ——**两个计数器不重叠**（★v10 修订 V10-P1-3：实测 `report_validator.py:207/325` 在校验之前就裁未知块，
+  所以"donut 导致校验失败"这件事本来就不会发生；`droppedBlocks` 只数 salvage 自己丢的那一个）。
+- **O-21**：探针在 20 秒内返回（★v10 实测：**argv 路径** `10.23s / 11251 in + 215 out / attempts 1`，E-86；
+  v9 的 8.7s 更接近 **profile 路径** 的 7.29s，K2 走的不是那条），且不写 `runs/` 目录。
+- **O-22**（★v10 / V10-P0-1）：**只**把 `ARAGON_BASE_URL / ARAGON_API_KEY / ARAGON_MODEL` 写进 `.env`、
+  并把 `aragon info --json` 的 `hasApiKey` 钉成 `false`（假 `info`）⇒ `decide_mode()` 必须返回 **`real`**，
+  `fullyCapable` 必须为 `true`，`capabilities.aragon.keySource == "env"`。反过来：三项都空且 `hasApiKey=false` ⇒
+  `keySource == "none"`、`degradedReason == "no_api_key"`、`auto` 才允许退回 mock。
+- **O-23**（★v10 / V10-P0-2）：`redact_argv(build_argv(...))` 的 `--api-key` 位是 `***`，而
+  `build_argv()` 的返回值本身**必须**含真 key；`stream()` 传给 `create_subprocess_exec` 的是**后者**，
+  落盘的 `argv.json` 是**前者**。
+
+### 21.1 概述：v8 之后仍然答不上的三个问题
+
+v8 把"失败"这件事做到了可以说清（15 个码 + hint + 指纹 + 三态成本）。但只要把真实凭证交到手上，
+立刻有三个问题答不上来：
+
+**第一，"这个端点现在是通的吗"没有答案。** `capabilities.aragon` 报告的是"CLI 装没装、版本对不对、
+有没有 submit_result、有没有 key"——全部是**静态能力**；`baseUrl` 这个字段虽然有（`preflight.py:77`），
+但它只在**一次成功生成之后**被 `note_base_url()` 回填（`preflight.py:357-370`，调用点 `run_manager.py:391`），
+也就是说"想知道打的是哪个端点"必须先花 2 分钟跑一次真实生成。`aragon doctor` 同样是静态的：本机实测
+（E-66）它在 `--api-key` 完全无效的情况下依然给 `api-key: pass`，因为它只检查"配置里能不能解析出一个 key"。
+于是产品最尴尬的状态是：能力面板全绿、用户点生成、2 分钟后失败、再点、再失败——
+而这中间**从来没有一次真实的往返**。`/capabilities` 的注释说"每个特征都是一个测量"（`routers/capabilities.py:1-13`），
+但 `aragon.verified` 这一项从来没有被测量过。
+
+**第二，"同一个错误码两种病"让 hint 变成误导。** 实测（E-71）密钥错误时 CLI 给的 `result.error.code` 是
+`stream_error`，网络断开时（E-70）也是 `stream_error`，**一字不差**；唯一不同的是 `message` 文本。
+而 `CLI_ERROR_CODE_MAP` 把 `stream_error → provider_unavailable`（`failure.py:229`），
+`provider_unavailable` 的 hint 是"稍等 1–2 分钟再试"（`failure.py:104-108`）——
+**密钥填错的用户会被告知"再等等"，然后无限重试**。更糟的是那条 hint 让用户"检查网络/代理与 `ARAGON_BASE_URL`"，
+而 `ARAGON_BASE_URL` **这个设置根本不存在**（`config.py:59-108` 全文没有），这是一个指向虚空的可操作建议。
+
+**第三，"解析失败"把所有内容一起扔掉。** 真实失败里最常见的一类不是"模型没提交"，而是
+"提交了、但比你给的 schema 多一个键 / 少一个必填字段 / 有一个我们不认识的块类型"。
+当前的处理是：`jsonschema.validate` 抛错 → 整份文档丢弃 → `build_provisional_doc()` 只把
+模型最后说的一段话（截 4000 字）塞进一张 `callout(warn)`（`report_validator.py:461-508`）。
+用户花了 3 万 token，拿到一句"这不是一份可用的投研报告"。
+
+§21 就做四件事，顺序与上面三个问题一一对应，外加两件"让上面四件不至于腐化"的机制：
+
+- **K1 引擎接入**：`ARAGON_BASE_URL` / `ARAGON_API_KEY` 成为一等设置，走 argv 唯一入口，密钥全程打码。
+- **K2 引擎自检**：一次 8.7 秒的最小真实生成，落库、带 TTL、进 `capabilities`，让"通不通"变成可读的事实。
+- **K3 归因 v2**：`stopReason` 进入分类、`stream_error` 按消息细分、`result` 存在时不再短路重试计数。
+- **K4 重试权收回**：CLI 层关掉（`--retry-max 0`，实测 2.0s 快速失败），把重试权收回 runner，带层号与预算。
+- **K5 解析抢救**：三档阶梯（repair → salvage → provisional），把"90% 合规"的报告救回来并**明确标注**。
+- **K6 前端动作**：15 个码每个都配一个"下一步做什么"的动作，端点徽标显示已验证/未验证/凭证失败。
+- **K7 记录**：`engine.json` 落盘 + `argv.json` 打码 + `engine_probes` 表，任何一次"好的/坏的"都能事后对号。
+
+### 21.2 范围分层：K 层（本轮做）/ L 层（明确不做）
+
+**K 层（本轮必须落地，全部可在本机验证）**
+
+| 编号 | 机制 | 一句话交付 |
+| --- | --- | --- |
+| K1 | 引擎接入面 | `.env` 三个变量 → argv 两个新 flag，密钥打码，provider 预检 |
+| K2 | 引擎自检探针 | 一条 8.7s 的最小生成，落 `engine_probes`，进 `capabilities` |
+| K3 | 失败归因 v2 | `stopReason` + 消息级细分 + `result` 分支不再吞掉重试证据 |
+| K4 | 重试权收回 | CLI 层 0 次，runner 层 2 次，SSE `run.retry.layer` |
+| K5 | 解析抢救 | `salvage_doc()` 逐块抢救 + `quality.salvage` + `degraded` |
+| K6 | 前端动作表 | 码 → 动作（重试/去设置/查日志/等），端点徽标三态 |
+| K7 | 记录与复现 | `engine.json`、打码的 `argv.json`、探针表 |
+
+**L 层（明确不做，写清理由，避免下一轮重开）**
+
+- **L1 不做多端点/负载均衡**：一个进程一个引擎，`ARAGON_BASE_URL` 全局唯一。理由：本项目是**单机工作台**，
+  多端点会让"这份报告的 engine 指纹"失去意义（同一报告可能由两个端点产出），直接影响 G4 可比性。
+- **L2 不做密钥加密存储**：`.env` 明文 + 文件权限，与 README 既有口径一致；引入 KMS 会把单机项目变成
+  有部署依赖的项目，违反"三分钟启动"。
+- **L3 不做自动化端点探测循环**：探针**按需**跑（前端点一次 / 端点变更后第一次生成前 / TTL 过期后第一次打开面板），
+  不做后台定时——定时探测等于持续烧对方的限流额度。
+- **L4 不做模型能力矩阵**（哪个模型擅长哪些章节）：没有可测依据的个性化是伪功能（沿用 v6 的 C 层口径）。
+- **L5 不做 PDF/多用户/i18n/多币种**：沿用 E1–E4 黑名单，一字不改。
+- **L6 不改报告 schema 的 12 个顶层键**：`report_doc.schema.json` 顶层 `additionalProperties: false`
+  且 `required` 里已列 11 个键（实测：`schema.properties` 共 12 个键）。新增的**任何**标记都必须落在
+  **我们自己的 `quality` 信封**里，而不是文档里——否则 CLI 侧的 schema 校验会直接拒收（这是一条硬边界，
+  下一节 K5 的所有设计都受它约束）。
+
+### 21.3 技术设计
+
+#### 21.3.1 分层与依赖方向（K1–K7 各自落在哪一层）
+
+```
+config.py                 ← K1 三个新设置（aragon_base_url / aragon_api_key / agent_attempts…）
+agent/
+  aragon_runner.py        ← K1 argv+打码 / K3 stopReason / K4 runner 重试 / K7 engine.json
+  failure.py              ← K3 规则表（STOP_REASON_MAP / AUTH_MARKERS / CLI_ERROR_CODE_MAP 补两条）
+  probe.py                ← K2 探针（新文件；**不 import services/**
+  preflight.py            ← K1 provider 白名单 + 端点形状预检（warn/阻断的边界在这里）
+services/
+  report_validator.py     ← K5 salvage_doc()（纯函数，不碰 DB）
+  agent_probe.py          ← K2 单飞 + TTL + 落库（新文件；可 import agent/）
+  run_diagnostics.py      ← K7 recent_probe()
+routers/
+  agent.py                ← K2 POST/GET /agent/probe（新文件）
+  capabilities.py         ← K1/K2 暴露 verified / baseUrlHost / keyPresent / keySource
+db/migrations/versions/
+  0005_engine_probes.py   ← K2 一张只追加的表
+web/lib/
+  runErrors.ts            ← K6 码 → 动作（新文件）
+  types.ts                ← K1/K2/K5 的类型增量（可选字段，向后兼容）
+web/components/…
+  RunStatusBadge.tsx      ← K6 端点徽标三态
+  GenerationOverlay.tsx   ← K6 动作按钮
+  report/QualityBar.tsx   ← K5 salvage 徽标
+```
+
+依赖方向的三条硬线（`api/tests/test_boundaries.py` 已机器化，设计不得违反）：
+
+1. `agent/` **不** import `services/`。所以 `probe.py` 自己组装工作区与最小 schema，不从 `services.snapshot` 借东西。
+2. `services/` 可以 import `agent/`。所以 `agent_probe.py`（单飞 + 落库 + TTL）在 `services/`，
+   它 import `agent.probe`，而不是反过来。
+3. `routers/` 是唯一能同时看到两者的地方。
+
+#### 21.3.2 关键代码路径 1：引擎接入面（K1）
+
+**现状（实测）**：`build_argv()`（`aragon_runner.py:116-202`）只传 `--provider` 与 `--model`
+（`:130-133`），**从不**传 `--base-url` / `--api-key`——而 `aragon --help` 明确列出了这两个全局 flag。
+`config.py:59-108` 没有对应字段。于是"换成第三方 OpenAI 兼容端点"唯一可行的办法是去手改
+`~/.aragon-agent/config.json`（本机实测里它确实有一个 `DeepSeek-Flash` profile，含 `baseUrl` 与 `apiKey`）——
+**产品把自己的可配置性外包给了别人的全局配置**。E-73 进一步证明"用环境变量绕过"也不成立。
+
+**设计**：三个新设置，一个 choke point，一处打码。
+
+```python
+# config.py —— 插在 aragon_model（:68）之后，与既有 aragon_* 排序一致
+aragon_base_url: str = ""            # env: ARAGON_BASE_URL
+aragon_api_key: SecretStr = SecretStr("")   # env: ARAGON_API_KEY（打印时自动 ****）
+agent_attempts: int = 2              # K4：runner 层总尝试次数（1 = 不重试）
+agent_probe_enabled: bool = True     # K2
+agent_probe_ttl_sec: int = 300       # K2
+# ★v10 修订（V10-P1-6）：v9 草案里的 `aragon_api_key_source` **已删除**——它不是配置项，
+# 而是由 `preflight.effective_key_source()` 推导出的事实（见本节末"第二道门"）。
+```
+
+- `SecretStr` 而不是 `str`：`repr(settings)` / `settings.model_dump()` 永远打印 `**********`，
+  这一条就消掉了"某天有人把 settings 打进日志"的整类事故。
+- **★v10 修订（V10-P1-6）**：`keySource` 不再有配置项，它由 `preflight.effective_key_source()` 推导，
+  取值域唯一：`"env" | "cli_profile" | "none"`；`capabilities` 暴露它与 `keyPresent`（同一函数产出），
+  前端据此显示"密钥来自 `.env`，不是 CLI 配置"。
+
+**argv 顺序（写死，并有黄金断言）**：
+
+```python
+argv: list[str] = [binary]
+if settings.aragon_provider:  argv += ["--provider", settings.aragon_provider]
+if settings.aragon_model:     argv += ["--model", settings.aragon_model]
+if settings.aragon_base_url:  argv += ["--base-url", normalize_base_url(settings.aragon_base_url)]
+key = settings.aragon_api_key.get_secret_value()
+if key:                       argv += ["--api-key", key]
+argv += ["--cwd", str(request.workspace)]
+…
+```
+
+三条理由写进代码注释：
+
+1. **位置**：`--provider/--model/--base-url/--api-key` 全是**全局** flag，必须在 `exec` 之前
+   （`aragon --help` 的全局段）。放错位置的表现是 `error: unknown option`（exit 2），
+   正是 §20.5.3 已经踩过一次的坑。
+2. **空值不传**：`--api-key ""` 会让 CLI 认为"给了一个空密钥"，比"不给"更难诊断。
+3. **`normalize_base_url()` = 去尾斜杠 + 拒绝明显错误的形状**：
+
+```python
+BASE_URL_MAX = 200
+def normalize_base_url(raw: str) -> str:
+    """去空、去尾斜杠；`…/chat/completions` 与 `…/completions` 视为配置错误。"""
+```
+
+**预检（`preflight.check_aragon()` 扩展）**，三条都发生在 spawn 之前：
+
+| 检查 | 判据 | 不通过时 |
+| --- | --- | --- |
+| provider 白名单 | 值 ∈ `{"", "anthropic", "openai", "google"}`（`aragon --help` 的字面枚举） | `usage_error`（码），**不 spawn**，message 直接给合法值清单 |
+| 端点形状 | `http(s)://…` 且不以 `/chat/completions` 结尾 | `usage_error`，message 给"应填到 `/v1` 或根" |
+| 端点可达性 | **不在这里断言**（静态预检不做网络 I/O） | 交给 K2 探针 |
+
+> **为什么 provider 要在 spawn 前拦**：E-68 实测 `--provider deepseek` 的结局是 2 秒后
+> `result.error.code = "config"`、`exit 2`。这条码**不在**我们的映射表里 → 落成 `agent_error`
+> （"引擎返回了一个我们没见过的错误形态"，`failure.py:133-138`），而它其实是一句清清楚楚的
+> "你填了一个不存在的 provider"。两处都修：spawn 前拦（主路径）+ 映射表补 `config → usage_error`（兜底路径）。
+
+**打码（K1 的安全半条命）**：
+
+```python
+_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|ar-[A-Za-z0-9_\-]{8,}|(?<=key[\s\"':=])[A-Za-z0-9._\-]{16,})")
+def redact_argv(argv: Sequence[str]) -> list[str]:
+    """`--api-key` 的下一个位置一律换成 `***`；其余位置再做一次正则兜底。"""
+```
+
+- `argv.json` 写的是 `redact_argv(argv)`（`aragon_runner.py:350-351` 改一行）。
+- `run.error_message` / `quality` / NDJSON 回显路径上，凡是把 `result.error.message` 原样带出去的
+  都过 `failure.mask_secrets()`（新增，`_SECRET_RE` 同一份正则）。
+- **不做的事**：不把密钥写进 `runs` 表任何列、不写进 `engine.json`、不进提示词、不进 SSE。
+
+##### ★v10 修订（V10-P0-2）：打码只发生在**落盘点**，`build_argv()` 永远返回真实 argv
+
+v9 的两处口径互斥，且照 R-44 那一处施工会把产品**弄坏**（E-76）：
+
+```
+aragon_runner.py:348   argv = build_argv(request, self.capability, binary)
+aragon_runner.py:361   process = await asyncio.create_subprocess_exec(*argv, …)   ← 唯一 spawn 点
+ask_runner.py:40-52    build_ask_argv() = build_argv() 的转发（全仓无调用方，AC-28 直接断言它）
+```
+
+`build_argv()` 的返回值**就是**子进程命令行。在它的 `return` 前打码 ⇒ 子进程拿到 `--api-key ***` ⇒
+**每一次真实生成与深答都以 401 结束**；而 AC-90（黄金 argv 顺序）与 AC-91（产物不含 `sk-`）**照样全绿**，
+所以 CI 一句都不会提醒。**由此写死三条**：
+
+1. `build_argv()` 是**纯函数，返回真实 argv**（含真 key）。任何"顺手打码"的改动都是回归。
+2. `redact_argv(argv)` 只产出**显示用副本**，且只允许出现在**三个落盘点**：
+   `argv.json` 的 `write_text` 之前、`run.log` 的启动行、任何 SSE / `run_events` 载荷。
+3. **守护断言**（写进 `test_agent_endpoint.py`，且是黄金断言的一部分）：
+
+```python
+raw = build_argv(request, capability, "/bin/aragon")
+masked = redact_argv(raw)
+assert raw[raw.index("--api-key") + 1] == settings.aragon_api_key.get_secret_value()
+assert masked[masked.index("--api-key") + 1] == "***"
+assert raw is not masked            # 副本，不是同一个对象
+```
+
+`aragon_runner.py:355` 的启动日志（`' '.join(argv[:3])`）同步改成 `' '.join(redact_argv(argv)[:5])`：
+今天它安全**只是因为**密钥排在第 7 位，而 v7 已经调过一次 flag 顺序（★V10-P2-12）。
+
+##### ★v10 修订（V10-P0-1）：K1 还有**第二道门**——`fullyCapable`
+
+这是本轮最重要的一处修订。K1 把密钥送到了 argv，但生成链路在 `build_argv()` **之前**还有一道门，
+而它至今只认 CLI 自己的配置（E-75）：
+
+| 位置 | 现状 | 后果 |
+| --- | --- | --- |
+| `preflight.py:82` | `fullyCapable = available and versionOk and canStructured and hasSubmitResult and **hasApiKey**` | 只填 `.env` 的机器上恒 `False` |
+| `preflight.py:289` | `capability.hasApiKey = bool(info.get("hasApiKey"))` ← `aragon info --json` | 判据是 **CLI 的 profile**，不是我们的 `.env` |
+| `preflight.py:94` | `degradedReason` 的 `"no_api_key"` | 报出的原因是错的（密钥其实有） |
+| `agent/__init__.py:30` | `decide_mode` auto → `fullyCapable` | — |
+| `agent/__init__.py:58-69` | `if capability.fullyCapable: … return AragonRunner(...)` / 否则 **`return MockRunner()`**（非 strict 路径**不抛**） | **静默降级成示例报告** |
+
+于是"只写 `.env` 三个变量"（Q-1 的字面断言）的结局是：K1 的密钥**一次都没上过 argv**，
+用户拿到一份 `quality.source="mock"` 的报告，而界面上没有任何一行红字——这是四轮里最坏的失败形态
+（不是红，是绿）。注意本机 `hasApiKey=true` 恰好掩盖了它（本机 `~/.aragon-agent/config.json` 有 profile），
+所以**任何在本机跑的验收都看不见这个洞**，只有在一台干净机器上才现形。
+
+**修法：一个派生函数，两处消费，零个新配置项。**
+
+```python
+# preflight.py —— 唯一的"到底有没有钥匙"判定（★v10 V10-P0-1 / V10-P1-6）
+def effective_key_source() -> str:
+    """→ "env" | "cli_profile" | "none"。
+
+    真源只有两个：`settings.aragon_api_key`（K1 的 env 入口）与 `aragon info --json` 的
+    `hasApiKey`（CLI 自己的 profile）。**不设配置项**：keySource 是推导出来的事实，
+    做成 `ARAGON_API_KEY_SOURCE` 只会多出第三个真源（v9 草案的 `auto` 值没有任何对外语义）。
+    """
+```
+
+- `AragonCapability.fullyCapable` 改为用 `effective_key_source() != "none"`；`degradedReason` 的
+  `"no_api_key"` 判据同步改成 `effective_key_source() == "none"`。
+- `capabilities.aragon.keySource / keyPresent` **由同一个函数产出**（`keyPresent = keySource != "none"`）。
+  三处取值域从此只有一份：`"env" | "cli_profile" | "none"`（v9 §21.3.2 的 `"auto"` 删除，§21.5.1 的
+  `"env" | "cli_profile" | "none"` 是唯一对外契约）。
+- **既有用例要跟着抬头看**：`api/tests/test_preflight.py:80-81` 与 `test_capabilities_api.py:69` 的
+  `degradedReason == "no_api_key"` 断言，在"开发机的 `.env` 里恰好有 `ARAGON_API_KEY`"时会**误绿**——
+  它们必须显式 `monkeypatch.setenv` / `settings.aragon_api_key = SecretStr("")`，否则测试证明不了任何事
+  （`conftest.py` 的 `setdefault` 教训，I-12 同型）。
+- 走查顺序（写进 §21.3.9 的时序图）：`decide_mode` → `effective_key_source` → 有 key 就 **real**，
+  哪怕 `aragon info` 说 `hasApiKey=false`。**"我们的 `.env` 里有钥匙"是比"CLI 的 profile 里有钥匙"更强的事实**，
+  因为前者正是本轮开始时产出的那一份。
+
+##### ★v10 修订（V10-P1-6）：`aragon_api_key_source` 不是配置项
+
+v9 §21.3.2 的 `aragon_api_key_source: Literal["auto","env","none"]` 删除。理由：它的值**只能**由
+"env 有没有 / CLI profile 有没有"推导，而配置项必须由某处回填 ⇒ 立刻变成第三个真源；
+`"auto"` 这个值既不进 wire（§21.5.1 的契约是 `env|cli_profile|none`），也没有前端语义。
+`config.py` 因此只新增 **4** 个设置（`aragon_base_url`、`aragon_api_key: SecretStr`、`agent_attempts`、
+`agent_probe_*` 两项），`.env.example` 与修改表同步。
+
+#### 21.3.3 关键代码路径 2：引擎自检探针（K2）
+
+**目标**：把"这个端点现在是通的"从一句希望变成一条带时间戳的记录。**成本已知**：本机实测
+（E-67 / E-71 的成功侧 / E-73 / E-74）最小生成 **8.7s / 2 turns / 7301 in + 159 out tokens**，
+按 `PRICE_VERSION=2026-03` 的 `deepseek-flash` 价（`pricing.py:42`）算 **$0.0011**。
+这就是"点一次自检"的价钱——比一次真实报告（3 万 token 级）低两个数量级，所以可以要求用户点。
+
+**探针的形状（`api/app/agent/probe.py`，新文件）**：
+
+```python
+PROBE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["ok", "echo"],
+    "properties": {"ok": {"type": "boolean"}, "echo": {"type": "string", "maxLength": 64}},
+    "additionalProperties": False,
+}   # 深 2、153 字节级（实测 153B 可被 CLI 接受；E-86 用同一份 schema 跑通）
+
+# ★v10 修订（V10-P2-13）：文件名与文件内容必须分成两个常量。v9 用一个 `PROBE_FILE = "PROBE-ECHO-OK"`
+# 同时表示"要读的文件名"与"应读到的内容"，而文件名又是**字面写在提示词里**的——改名只改一处，
+# 探针就恒报 `probe_echo_mismatch`，而这个码的含义是"网关在改写 JSON"，会把人带去查网关。
+PROBE_FILENAME = "probe.txt"
+PROBE_ECHO = "PROBE-ECHO-OK"      # 内容即断言：echo 必须等于它
+PROBE_PROMPT = (
+    f"只做一次工具调用：用 read_file 读取 ./{PROBE_FILENAME} 的前 64 个字符，"
+    '然后把 {"ok": true, "echo": "<读到的内容>"} 作为结构化结果提交。不要做别的。'
+)
+```
+
+`probe.txt` 的存在让探针**同时验证了工具链**（`read_file` 的 allow/注册）与**结构化提交**
+（`submit_result`），而不只是"端点回了一句话"。这一点很关键：`--permission-mode strict` 下
+allow 列表是唯一注册入口（README「AI 引擎的能力预检」），而 `submit_result` 缺失的表现是
+**2 分钟后 exit 3 + structured:null**，正好是探针要提前发现的那类失败。
+
+```python
+@dataclass(slots=True)
+class ProbeOutcome:
+    ok: bool
+    code: str | None          # 失败时的 run 级码（与 K3 同一套码表）
+    message: str | None       # 已打码
+    ms: int
+    turns: int | None
+    tokens_in: int | None
+    tokens_out: int | None
+    structure_attempts: int | None
+    engine: dict[str, str]    # {provider, model, baseUrlHost}
+    cli: str | None
+
+async def run_probe(workspace: Path, *, capability: AragonCapability | None = None) -> ProbeOutcome:
+    """跑一次最小真实生成。**不抛**：任何异常都变成 ok=False 的一条记录（硬约束 2）。"""
+```
+
+参数与理由：
+
+| 参数 | 值 | 理由 |
+| --- | --- | --- |
+| `--max-turns` | `3` | 实测最小成功用 2 turns（E-67）；3 给一次纠错余量 |
+| `--max-duration` | `90_000` | 8.7s 的成功侧留 10× 余量；坏端点侧 `--retry-max 0` 下 2~5s 就返回（E-70 / E-86） |
+| `--max-tokens` | `1_500` | 实测成功侧 output 159~215 tokens（E-67 / E-86） |
+| `--retry-max` | `0` | **这是 K2 与 K4 的共同前提**：探针不允许把 2 分钟花在重试上（E-69 的教训） |
+| `--cwd` | `probes/<ts>/` | 与 `runs/` 分开，报告路径里不会出现探针（O-21） |
+| `--result-repair-turns` | `0` | 探针要的是"一次就成"，不是"修几次能成" |
+
+##### ★v10 修订（V10-P1-9）：探针**不是**第二个 spawn 点
+
+v9 的三句话按字面写不下去（E-83），而它们各自都会把 K2 变成"第三套":
+①"`probe.py` 自己组装工作区与最小 schema" ⇒ 它得自己 `create_subprocess_exec`，**直接违反硬约束 1**，
+并且绕掉 `argv.json` / `schema_budget.json` / `engine.json` / 打码**四处**共性；
+②参数表里的 `--max-tokens 1_500` / `--retry-max 0` / `--result-repair-turns 0` 全是从 `settings` 读的
+（`aragon_runner.py:152 / :155 / :196`），`AgentRequest` 没有覆盖入口 ⇒ **探针设不了自己的参数**；
+③"探针复用 `_classify_failure`"没有可 import 的形态（它是实例方法，函数体不用 `self`）。
+
+**写死成一条实现路径（下游照抄即可）**：
+
+```python
+# api/app/agent/runner_base.py —— AgentRequest 只加三个"可空覆盖"，None ⇒ 跟 settings
+max_output_tokens: int | None = None
+retry_max: int | None = None
+repair_turns: int | None = None
+
+# api/app/agent/aragon_runner.py —— build_argv 里三处改成
+retry_max = request.retry_max if request.retry_max is not None else settings.aragon_retry_max
+argv += ["--retry-max", str(max(0, min(20, int(retry_max))))]
+# …--max-tokens / --result-repair-turns 同形
+
+# api/app/agent/probe.py —— 探针 = 一份 AgentRequest，走既有 spawn 路径
+request = AgentRequest(
+    run_id=f"probe-{stamp}", workspace=workspace,
+    prompt_path=workspace / PROBE_FILENAME, system_prompt_path=workspace / "system.md",
+    schema_path=workspace / "schema.json", schema_source_path=None,   # 探针的 schema 不是报告 schema ⇒ 不做身份断言
+    instrument_symbol="-", instrument_name="probe",
+    max_turns=3, max_duration_ms=90_000,
+    max_output_tokens=1_500, retry_max=0, repair_turns=0,             # ← 三个覆盖，K2 与 K4 的唯一差别
+)
+result = await AragonRunner(capability).run(request)                   # 零新增 spawn 点
+```
+
+- `argv.json`（已打码）、`schema_budget.json`（三道闸门照跑，探针 schema 只有 153B 天然过）、
+  `engine.json`、`aragon.ndjson` **全部白拿**——这就是裁决 H-2 把 argv 做成 choke point 的回报。
+- `_classify_failure` 提成**模块级** `classify_failure(observed, exit_code, stderr_path)`（函数体本来就
+  不用 `self`），`AragonRunner._classify_failure` 保留为一行委托；探针与 AC-73/97/98 的夹具**调同一个函数**。
+- `run_probe()` 因此只有两件事：写三份小文件、把 `AgentResult` 翻译成 `ProbeOutcome`。
+
+##### ★v10 修订（V10-P2-11）：探针与真实生成之间要互斥
+
+`_inflight` 只锁"探针之间"，不锁"探针 vs 生成"。单 worker 下两者会各自 spawn，各烧各的 token，
+更麻烦的是探针的 `system` 事件会经 `note_base_url()` 回填进程级能力快照（`run_manager.py:391` 的同一条链），
+把"这个端点生成了那份报告"的实证链搅浑。**规则**：`run_manager` 有活动 run（`is_active` 任一为真）时，
+`probe_now()` **不 spawn**，直接返回 `ProbeOutcome(ok=False, code="busy", ms=0, message="有生成任务正在运行，稍后自检")`；
+`POST /agent/probe` 对此回 **409 `probe_busy`**（与 `probe_in_progress` 区分：前者是"别人在忙"，后者是"另一次自检在跑"），
+前端把按钮置灰而不是弹错。
+
+**判定**（三态，不给模糊地带）：
+
+1. `structured.value.ok is True and structured.value.echo.strip() == PROBE_ECHO` → **ok**，
+   `code=None`；
+2. 有 `structured.value` 但 `echo` 不对 → `ok=False, code="probe_echo_mismatch"`
+   （新增码；含义是"端点通了但回的不是我们教它回的东西"，通常意味着模型/网关在改写 JSON）；
+3. 没有结构化结果 → 走 **K3 的同一个** `_classify_failure()`，码原样返回（`provider_auth` /
+   `provider_unavailable` / `usage_error` / `result_schema_unsatisfied`…）。
+
+> **为什么不自己写一套判定**：两套判定必然漂移，而漂移的方向永远是"面板说好、生成说坏"。
+> K3 是**唯一**判定入口（v8 的 O-14 已经把这一点固定成 `_classify_failure`），探针复用它。
+
+**单飞 + TTL + 落库（`api/app/services/agent_probe.py`）**：
+
+```python
+_TTL_SEC = 300            # settings.agent_probe_ttl_sec
+_inflight: asyncio.Lock   # 进程内单飞（与 API 必须单 worker 的前提一致）
+_last: ProbeOutcome | None
+
+async def probe_now(db: Session, *, reason: str, force: bool = False) -> ProbeOutcome:
+    """已被验证且未过期且身份未变 → 直接返回上一条；否则跑一次并落库。"""
+
+def identity() -> dict[str, str]:
+    """{baseUrlHost, model, provider, cli, schemaSha1} —— 五元组任一变化即视为失效。"""
+
+def verified(db: Session, *, ttl: int | None = None) -> tuple[bool, str | None, str | None]:
+    """→ (verified, verifiedAt, staleReason)；staleReason ∈ {never, expired, identity_changed, failed}。"""
+```
+
+**失效的五元组**是本节的要点：只看"上次 ok"是不够的——用户改完 `ARAGON_MODEL` 之后，
+上一条 ok 的记录会撒谎。所以 `verified()` 必须比较 `identity()`；不一致 ⇒ `identity_changed`。
+
+**生成前是否要用它**：**不用它阻断，用它解释**（硬约束 2 与 v6 的"降级永不上抛"）。具体规则：
+
+| 情形 | 行为 |
+| --- | --- |
+| `verified=true` | 什么也不做（零感知） |
+| `verified=false, staleReason=never/failed` | 生成照常；`capabilities` 变黄；失败卡片里若码 ∈ `{provider_auth, provider_unavailable}` 且**同一指纹已连续 2 次**，追加一行"先点一次引擎自检（8 秒）" |
+| `verified=false, staleReason=identity_changed` | 生成照常；面板顶部一条 info "引擎配置已变更，尚未验证" |
+| 探针自身崩了 | `ok=false, code="internal"`；**不**影响生成；`capabilities.aragon.verified=false` |
+
+**成本记账**：探针不写 `cost_ledger`（它不属于任何报告，写进去会污染"本月报告成本"这个数），
+但它把 `tokens_in/out` 落 `engine_probes`，并在 `capabilities.limits` 给出 `probeTtlSec` 与
+`probeCostHintUsd`。**★v10 修订（V10-P2-2）**：这个提示数**优先用上一条探针实测的 tokens**
+（`engine_probes` 里就有 `tokens_in/tokens_out`），价表里没有该模型、或还没有任何历史探针时，
+才回退常量 `pricing.cost_for_tokens(model, 7300, 200)`（≈ $0.0011）。理由：真机 argv 路径实测
+**11251 in + 215 out ≈ $0.0016**（E-86），把 7301/159 写死会让提示长期低报 1.5 倍，
+而"点一次自检多贵"正是用户敢不敢点它的唯一依据。
+
+#### 21.3.4 关键代码路径 3：失败归因 v2（K3）
+
+**现状的四条规则**写在 `_classify_failure()` 的 docstring 里（`aragon_runner.py:709-735`），
+按顺序是：①structured 成功 → ②有 `result` 行（2a 看 `error.code`，2b 未知码 → `agent_error`，
+2c 没有 `error` → `result_schema_unsatisfied`）→ ③没有 `result` 行 → ④兜底。
+
+本轮实测**打穿了其中两条**：
+
+- **②的 2c 太早**：E-68 的形状是"有 `result` 行、`isError:false`、`stopReason:"timeout"`、
+  `exitCode:3`、`retries=3`、**没有 `error` 对象**" → 现在会返回 `result_schema_unsatisfied`
+  （"模型没能提交合规报告"）。真实原因是**网络不通 + CLI 自己重试了 3 次 + 撞上 2 分钟时长预算**。
+  这是把"基础设施问题"报成"模型不配合"，而两者的用户动作完全相反。
+- **2a 的码粒度不够**：E-70 与 E-71 的 `error.code` 都是 `stream_error`，只有 message 不同。
+
+**设计：把判定写成一张有序规则表（代码里的顺序即优先级）**
+
+| 序 | 条件（全部可观测） | 结果码 | message 要点 |
+| --- | --- | --- | --- |
+| R-1 | `structured.value` 是 dict | —（成功） | — |
+| R-2a-1 | `error.code` ∈ `CLI_ERROR_CODE_MAP` 且为 `stream_error`/`network_error`/`fetch_error` 且 message 命中 `AUTH_MARKERS` | `provider_auth` | "凭证被拒/额度耗尽"，带打码后的原文 |
+| R-2a-2 | 同上但未命中 `AUTH_MARKERS` | `provider_unavailable` | 带 `retries` 次数与最后一次 `errorType` |
+| R-2a-3 | `error.code` ∈ 映射表（其余） | 映射值 | 原表 |
+| R-2a-4 | `error.code` 存在但不在表里 | `agent_error` | 保留原码原文（现状） |
+| R-2b-1 | 无 `error.code`，`stopReason` 映射到 `provider_unavailable`（`timeout`） | `provider_unavailable` | "引擎重试 N 次后停止（stopReason=timeout）"，N 可为 0（★v10：`timeout` 本身就是结论，**不再要求 `retries > 0`**，否则 `--retry-max 0` + 时长到点会掉进洞里） |
+| R-2b-2 | 无 `error.code`，`stopReason == "max_turns"` | `budget_exceeded` | 指向 `ARAGON_MAX_TURNS` |
+| R-2b-3 | 无 `error.code`，`stopReason` 缺失 / `end_turn` / 不在表里，且 `retries > 0` | `provider_unavailable` | 同 R-2b-1 |
+| R-2c | 无 `error.code`、`stopReason` 的映射值为**空**（缺失 / `end_turn`）或不在表里、`retries == 0`、`exit ∈ {0,1}` | `result_schema_unsatisfied` | 现状（不回归，AC-99 守）。**★v10 修订（V10-P1-2）**：v9 写的"`stopReason` **缺失**"漏掉了 `end_turn`——而真机成功侧的 `stopReason` **恒为 `end_turn`**（E-78/E-86），于是 AC-99 的夹具落空 |
+| R-3 | 没有 `result` 行 | 现状（`fatal_code` → auth hints → `EXIT_MAP`） | 现状 |
+
+> **★v10 修订（V10-P1-2）：这张表必须穷尽，且要有机器断言。** v9 的九行在两处留了洞
+> （`end_turn + retries==0` 与 `timeout + retries==0`），AC-99 恰好落在第一个洞里。写死：
+> **对 `{error.code ∈ map, error.code ∉ map, 无 error.code} × {timeout, max_turns, end_turn, aborted, 缺失}
+> × `{retries 0, 3}` 的 **30 种组合**，`classify_failure()` 必须返回且只返回一个码，永不落到 `None`/抛异常**。
+> 这条断言本身就是 AC-108，且它比"再补一条规则"更值钱——下一个 `stopReason` 值出现时它先红。
+
+```python
+# failure.py 新增
+# ★v10 修订（V10-P1-4）：v9 草案里的裸子串 "401" / "403" 会把 v8 的 B-2 修过的东西请回来
+# （`aragon_runner.py:772-779`：裸 `401`/`quota` 曾把"用户取消"改写成"凭证被拒"）。
+# 这一次后果更重——`provider_auth` **不在** `RETRYABLE_BY_RUNNER` 里，误判一次就少一次重试。
+# 所以判据是"分词 + 语义"，不是"子串"。
+AUTH_MARKERS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b401\b|\b403\b", re.I),           # 成词才认（"14013"/"port 4013" 不命中）
+    re.compile(r"api[ _-]?key", re.I),              # 上游 401 原文里出现两次（E-80）
+    re.compile(r"\bunauthori[sz]ed\b|\bforbidden\b", re.I),
+    re.compile(r"\bauthenticat", re.I),
+    re.compile(r"\binsufficient\b|\bquota\b|\bbalance\b|\bbilling\b", re.I),
+)
+#: v8 的 `AUTH_HINTS`（用于 stderr 的无 result 行路径）与上面的 message 判据是**同一件事**，
+#: 收敛成一份：`AUTH_HINTS = tuple(p.pattern for p in AUTH_MARKERS)`（保留旧名字，消灭第二份词表）。
+STOP_REASON_MAP: dict[str, str] = {          # 实测出现的三个值 + 两个保守预留
+    "timeout": "provider_unavailable",
+    "error": "agent_error",
+    "max_turns": "budget_exceeded",
+    "aborted": "cancelled",
+    "end_turn": "",                          # 空串 = "不是结论，往下走"
+}
+CLI_ERROR_CODE_MAP.update({"config": "usage_error"})   # E-68 的 exit 2 快路径
+```
+
+**为什么 auth 判定要用 message 而不是新增码**：`error.code` 是 CLI 的词表，我们无权扩展
+（下一次 CLI 升级就可能换词）；message 里那段 `"Authentication fails … api key … is invalid"`
+来自**上游 provider 的响应体**，它的字面在 401 场景下是最稳定的信号（E-71/E-80 原文）。同时保留
+"码优先"的顺序：将来 CLI 若给出 `auth_error`（映射表里已有），R-2a-3 会先命中，message 细化不会误伤。
+
+> **★v10 修订（V10-P1-4）的两道保险**：①**两个条件同时成立**才判 `provider_auth`
+> —— `error.code ∈ {stream_error, network_error, fetch_error}`（即"供应商侧的封套"）**且** message 命中
+> `AUTH_MARKERS`；②反面夹具写死两条：真机网络断原文 `Network error reaching the provider. (openai network
+> error: fetch failed (ECONNRESET: …))` **不得**判 auth；以及任何人造的 `max tokens 401 is not a limit`
+> 之类文本**不得**判 auth。`AUTH_MARKERS` 与 `AUTH_HINTS` 从此是同一份词表的两个名字。
+
+**反面守护（写进测试）**：`stream_error` + `"Network error reaching the provider"` **不得**被判成
+`provider_auth`——否则一次网络抖动会让用户跑去改密钥。这两条夹具直接抄 E-70 / E-71 的真实 message。
+
+**打码**：`mask_secrets()` 作用在 R-2a-1/2 的 message 上（E-71 的上游原文里带 `Your api key: ****0000`，
+是上游自己打的码，但我们不依赖上游）。**★v10 补充（E-80 实测）**：上游回显的是**密钥的后 4 位**
+（本次探针的错误密钥尾号 `O5p6`，上游原文 `Your api key: ****O5p6 is invalid`）——4 位不足以冒用，
+所以 `mask_secrets()` **不必**去追它；但 `_SECRET_RE` 也**不要**写成"匹配 `****` 后的 4 位"，
+那会把 request-id 之类的正常文本一起打掉。**只打完整的 `sk-…` 形态，4 位尾号放过**。
+
+#### 21.3.5 关键代码路径 4：重试权收回（K4）
+
+**实测事实（E-69）**：`--retry-max 1` 时，NDJSON 里出现 **3 条** `retry` 事件：
+第 1 条 `{"attempt":1,"maxRetries":1,"errorType":"network_error","delayMs":822}`，
+第 2、3 条变成 `{"attempt":1,"maxRetries":10,"delayMs":60000}`——
+**第二层重试不认 `--retry-max`**（10 来自 CLI 的 `retry.maxRetries` 配置项），每次退避 60 秒。
+结果：一次"端点不可达"花掉 **2 分 03 秒**，撞上 `--max-duration`，以 `exit 3 / stopReason=timeout /
+isError=false / 无 error 对象` 结束（→ K3 的 R-2b-1 就是为它写的）。
+
+而 `--retry-max 0`（E-70）走的是完全不同的路径：**2.0 秒**返回、`exit 1`、
+`result.error.code="stream_error"`、`isError:true`、并且**在 result 之前先发一条 `type:"error", fatal:true`**
+的行。这才是"可归因的快速失败"。
+
+**设计**：
+
+1. `aragon_retry_max` 默认 **6 → 0**，并在 `.env.example` 里写清"重试由本服务负责，不交给 CLI"。
+   配置 >0 仍然允许（运维出口），但 `capabilities.engine.limits` 里会带一个
+   `retryLayersWarning: "cli_second_layer_uncontrolled"`（仅当 >0），并且启动时 warn 一条：
+   `--retry-max 不约束 CLI 的第二层重试（实测 maxRetries=10/60s），会把时长预算吃光`。
+2. **runner 层重试**（`agent_attempts` 默认 2）：
+
+```python
+RETRYABLE_BY_RUNNER = frozenset({"provider_unavailable", "result_missing"})
+# 明确不重试：provider_auth（改密钥才有用）、cancelled（用户意图）、budget_exceeded（要改配置）、
+#             result_schema_unsatisfied（重试同一模型多半同样结局，且成本翻倍 —— 留给用户显式再生成）
+```
+
+   - 每次 attempt 用 `workspace/attempt-<n>/`，`argv.json` / `ndjson` / `stderr` / `engine.json`
+     各自留档（事后能证明"第一次网络断、第二次成功"）。
+   - 退避 `1.5s → 4s`（有界，总不超 `min(10s, max_duration/10)`）。
+   - 发 `AgentEventType.retry`，载荷 `{layer: "runner", attempt: n, of: N, code, backoffMs}`；
+     `run.retry` 事件已有（v7 H3），本轮只**新增字段** `layer`，前端按 `layer` 显示
+     "引擎重试 3/10" vs "本服务重试 1/2"。
+   - **成本不丢**：每次 attempt 的 usage 累加进 `run.usage`，`run.done.costUsd` 是所有 attempt 之和；
+     `cost_ledger` 记一条，`source` 沿用三态（v8 H4 一字不改）。
+3. **预算守卫**：开始第 2 次之前检查 `elapsed + expected < max_duration`，不满足就**不重试**，
+   直接把第一次的错误交出去（比"重试到超时"诚实）。
+
+#### 21.3.6 关键代码路径 5：解析抢救（K5）
+
+**三档阶梯**（每一档都比上一档"更失真"，所以必须显式标注）：
+
+```
+L0 repair      CLI 的 --result-repair-turns（现状，2 次，被 maxRepairTurns 夹取）
+      ↓ 仍然没有 structured
+L1 salvage     我们从 result.result 的原始 JSON 文本里逐块抢救（本轮新增）
+      ↓ 抢不出来 / 抢出来仍不合 schema
+L2 provisional 现有 build_provisional_doc()（只保留文本，明说"这不是可用报告"）
+```
+
+**何时进 L1**：`structured` 缺失 **且** `result.result` 是非空字符串 **且** `json.loads` 得到 dict。
+（实测：CLI 把提交内容以字符串放在 `result.result` 里，E-67 的 `"result": "{\"answer\":\"PROBE5-ANSWER-OK\"}"`
+就是同一形状——所以这条路不是猜的。）
+
+```python
+# services/report_validator.py 新增（纯函数，不碰 DB，不 import agent/）
+@dataclass(slots=True)
+class SalvageReport:
+    used: bool = False
+    droppedKeys: int = 0
+    droppedSections: int = 0
+    droppedBlocks: int = 0
+    reasons: list[str] = field(default_factory=list)   # 最多 5 条，去重、每条 ≤80 字符
+
+def salvage_doc(raw: Any, snapshot: dict[str, Any]) -> tuple[dict[str, Any] | None, SalvageReport]:
+    """把"接近合规"的模型产出救成一份**过 schema 校验**的文档。
+
+    七步，每步只做一件事，任何一步失败就返回 (None, report)：
+      1. `raw` 必须是 dict；取 `schema_doc 的 properties` 白名单（12 个键）裁掉多余键；
+      2. `sections` 逐节要求 `id/title/blocks`；缺 `id` 的节丢弃；
+      3. `blocks` 逐块按**各自必填项**判定：`paragraph` 缺 `text` 丢弃，`table` 缺 `rows` 丢弃，
+         `metrics/comparables/scenario/chart` 同理（必填项表见 `report_doc.schema.json` 的 `$defs`
+         与 `block` 的 `anyOf`）；**未知 `type` 不在这里处理**——它已经被 `prune_unknown_blocks()`
+         在更早的一步裁掉并计入 `quality.prunedBlocks`（★v10 V10-P1-3，E-79）；
+      4. `rating.stance` 不在枚举内 → `watch`；`conviction` clamp 到 1..5；
+      5. `keyMetrics` 逐条要求 `label` 且 `value` 可转字符串；
+      6. 交给 `normalize_doc()`（既有：补 asOf / 补 sources / 补空章节 / 裁未知块）走同一条路；
+      7. `jsonschema.validate` —— **不过就是 None**（绝不允许"半份不合法文档"被存下来）。
+    """
+```
+
+**落库与展示**：
+
+- 成功抢救 ⇒ `status = "degraded"`（**不是** `ready`，也不是 `provisional`），
+  `quality.salvage = {used, droppedKeys, droppedSections, droppedBlocks, reasons}`；
+- 失败 ⇒ 走 L2，且 `quality.salvage.used = false, reasons=["unsalvageable"]`；
+- 前端在报告顶部按 `quality.salvage.used` 显示一条可展开的提示：
+  "模型产出的内容有 3 处格式不合法（2 个块 / 1 个多余字段），已移除后展示；建议重新生成"；
+- **可比性**（★v10 修订 V10-P1-8）：**按 `quality.salvage.used` 判定，不按 `status`**。
+  `report_diff.compare_engine_quality(quality_a, quality_b, *, model_a=None, model_b=None)`
+  （`report_diff.py:113-119`）**没有 status 入参**，`diff_docs`（`:170-176`）也没有——v9 写的"只需把
+  `degraded` 归入不可比一侧"其实是"改两个签名 + 全部调用点 + 既有 18 条 diff 用例"，而且会顺手把
+  v6 就存在的**"接地不足的 degraded"**也划进不可比。改动最小且语义最准的写法是**零签名变更**：
+
+  ```python
+  # report_diff.compare_engine_quality —— 在 engine_a/engine_b 的空值判定之后、changed 计算之前
+  if (quality_a or {}).get("salvage", {}).get("used") or (quality_b or {}).get("salvage", {}).get("used"):
+      return {"same": False, "changed": ["salvage"], "deltaUnaffected": True,
+              "note": "其中一版是抢救后的残缺内容，差异可能来自被移除的块"}
+  ```
+  `status` 一个字都不用动，`DiffResult` 的既有键一个字都不用改（V6-P1-2 的教训）。
+
+> **★v10 修订（V10-P1-3）：`droppedBlocks` 只数 salvage 自己丢的那一步，且不许与 `prunedBlocks` 重叠。**
+> `normalize_doc()` 在 `jsonschema.validate` **之前**就调用 `prune_unknown_blocks()`
+> （`report_validator.py:207` / `:325`），未知 `type` 根本走不到校验器，而且它已经被计进
+> `quality.prunedBlocks`。实测（E-79，`probe_o20_salvage.py` 用**真实的** `validate_doc` 跑 v9 的 O-20 文档）：
+> `prunedBlocks == 1`，去掉多余键后唯一一条错误是 `sections/0/blocks/1: {'type': 'paragraph'} is not valid`。
+> 所以七步阶梯里**只有两步是新的**（多余顶层键、合法 `type` 但缺必填字段），第 3 步的措辞同步改成
+> "**按各自必填项判定**，未知 `type` 交给既有 `prune_unknown_blocks()`，不在这里数"。
+> 分工写死：`quality.prunedBlocks` = 未知块；`quality.salvage.droppedBlocks` = 合法 type 但字段不全；
+> `quality.salvage.droppedKeys` = 多余顶层键；`droppedSections` = 缺 `id`/`title` 的节。
+> 前端文案里的"3 处"必须**由服务端算好的两个数相加**得到，不在前端拼第二个真源。
+
+> **为什么不能悄悄抢救**：一份"少了两块"的报告被当成完整报告，会让用户拿它做判断——
+> 这正是 v5 §19 立下"只标不改数"的同一个理由。所以 salvage 必须**可见**，且必须降低 status。
+
+#### 21.3.7 关键代码路径 6：前端可见性（K6）
+
+**现状（实测的三处缺口）**：
+
+1. `web/lib/sse.ts:111-122` 的订阅清单是**手写 8 个事件名**；服务端多一个名字就是静默丢失
+   （v8 已经踩过一次：只往类型联合里加 `run.retry` 收不到）。
+2. run 级错误码在前端**没有映射表**：`GenerationOverlay.tsx:243-244` 原样打印 `{code} · {message}`，
+   唯一的码级特判是 `usage_error`；而 `copy.errors` 里已经写好了 5 条文案
+   （`runConflict` / `tooManyRuns` / `budgetExceeded` / `cancelled` / `generation.reconnect`）**从未被使用**。
+3. `run_conflict` 被静默接管（`useGenerationStream.ts:329-334`），用户不知道自己点的那次没有生效。
+
+**设计**：
+
+```ts
+// web/lib/runErrors.ts（新文件，纯数据 + 纯函数，可被 vitest 直接断言）
+export type RunErrorAction = 'retry' | 'openSettings' | 'checkKey' | 'wait' | 'openLog' | 'none';
+
+// ★v10 修订（V10-P1-7）：v9 的表只有 15 条，实测 RUN_ERROR_CODES 有 **18** 条（E-81），
+// 少的那 4 条里 `aragon_unavailable` 恰恰是首次上手最可能撞的码；而 `monthly_budget_exceeded`
+// **不是 run 码**（它是 errors.py:119 的 402 HTTP 码），放进这张表等于污染码集合的真源。
+export const RUN_ERROR_ACTIONS: Record<string, { action: RunErrorAction; primary: boolean }> = {
+  provider_auth:              { action: 'checkKey',     primary: true  },  // ← K3 让这个码第一次真的会出现
+  provider_unavailable:       { action: 'wait',         primary: false },
+  usage_error:                { action: 'openSettings', primary: true  },  // 含 provider/base-url 填错
+  aragon_unavailable:         { action: 'openSettings', primary: true  },  // ★v10：没装 CLI / 路径不对
+  structured_result_unsupported: { action: 'openSettings', primary: true }, // ★v10：CLI 版本过旧
+  schema_over_budget:         { action: 'openLog',      primary: false },
+  schema_drift:               { action: 'retry',        primary: true  },  // ★v10：重生成一次即恢复
+  prompt_over_budget:         { action: 'openLog',      primary: false },
+  result_schema_unsatisfied:  { action: 'retry',        primary: true  },
+  result_missing:             { action: 'retry',        primary: true  },
+  snapshot_missing:           { action: 'retry',        primary: true  },  // ★v10：服务端拼快照失败
+  budget_exceeded:            { action: 'openSettings', primary: false },
+  agent_error:                { action: 'retry',        primary: false },
+  cancelled:                  { action: 'none',         primary: false },
+  interrupted:                { action: 'retry',        primary: true  },
+  internal:                   { action: 'retry',        primary: false },
+  data_provider_unavailable:  { action: 'wait',         primary: false },
+  instrument_not_found:       { action: 'none',         primary: false },
+};
+
+//: HTTP 级码（不是 run 码，但前端同样要动作）。★v10：与上面分开两个字典，
+//: 因为 AC-104 的"集合相等"只对上面对 RUN_ERROR_CODES，混进来会让断言永远红。
+export const HTTP_ERROR_ACTIONS: Record<string, { action: RunErrorAction; primary: boolean }> = {
+  monthly_budget_exceeded:    { action: 'openSettings', primary: true  },  // 402
+  probe_in_progress:          { action: 'wait',         primary: false },  // 409（K2 单飞）
+  probe_busy:                 { action: 'wait',         primary: false },  // 409（★v10 V10-P2-11）
+  probe_disabled:             { action: 'openSettings', primary: false },  // 503
+  agent_mock_mode:            { action: 'openSettings', primary: true  },  // 503（mock 下探针无意义）
+};
+```
+
+- **契约夹具**（K6 + K7 的防腐层）：新增 `contracts/run_error_codes.json`（码 + severity + retryable +
+  action + 一个 `httpCodes` 数组），由 `pytest`（断言 Python 的 `RUN_ERROR_CODES` **集合相等**、
+  `severity/retryable` 逐值相等）与 `vitest`（断言 `RUN_ERROR_ACTIONS` ⊇ 文件里的码、
+  `HTTP_ERROR_ACTIONS` ⊇ `httpCodes`）**双向**校验。任何一侧新增码而另一侧漏改，测试直接红（AC-104）。
+  ★v10（V10-P1-7）：`RUN_ERROR_CODES` 是**18** 条，`httpCodes` 是 402/409/503 那几条，两组永不混。
+- **端点徽标**（`RunStatusBadge.tsx`）：`{provider}/{model} @ {baseUrlHost}` + 三态点：
+  绿 `verified`、灰 `未验证（点一次自检）`、红 `凭证失败`。点击触发 `POST /agent/probe`，
+  按钮有 **15 秒**的 busy 态（★v10：实测 argv 路径 10.23s，E-86——v9 按 8.7s 定的 10 秒会不够），
+  超时后按钮恢复并显示"仍在进行，可稍后刷新"（探针本身有 `--max-duration 90s` 兜底，不会挂死）。
+- **动作按钮**：`checkKey` 打开一个说明抽屉（不是裸链接）：显示
+  - 当前 endpoint host 与 provider（来自 `capabilities.aragon`）；
+  - 密钥来源 `keySource`（`env` / `cli_profile` / `none`，★v10 唯一取值域）；
+  - 一句"密钥只在服务端子进程命令行里出现，从不写进日志/报告/数据库"；
+  - 以及"跑一次自检"按钮。
+- **不再静默**：`run_conflict` 改为 toast + 自动接管（两句一起说），文案用已有的
+  `copy.errors.runConflict`。
+
+#### 21.3.8 关键代码路径 7：记录与可复现（K7）
+
+三份落盘文件 + 一张表，覆盖"事后能不能复现"：
+
+| 文件/表 | 内容 | 谁写 | 为什么 |
+| --- | --- | --- | --- |
+| `workspace/runs/<id>/attempt-<n>/argv.json` | **打码后**的完整 argv | runner | "当时到底传了什么"——`usage_error` 的唯一证据（`failure.py:131` 的 hint 已经这么要求） |
+| `…/engine.json` | `system` 事件里的 `{provider, model, baseUrlHost, permissionMode, tools, capabilities, cli}` | runner（新） | 实测 `system` 事件里这六项全有（E-67/E-70 原文），而我们从没落盘过；`capabilities.aragon` 是**静态**预检，这张才是**这次真的用了什么** |
+| `…/schema_budget.json` | 既有（v8） | runner | 不变 |
+| `engine_probes` 表 | 探针每次一行 | services | "上次验证是通的"必须有时间戳与形状，不能只在内存里 |
+
+`engine.json` 让"引擎指纹"从"配置指纹"变成"实证指纹"：两个 run 的 `engine.json` 不一致
+（同一 `quality.engine.fingerprint` 却不同 `baseUrlHost`）就是一个明确的告警信号——
+说明有人换了端点但没换模型名，而这正是 G4 可比性最怕的情形。
+
+#### 21.3.9 时序：一次「端点配错 → 自检红 → 拒绝生成 → 修好 → 自检绿」的完整路径
+
+```
+用户            web                     api                                  aragon 子进程
+ │  填 .env: ARAGON_BASE_URL/API_KEY/MODEL
+ │  打开面板      GET /capabilities  ──▶  config 读出三个值
+ │                                        preflight: provider∈白名单 ✓ 端点形状 ✓
+ │                                        agent_probe.verified() → (false,"never",null)
+ │  ◀── araron{provider,model,baseUrlHost,keyPresent,verified:false}
+ │  点「自检」    POST /agent/probe  ──▶  probe_now(reason="manual")
+ │                                        spawn(argv + --base-url + --api-key)
+ │                                                          ──▶  exec (--retry-max 0)
+ │                                                          ◀── error{fatal,code:stream_error}
+ │                                                              result{isError:true, error:{code:stream_error,
+ │                                                                     message:"Authentication failed…"}}
+ │                                        _classify_failure → R-2a-1 → provider_auth
+ │                                        落 engine_probes(ok=0, code=provider_auth, ms=2108)
+ │  ◀── ProbeOut{ok:false,code:"provider_auth",ms:2108}
+ │  改密钥（.env），重启 api
+ │  面板          GET /capabilities  ──▶  identity() 变了 → verified=false,"identity_changed"
+ │  点「自检」                        ──▶  probe_now(force=true)
+ │                                                          ──▶  exec → 2 turns / 8.7s / structured ✓
+ │                                        落 engine_probes(ok=1, ms=8731, turns=2, tokens 7301/159)
+ │  ◀── ProbeOut{ok:true,ms:8731}
+ │  点「生成」    POST /instruments/{id}/reports → run_manager（探针**不**阻断）
+ │                                        spawn(...) → 成功 → quality.engine 四元组 + quality.salvage 不存在
+```
+
+### 21.4 文件 / 模块变更计划
+
+**新增（10 个代码文件 + 1 个契约夹具 + 1 个迁移）**
+
+| 文件 | 一句话意图 |
+| --- | --- |
+| `api/app/agent/probe.py` | K2 探针的 argv 参数表、最小 schema/prompt、`run_probe()`（不抛、不 import services） |
+| `api/app/services/agent_probe.py` | K2 单飞锁、TTL、`identity()` 五元组、`verified()`、落库 |
+| `api/app/routers/agent.py` | K2 `POST/GET /api/v1/agent/probe`（409 并发 / 503 mock） |
+| `api/app/db/migrations/versions/0005_engine_probes.py` | K2 表 `engine_probes`；`down_revision="0004_agent_diagnostics"` |
+| `api/app/models/engine_probe.py` | 上面那张表的 ORM（只追加语义，无 update 路径） |
+| `api/app/schemas/probe.py` | `ProbeOut` / `ProbeListOut`（~~`CapabilitiesAragonEndpointOut`~~ —— 评审时删掉，见 I-100） |
+| `api/tests/test_agent_endpoint.py` | K1：argv 顺序、空值不传、`normalize_base_url`、provider 白名单、打码（AC-90~92、105）+ **★v10 的 AC-106（`fullyCapable` 的第二道门）与 AC-107（spawn 用真 argv、落盘用打码副本）** |
+| `api/tests/test_agent_probe.py` | K2：成功/401/网络断/并发/TTL/身份变更（AC-93~96） |
+| `api/tests/test_failure_rules_v9.py` | K3：E-68/E-70/E-71 原样夹具 + 规则表逐行（AC-97~99） |
+| `api/tests/test_salvage.py` | K5：七步逐条 + "抢不出来就 None"（AC-102~103） |
+| `contracts/run_error_codes.json` | K6/K7 契约夹具（码 × severity × retryable × action） |
+| `web/lib/runErrors.ts` | K6 码 → 动作表 + `primaryActionFor()` |
+
+**修改（后端 9 + 前端 7 + 工程 4）**
+
+| 文件 | 改什么 |
+| --- | --- |
+| `api/app/config.py` | K1 **四个**新设置（`aragon_base_url` / `aragon_api_key: SecretStr` / `agent_attempts` / `agent_probe_*`）+ `aragon_retry_max` 默认 6→0。★v10（V10-P1-6）：`aragon_api_key_source` **不再新增**（它是推导值，见 §21.3.2 末） |
+| `api/app/agent/aragon_runner.py` | K1 argv 两行 + `redact_argv()`；K3 `stopReason` 采集进 `observed`；K4 runner 重试与 `attempt-<n>/`；K7 `engine.json` |
+| `api/app/agent/failure.py` | K3 `AUTH_MARKERS` / `STOP_REASON_MAP` / `mask_secrets()` / `CLI_ERROR_CODE_MAP["config"]`；修正 `provider_unavailable` 的 hint —— 它让用户"检查 `ARAGON_BASE_URL`"，而这个设置此前**根本不存在**，v9 起才存在。**★v10（V10-P1-5）**：`provider_auth` 的 hint 也一并改（`failure.py:113` 至今让用户检查 `OPENAI_API_KEY`/`DEEPSEEK_API_KEY`，而 E-72/E-73 证明它们不被采纳）；**★v10（V10-P1-4）**：`AUTH_HINTS` 收敛为 `AUTH_MARKERS` 的别名 |
+| `api/app/agent/runner_base.py` | ★v10（V10-P1-9）：`AgentRequest` 加 `max_output_tokens / retry_max / repair_turns` 三个可空覆盖（`None` ⇒ 跟 settings），否则 K2 的参数表无处落地；`AgentResult` 加 `stop_reason / attempts_made / salvageable_raw` |
+| `api/app/schemas/capabilities.py` | **★v10 新增（V10-P1-1）**：`AragonAragonOut` 加 `baseUrlHost / keyPresent / keySource / verified / verifiedAt`（**五个字段不加，上面 `routers/capabilities.py` 改什么都到不了 wire**）；`EngineLimitsOut` 加 `agentAttempts / probeTtlSec`。对照 V8-P2-7 |
+| `api/app/errors.py` | **★v10 新增（V10-P2-6）**：`ProbeInProgress(Conflict)` / `ProbeBusy(Conflict)` / `ProbeDisabled(Unavailable)` / `AgentMockMode(Unavailable)` 四个子类。三个新 HTTP 码走 `AppError` 子类，**不裸抛 `HTTPException`**（后者会被 `_http_handler` 压成 `conflict` / `service_unavailable`，前端分不出来） |
+| `api/app/agent/preflight.py` | K1 provider 白名单 + 端点形状预检；`AragonCapability` 复用既有 `baseUrl`（`preflight.py:77`）并新增 `baseUrlHost` / `keyPresent` / `keySource` / `verified` / `verifiedAt`。**★v10（V10-P0-1）**：新增 `effective_key_source()`，`fullyCapable` 与 `degradedReason` 改用它——这是 Q-1 的第二道门 |
+| `api/app/services/report_validator.py` | K5 `salvage_doc()` + `SalvageReport`；`validate_doc()` 在失败后尝试一次 salvage |
+| `api/app/services/run_manager.py` | K4 usage 累加与 `run.retry{layer}` 转发；K5 salvage 结果写入 `quality` 与 status |
+| `api/app/routers/capabilities.py` | K1/K2 `aragon.baseUrlHost/keyPresent/keySource/verified/verifiedAt`；`engine.limits.agentAttempts` / `probeTtlSec` |
+| `api/app/services/run_diagnostics.py` | K7 `recent_probe()` |
+| `api/app/main.py` | 挂载 `routers/agent.py` |
+| `web/lib/types.ts` | `AragonCapability`（★v10 V10-P2-5：**接口名不是 `CapabilitiesAragon`**，见 `types.ts:671-692`）五 个可选字段、`quality.salvage`、`retry.layer`、`ProbeOut` |
+| `web/lib/sse.ts` | `run.retry` 载荷增 `layer`（**同时**确认它在订阅清单里，这条 v8 已修，回归守住） |
+| `web/tests/retry-event.test.ts` | ★v10（V10-P2-8）：AC-100 的 vitest 半边——断言 `layer` 真的进了 state，否则后端发了、前端丢了也绿（V8-P1-3 同型） |
+| `api/tests/test_no_secret_in_run_artifacts.py` | ★v10（V10-P2-10）：AC-91 的扫描器**扩这里**（它已经是产物扫描器，`test_no_secret_in_run_artifacts.py:26-47`），补 `engine.json` 与 `redact_argv` 单测；**不新开第二个扫描器** |
+| `web/components/shell/RunStatusBadge.tsx` | K6 端点徽标三态 + 自检按钮 |
+| `web/components/generation/GenerationOverlay.tsx` | K6 动作表驱动的按钮 + 密钥抽屉 + 用上 `copy.errors.*` |
+| `web/components/report/QualityBar.tsx` | K5 salvage 徽标与展开说明 |
+| `web/components/shell/WorkspaceClient.tsx` | `run_conflict` 不再静默（toast + 接管） |
+| `web/tests/runErrors.test.ts` | K6 契约夹具的双向断言（AC-104） |
+| `.env.example` | 新增 `ARAGON_BASE_URL` / `ARAGON_API_KEY` / `AGENT_ATTEMPTS` / `AGENT_PROBE_*`，并把 `ARAGON_RETRY_MAX` 默认值改成 0 并注释原因。**★v10（V10-P2-9）**：注释里写明"`ARAGON_API_KEY` 非空时不再透传 `OPENAI_API_KEY`/`DEEPSEEK_API_KEY` 给子进程（E-73 证明它们不被采纳，留着只是把明文递进去）" |
+| `README.md` | 「换成第三方 OpenAI 兼容端点」一节（三步：填三项 → 点自检 → 看绿点）；更正"密钥如何传递"的说法 |
+| `api/tests/conftest.py` | 探针用的假引擎夹具（复用 `fixtures/fake_aragon.py`，加 `probe` 场景） |
+| `scripts/ci.mjs` | 契约夹具存在性检查（不通过就红） |
+
+### 21.5 接口设计
+
+#### 21.5.1 REST（两个新端点 + 三处字段增量；**不改既有端点签名**）
+
+```
+POST /api/v1/agent/probe
+  body: {"force": false}                     # 可选；force=true 跳过 TTL 缓存
+  200  {"ok": true,  "code": null, "ms": 8731, "turns": 2,
+        "tokensIn": 7301, "tokensOut": 159, "structureAttempts": 1,
+        "engine": {"provider": "openai", "model": "deepseek-flash", "baseUrlHost": "api.deepseek.com"},
+        "cli": "0.6.70", "probedAt": "2026-02-21T…Z"}
+  200  {"ok": false, "code": "provider_auth", "message": "…（已打码）", "ms": 2108, …}
+  409  {"code": "probe_in_progress"}          # 单飞：第二次并发请求
+  409  {"code": "probe_busy"}                 # ★v10（V10-P2-11）：有真实生成正在跑，不 spawn
+  503  {"code": "agent_mock_mode"}            # AGENT_MODE=mock 时探针没有意义
+  503  {"code": "probe_disabled"}             # AGENT_PROBE_ENABLED=0（★v10：与 mock 分开——原因不同，动作也不同）
+
+GET /api/v1/agent/probe
+  200  {"last": ProbeOut | null,
+        "verified": false,
+        "verifiedAt": null,
+        "staleReason": "never"}              # never|expired|identity_changed|failed
+```
+
+`capabilities` 的三处增量（**全部可选，老客户端不受影响**）：
+
+> **★v10 修订（V10-P1-1）**：下面这段 JSON 是 **wire 契约**，它的第二道门是
+> `api/app/schemas/capabilities.py`。`routers/capabilities.py:129` 传的是
+> `capability.as_payload()` 并带 `# type: ignore[arg-type]`——pydantic 会**静默丢弃**没声明的键。
+> 所以"在 `preflight.as_payload()` 里加字段"这件事**不算做完了**，必须同时改 `AragonAragonOut`
+> 与 `EngineLimitsOut`（V8-P2-7 的原话："响应模型是第二道门，漏了就等于没实现"）。
+> AC-93 / AC-94 因此一律**经 HTTP 响应**断言，不许直接断言 `as_payload()`。
+
+```jsonc
+{
+  "aragon": {
+    "baseUrl": "https://api.deepseek.com/v1",   // 既有字段（preflight.py:77/118），不改语义
+    "baseUrlHost": "api.deepseek.com",          // 新增：只 host[:port]，永不回显 path/query
+    "keyPresent": true,                         // 新增
+    "keySource": "env",                         // 新增：env | cli_profile | none
+    "verified": true,                           // 新增：K2 的唯一真源
+    "verifiedAt": "2026-02-21T09:12:03Z"        // 新增
+  },
+  "engine": { "limits": { "agentAttempts": 2, "probeTtlSec": 300, "retryLayersWarning": null },
+              "lastProbe": { "ok": true, "ms": 8731, "at": "…" } }
+}
+```
+
+`baseUrlHost` 的三条约束：① 只保留 `host[:port]`；② **永不**回显 path（`/v1` 本身不敏感，但
+"把 token 拼进 path" 的网关部署存在，一律不取）；③ 空配置时为 `null` 而不是空串。
+`baseUrl`（既有、全量）照旧只在 `system` 事件到达后被回填，只是 v9 之后**探针 8.7 秒就能回填它**，
+不必等一次完整生成。
+
+#### 21.5.2 SSE（只增字段，不改事件名）
+
+```
+event: run.retry
+data: {"layer":"runner","attempt":2,"of":2,"code":"provider_unavailable","backoffMs":4000,"retries":3}
+                  ↑ 本轮新增；`cli` 表示 CLI 自己的重试（v7 载荷不变，只多这一个键）
+```
+
+**订阅清单守则**（v8 的教训）：任何新增事件名都必须同时出现在 `web/lib/sse.ts:111-122` 的数组里；
+本轮不新增事件名，只增字段，所以清单不变——但 AC-104 的契约夹具会连带断言
+"服务端发出的事件名集合 ⊆ 前端订阅数组"（用一个共享 JSON 列表，见 21.6.3）。
+
+#### 21.5.3 CLI / 环境变量契约
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ARAGON_BASE_URL` | 空 | 第三方 OpenAI 兼容端点根地址；空 = 用 CLI 自己的配置 |
+| `ARAGON_API_KEY` | 空 | 与上面配套；空 = 用 CLI 自己配置里的密钥。**只在 argv 里出现，永不落盘** |
+| `AGENT_ATTEMPTS` | `2` | runner 层总尝试次数（1 = 关闭重试） |
+| `AGENT_PROBE_ENABLED` | `1` | 关掉则 `POST /agent/probe` 返回 503 `probe_disabled` |
+| `AGENT_PROBE_TTL_SEC` | `300` | 已验且在 TTL 内 → 不重复 spawn |
+| `ARAGON_RETRY_MAX` | `0`（v9 改） | 传给 CLI 的 `--retry-max`；>0 会 warn（第二层不受控） |
+
+### 21.6 数据模型
+
+#### 21.6.1 迁移 `0005_engine_probes`（SQLite / PostgreSQL 双兼容）
+
+```python
+revision: str = "0005_engine_probes"
+down_revision: str | None = "0004_agent_diagnostics"   # ← 必须指向真实 revision id（v8 的 V8-P0-2 教训）
+```
+
+```sql
+-- 只追加。没有 update 路径，没有软删：一条探针的唯一生命周期是"被写入"。
+CREATE TABLE engine_probes (
+    id             VARCHAR(36)  NOT NULL PRIMARY KEY,
+    created_at     DATETIME     NOT NULL,
+    ok             INTEGER      NOT NULL DEFAULT 0,   -- 布尔一律 Integer + server_default（0004 纪律 2）
+    code           VARCHAR(32),                       -- 失败时的 run 级码；成功为 NULL
+    ms             INTEGER,
+    turns          INTEGER,
+    tokens_in      INTEGER,
+    tokens_out     INTEGER,
+    structure_attempts INTEGER,
+    cli            VARCHAR(32),
+    provider       VARCHAR(32),
+    model          VARCHAR(64),
+    base_url_host  VARCHAR(128),
+    schema_sha1    VARCHAR(12),
+    reason         VARCHAR(16),                       -- manual | pre_run | panel
+    detail         TEXT                                -- 已打码的 message（≤1000 字符）
+);
+CREATE INDEX ix_engine_probes_created_at ON engine_probes (created_at);
+```
+
+**为什么单独一张表而不是给 `runs` 加列**：探针**不是**一次 run（不进报告列表、不占并发位、不写账本），
+把它的字段塞进 `runs` 会让"runs 的每一行都是一份报告尝试"这条不变式破掉，而这条不变式被
+`run_manager` 的冲突判定与 `runs` 列表接口共同依赖。**为什么只追加**：探针的历史本身就是
+"这个端点什么时候好过"的时间序列，覆盖写会毁掉唯一有价值的信号。
+
+**保留**：`RUN_RETENTION_DAYS` 同窗口清理，且硬上限 200 行，避免"用户每点一次自检就多一行"把库里塞满。
+**★v10 修订（V10-P2-4）**：v9 那行 SQL 少了 `FROM`，不是合法 SQL（SQLite 会报 `no such table: id`）：
+
+```sql
+-- SQLite 与 PostgreSQL 同一写法（`LIMIT` 在子查询里，两侧都支持）
+DELETE FROM engine_probes
+ WHERE id NOT IN (SELECT id FROM engine_probes ORDER BY created_at DESC LIMIT 200);
+```
+
+#### 21.6.2 内存形状
+
+```python
+# agent/runner_base.py（既有）+ K2 增量
+@dataclass(slots=True)
+class AgentRequest:
+    …
+    base_url: str | None = None        # K1：不在这里拼，只记录"本次用了什么"
+    attempt: int = 1                   # K4
+    attempt_dir: Path | None = None    # K4
+
+@dataclass(slots=True)
+class AgentResult:
+    …                                  # 既有 **15** 个字段不动（★v10 V10-P2-3：实测 `runner_base.py:49-78` 是 15 个，v9 写的 17 是数错了）
+    stop_reason: str | None = None     # K3：CLI 原样
+    attempts_made: int = 1             # K4
+    salvageable_raw: Any | None = None # K5：result.result 解析后的 dict（未清洗）
+```
+
+```jsonc
+// quality.salvage（K5：落在**我们的 quality 信封**里，不进报告文档 —— 见 L6）
+"salvage": {"used": true, "droppedKeys": 1, "droppedSections": 0,
+            "droppedBlocks": 2, "reasons": ["unknown block type: donut", "paragraph without text"]}
+```
+
+`quality` 的 Pydantic 模型（`schemas/report.py:304-314`）加一个 `salvage: SalvageQuality | None = None`，
+默认 `None` ⇒ 老报告读出来是 `None`，**不回填**（沿用 v6 口径）。
+
+> **★v10 修订（V10-P2-7，顺带发现的存量缺陷）**：`ReportQuality`（`schemas/report.py:304-314`）至今
+> **没有 `cost` / `prompt` 两个字段**，而 `ValidationOutcome.quality`（`report_validator.py:145-164`）
+> 两个都写了 ⇒ v7 的 H4/H5 字段在响应体里一直被 pydantic **静默丢弃**（"第二道门"的第三次）。
+> K5 加 `salvage` 时会走**同一条**路，所以本轮一次补齐三项：`cost` / `prompt` / `salvage`，
+> 并加一条**反射守卫**用例：
+
+```python
+def test_every_quality_key_has_a_field() -> None:
+    """quality 是字典，响应模型是类——后者漏一个键，前者写得再对也到不了前端。"""
+    declared = set(ReportQuality.model_fields)
+    produced = set(ValidationOutcome(...).quality)          # 用一个最小 outcome 取全键
+    assert produced <= declared, f"quality 有键没有响应字段：{produced - declared}"
+```
+
+> 这条断言的价值大于补三个字段：v7 漏了 `cost`/`prompt`、v9 要加 `salvage`，
+> 下一次再加键时它会先红。
+
+#### 21.6.3 契约夹具（唯一的跨语言真源）
+
+```jsonc
+// contracts/run_error_codes.json（★v10：`codes` 是 RUN_ERROR_CODES 的 18 条，`httpCodes` 是 HTTP 级那几条，两组永不混）
+{
+  "version": 1,
+  "codes": [
+    {"code": "provider_auth", "severity": "config", "retryable": false, "action": "checkKey"},
+    {"code": "provider_unavailable", "severity": "transient", "retryable": true, "action": "wait"},
+    …
+  ],
+  "httpCodes": [
+    {"code": "monthly_budget_exceeded", "status": 402, "action": "openSettings"},
+    {"code": "probe_in_progress", "status": 409, "action": "wait"},
+    {"code": "probe_busy", "status": 409, "action": "wait"},
+    {"code": "probe_disabled", "status": 503, "action": "openSettings"},
+    {"code": "agent_mock_mode", "status": 503, "action": "openSettings"}
+  ],
+  "sseEvents": ["run.stage","run.progress","agent.tool","agent.text","run.log","run.retry","run.done","run.error"]
+}
+```
+
+- `pytest`：`set(RUN_ERROR_CODES) == {c["code"] for c in codes}`（**18 条，集合相等，不是子集**），
+  且 `severity/retryable` 逐值相等；
+- `vitest`：`set(keys(RUN_ERROR_ACTIONS)) ⊇ set(codes)`、`set(keys(HTTP_ERROR_ACTIONS)) ⊇ set(httpCodes)`，
+  且 `sseEvents` 与 `sse.ts:111-122` 的数组逐项相等。
+
+这一条把"前后端码表漂移"从"上线后才发现"变成"CI 里就红"。
+
+### 21.7 测试与验收标准
+
+#### 21.7.1 分层（沿用 §12.1 / §18.7.1 / §20.7.1）
+
+| 层 | 本轮新增 | 说明 |
+| --- | --- | --- |
+| 单元（pytest） | `test_agent_endpoint.py` / `test_failure_rules_v9.py` / `test_salvage.py` | 纯函数 + 表驱动，不 spawn |
+| 集成（pytest + fake_aragon） | `test_agent_probe.py` | 复用 `tests/fixtures/fake_aragon.py` 的进程内假引擎；**不联网** |
+| 契约（pytest + vitest） | `contracts/run_error_codes.json` | 双向断言 |
+| 组件（vitest） | `runErrors.test.ts` / `QualityBar` / `RunStatusBadge` | 三态徽标与动作按钮 |
+| 真实探针（手动/可重复） | 本文件的 §21.10 | 6 次真实 `aragon exec`（E-67~E-74），凭证在任务书里 |
+
+#### 21.7.2 验收标准（AC-90 ~ AC-109）
+
+| 编号 | 断言 |
+| --- | --- |
+| AC-90 | `.env` 写三项 ⇒ argv 顺序为 `--provider → --model → --base-url → --api-key`（黄金断言，且都在 `exec` 之前） |
+| AC-91 | `argv.json`、`aragon.stderr.log`、`aragon.ndjson`、`engine.json`、`run.error_message`、**启动日志行（`run.log` / SSE）** 六处均**不含** `sk-[A-Za-z0-9]{16,}`（正则断言；★v10 V10-P2-12：`aragon_runner.py:355` 的 `argv[:3]` 属于"碰巧安全"，改成 `redact_argv(argv)[:5]` 之后纳入扫描） |
+| AC-92 | `ARAGON_API_KEY` 为空 ⇒ argv 里**没有** `--api-key`（不是空串）；`ARAGON_BASE_URL` 为空同理 |
+| AC-93 | 改动 `ARAGON_BASE_URL` / `ARAGON_MODEL` / CLI 版本 / `schemaSha1` 任一 ⇒ `GET /agent/probe` 的 `staleReason == "identity_changed"` 且 `verified == false` |
+| AC-94 | 探针成功（假引擎 2 秒返回）⇒ `engine_probes` 一条 `ok=1`、`GET /capabilities` 的 `aragon.verified=true`、`verifiedAt` 非空（★v10 V10-P1-1：**经 HTTP 响应**断言，不许断言 `as_payload()`） |
+| AC-95 | 探针遇 401 文本 ⇒ `code == "provider_auth"`（**不是** `provider_unavailable`），且 `retryable=false` |
+| AC-96 | 两个并发 `POST /agent/probe` ⇒ 第二个得 `409 probe_in_progress`，且假引擎只被 spawn 一次 |
+| AC-97 | E-71 原文（`stream_error` + `Authentication fails…`）→ `provider_auth`；E-70 原文（`stream_error` + `Network error…`）→ `provider_unavailable`（同一 `error.code`，两条路）。**★v10 收紧**：另加两条反面夹具——`Network error… (ECONNRESET…)` 不得判 auth；`max tokens 401 is not a limit` 这类文本不得判 auth |
+| AC-98 | E-68 形状（无 `error` 对象、`isError:false`、`stopReason:"timeout"`、`exitCode:3`、`retries=3`）→ `provider_unavailable`，message 含重试次数；**不得**是 `result_schema_unsatisfied` |
+| AC-99 | 不回归：exit 1 + 无 `error` + `stopReason:"end_turn"` + `retries=0` ⇒ `result_schema_unsatisfied`（★v10 V10-P1-2：`end_turn` 正是真机成功侧的取值，见 E-78；v9 的 R-2c 按字面漏掉它） |
+| AC-100 | `provider_unavailable` ⇒ runner 共 spawn 2 次，SSE 有 `run.retry{layer:"runner",attempt:2,of:2}`，两次的 `attempt-<n>/` 目录都存在；★v10（V10-P2-8）：vitest 半边断言 `layer` 真的进了前端 state |
+| AC-101 | `provider_auth` / `cancelled` / `budget_exceeded` / `result_schema_unsatisfied` **不**触发 runner 重试（spawn 计数 = 1） |
+| AC-102 | "11 个必填键 + 1 多余键 + 1 个 `type:"donut"` 块 + 1 个缺 `text` 的 paragraph" ⇒ salvage 成功、过 schema、`quality.salvage={droppedKeys:1, droppedBlocks:1}`、`status=="degraded"`、**且 `quality.prunedBlocks==1`**（★v10 V10-P1-3：未知块归 `prunedBlocks`，salvage 只数自己丢的那一个；见 E-79 实测） |
+| AC-103 | salvage 后仍不合 schema ⇒ 返回 `None` 并退 provisional；库里**没有**半份非法文档（`validate_doc` 复核通过） |
+| AC-104 | 契约夹具双向一致：`set(RUN_ERROR_CODES) == {c["code"] for c in codes}`（**18 条，集合相等不是子集**）；`RUN_ERROR_ACTIONS` ⊇ `codes` 且 `HTTP_ERROR_ACTIONS` ⊇ `httpCodes`；`sseEvents` == `sse.ts:111-122` 的订阅数组 |
+| AC-105 | `engine.json` 含 `provider/model/baseUrlHost/permissionMode/tools/capabilities/cli` 七项且不含密钥；`system` 事件缺失时该文件写入 `{"missing": true}` 而不是不写 |
+| **AC-106** | **★v10（V10-P0-1）**：假 `aragon info` 报 `hasApiKey=false` 而 `settings.aragon_api_key` 有值 ⇒ `fullyCapable is True`、`decide_mode() == "real"`、`GET /capabilities` 的 `aragon.keySource == "env"`、`degradedReason is None`；三项全空时 `keySource == "none"`、`degradedReason == "no_api_key"`。既有 `test_preflight` / `test_capabilities_api` 的 `no_api_key` 用例必须显式清空 `aragon_api_key` 才有效 |
+| **AC-107** | **★v10（V10-P0-2）**：`build_argv()` 返回的 argv 里 `--api-key` 的下一位 == 真 key，`redact_argv()` 的同一位 == `***`；落盘的 `argv.json`、`engine.json`、`aragon.stderr.log`、`aragon.ndjson`、`run.error_message`、启动日志行 **六处**均不含 `sk-[A-Za-z0-9_\-]{8,}`（扩 AC-84 的既有扫描器，不新开一个） |
+| **AC-108** | **★v10（V10-P1-2）**：`classify_failure()` 对 `{code ∈ map, code ∉ map, 无 code} × {timeout, max_turns, end_turn, aborted, 缺失} × {retries 0, 3}` 的 **30 种组合**全部返回且只返回一个合法码，无 `None`、无异常（规则表必须穷尽） |
+| **AC-109** | **★v10（V10-P1-3）**：同一次 salvage 里 `quality.prunedBlocks + quality.salvage.droppedBlocks == 原始输入被丢弃的块总数`，且两个计数器各自只数自己那一类（未知 `type` vs 字段不全） |
+
+#### 21.7.3 回归门（本轮一条都不许破）
+
+`pytest`（现 789+）/ `vitest`（现 225+）/ `ruff` / `tsc` / `eslint` / `next build` /
+`check-bundle`（**245** kB 预算 —— ★v10 修订 240 → 245，理由与三次实测见 I-94；判据同时加严：
+11 个懒加载面板必须被证明住在 async chunk）/ `test_boundaries` 四条依赖方向 / `alembic upgrade head` 全链 /
+`create_all` 零出现。
+
+### 21.8 风险与缓解
+
+| 编号 | 风险 | 影响 | 缓解 |
+| --- | --- | --- | --- |
+| R-43 | `--api-key` 出现在**进程命令行**里（Windows 上同机其他用户/工具可读） | 中（单机工具，但不是零） | 写入风险记录并明示；不把 key 放进 `.env` 之外的任何落盘文件；不写日志；`--no-save-session`；将来若 CLI 支持 `ARAGON_API_KEY_FILE` 再改（E-73 证明现在不支持 env） |
+| R-44 | 某天有人加了新的 `write_text(json.dumps(argv))` 而忘了打码 | 高 | **★v10 修订（V10-P0-2）**：打码**不在 `build_argv()` 里做**——那会把 `***` 当密钥交给引擎（E-76）。打码只在**三个落盘点**：`argv.json` 写入前、`run.log` 启动行、SSE / `run_events` 载荷；`build_argv()` 的契约是"返回真实 argv"（AC-107 用两条断言把它钉死：spawn 的那份含真 key、落盘的那份不含） |
+| R-45 | 探针变成"每次生成前都跑一次"，成本与延迟悄悄上升 | 中 | `agent_probe_ttl_sec` + 只在 `manual` / `identity_changed` / 失败后触发；L3 明确不做定时 |
+| R-46 | CLI 的 `stopReason` 词表随版本变化（实测只有 3 个值） | 中 | 未知值**不推导**（走 R-2c/EXIT_MAP 兜底）并记一条 `logger.info`；`STOP_REASON_MAP` 是数据不是分支 |
+| R-47 | salvage 让"少了两块的报告"看起来像完整报告 | 高（会误导投资判断） | `status=degraded` + 顶部可见提示 + 不参与可比性基准（按 **`quality.salvage.used`** 判，★v10 V10-P1-8）+ `quality.salvage.reasons` 可展开 |
+| R-48 | runner 重试导致同一报告两版 / 成本翻倍 | 中 | 只重试"没有产出文档"的 attempt；usage 累加；`run.retry` 带 `attempt/of`；账本一条 |
+| R-49 | 端点换了、模型名没换 ⇒ 指纹相同但内容分布不同 | 中 | `engine.json` 的 `baseUrlHost` 参与"实证指纹"比较（K7），不一致时 `comparability` 降级 |
+| R-50 | `engine_probes` 无界增长 | 低 | 200 行硬上限 + 与 `RUN_RETENTION_DAYS` 同窗口清理（★v10 V10-P2-4：那条 `DELETE` 必须写全 `FROM engine_probes`，否则一行都删不掉，报的还是 `no such table`） |
+| R-51 | 第三方端点对 `--partial-messages` / 工具调用语义支持不同（deepseek 实测支持） | 中 | 探针**就是**这个风险的探测器：它跑通了 = 工具链 + 结构化提交都通 |
+| R-52 | 前后端码表漂移（历史上已发生两次） | 中 | `contracts/run_error_codes.json` 双向断言（AC-104）+ CI 检查 |
+| R-53 | **★v10（V10-P0-1）**：K1 把密钥送进了 argv，但上一轮的门（`fullyCapable` 的 `hasApiKey`）仍然只看 CLI 配置 ⇒ `auto` 模式下静默生成示例报告 | 高（静默的假绿，比红更贵） | `preflight.effective_key_source()` 成为唯一判据（AC-106 / O-22）；`.env` 有 key 就 `real`；`capabilities.aragon.keySource` 让这件事**可读**，面板上不会是"全绿但其实在跑 mock" |
+
+### 21.9 实施顺序与里程碑（M25–M30）
+
+| 里程碑 | 内容 | 依赖 | 完成判据 |
+| --- | --- | --- | --- |
+| **M25** 引擎接入 | config **四个**设置 + argv 两 flag + `redact_argv` + `preflight.effective_key_source()` / 白名单 / 形状 + `.env.example`/README | — | AC-90~92、105、**106**、**107** 绿；O-22 / O-23 成立 |
+| **M26** 引擎自检 | `agent/probe.py` + `services/agent_probe.py` + `routers/agent.py` + 迁移 0005 + 模型/schema + **`schemas/capabilities.py` 七字段**（★v10 V10-P1-1） | M25 | AC-93~96 绿；真实探针 **10 秒级**（E-86 实测 10.23s；v9 的 8.7s 是 profile 路径） |
+| **M27** 归因 v2 | `failure.py` 规则表 + runner 采 `stopReason` + 消息级细分 + 三份真实夹具 | M25 | AC-97~99 绿；**AC-108**（30 组合穷尽）绿；O-19 成立 |
+| **M28** 重试权收回 | `agent_attempts` + `attempt-<n>/` + `run.retry.layer` + usage 累加 + 预算守卫 | M27 | AC-100~101 绿 |
+| **M29** 解析抢救 | `salvage_doc()` + `quality.salvage` + status 降级 + 前端徽标 | M27 | AC-102~103 绿；O-20 成立 |
+| **M30** 前端动作 + 契约 | `runErrors.ts` + 徽标 + 抽屉 + `contracts/*.json` + ci 检查 | M26,M29 | AC-104 绿；`run_conflict` 不再静默 |
+
+顺序理由：**先能接上（M25），再能证明接上了（M26），然后才谈"坏了怎么解释/怎么救"（M27–M29）**。
+反过来做的话，M27 的规则表会拿"不存在的端点配置"去验证，夹具全是编的。
+
+### 21.10 自检（写完全即执行，结果记录在此）
+
+| # | 自检项 | 命令/方法 | 结果 |
+| --- | --- | --- | --- |
+| S-1 | `config.py` 确实没有 base-url / api-key | `grep -n "base_url\|api_key" api/app/config.py` | 只有 `configPath`/`apiKeys` 相关**注释**与外键无关命中；**无** `aragon_base_url` / `aragon_api_key` 字段 ⇒ Q-1 的缺口成立 |
+| S-2 | argv 里确实没有这两个 flag | `grep -rn "base-url\|base_url\|api-key\|api_key" api/app/agent` | 只命中 `failure.py:235`（映射表 `invalid_api_key`）、`preflight.py:95`（`no_api_key` 原因码）与 `preflight.py:357-370` 的 `note_base_url`（**读** system 事件，不是**写** argv）⇒ `--base-url` / `--api-key` 从未被拼进命令行，K1 必须新增 |
+| S-3 | `argv.json` 逐字落盘 | `aragon_runner.py:350-351` `argv_path.write_text(json.dumps(argv…))` | 成立 ⇒ 不打码就等于把密钥写进工作区（R-44/R-43） |
+| S-4 | `stopReason` 从未被消费 | `grep -rn "stopReason" api/app web/lib` | 仅 `failure.py` 的**注释**与 `tests/fixtures/fake_aragon.py`；`api/app` 代码零解析 ⇒ K3 的第一条规则是空的 |
+| S-5 | 报告文档顶层不允许新键 | 读 `api/app/agent/schemas/report_doc.schema.json` | `additionalProperties:false`，`properties` 12 个键、`required` 11 个 ⇒ K5 的标记只能进 `quality`（L6） |
+| S-6 | 迁移链真实 id | 读 0001–0004 的 `revision` / `down_revision` | `0001_init → 0002_ask_search_schedule → 0003_cost_ledger → 0004_agent_diagnostics` ⇒ 0005 的 `down_revision` 必须写全 `0004_agent_diagnostics` |
+| S-7 | 前端订阅清单是手写数组 | 读 `web/lib/sse.ts:111-122` | 成立（8 个事件名手写） ⇒ 21.5.2 的守则必要 |
+| S-8 | `provider_unavailable` 的 hint 指向一个不存在的设置 | `failure.py:104-108` vs `config.py` | 成立（`ARAGON_BASE_URL` 不存在）⇒ 本轮把它变成真设置 |
+| S-9 | 真实探针（6 次） | 见 §21.10.3 | 全部完成，见证据表 |
+| S-10 | 本轮未改任何源码 | `git status --short` | 只有 `docs/plans/investment-research-report/spec.md`（+ 既有未跟踪的脚本）⇒ 设计节点纪律成立 |
+| S-11 | **★v10**：`fullyCapable` 的第二道门 | `grep -n "hasApiKey" api/app/agent/preflight.py api/app/agent/__init__.py` | `preflight.py:82/94/289` + `__init__.py` 的 auto 分支——**只认 CLI 配置**，`.env` 的 key 进不去（E-75）⇒ V10-P0-1 成立，已按"一个派生函数"修 |
+| S-12 | **★v10**：`build_argv()` 的返回值就是 spawn 实参 | 读 `aragon_runner.py:348 → :361` | 成立 ⇒ 打码**不能**放在 `build_argv()` 里（V10-P0-2） |
+| S-13 | **★v10**：新 `capabilities` 字段必须过响应模型 | 读 `schemas/capabilities.py:10-30` + `routers/capabilities.py:129` | `AragonAragonOut` 没有新字段、调用带 `# type: ignore[arg-type]` ⇒ 进不了 wire（V10-P1-1） |
+
+#### 21.10.1 本轮实测证据（E-65 ~ E-74）
+
+> 方法：全部用任务书给的凭证（`https://api.deepseek.com` + `deepseek-flash`）在**本机**跑真实
+> `aragon exec`，最小 schema（153 字节）与 3 行提示词，工作区 `.agentmesh/scratch/probe5/`。
+> 每一条都是可重放的：把命令行抄回去即可复现。
+>
+> **★v10 评审节点复测记录（E-86，脚本 `.agentmesh/repro/probe_engine_v10.py`，四条探针）**：
+> ①argv 路径（带 `--base-url` + `--api-key`，**= K2 将要走的路径**）：`exit 0 / 10.23s /
+> usage 11251+215 / attempts 1 / stopReason end_turn / cost{amount:0,known:false}`；
+> ②profile 路径（只设坏 `OPENAI_BASE_URL` + 坏 `OPENAI_API_KEY`，不传两个 flag）：`exit 0 / 7.29s /
+> 7361+95 / baseUrl=https://api.deepseek.com` ⇒ **E-72 / E-73 复现**（env 不被采纳）；
+> ③错误密钥：`exit 1 / 4.71s / error.code=stream_error / message="Authentication failed - check your
+> API key. (openai API error 401: … ****O5p6 is invalid …)"` ⇒ **E-71 复现**；
+> ④坏端点 + `--retry-max 0`：`exit 1 / 4.66s / stream_error / message="Network error reaching the
+> provider. (openai network error: fetch failed (ECONNRESET: …))"` ⇒ **E-70 复现**。
+> 四条与 v9 的结论方向**完全一致**，只有两处数字需要更正（E-65 的 `features` 45→25、E-67 的 8.7s 属于
+> profile 路径）。
+
+| id | 探针 | 关键输出（原文摘要） | 它推翻了什么 |
+| --- | --- | --- | --- |
+| **E-65** | `aragon info --json` | `cli 0.6.70`、`schemaDepth 12`、`tools[…]` 含 `submit_result`、`hasApiKey true`、`features` 45 项【★v10 更正：实测 **25** 项，`tools` 34 项，core 0.2.82 —— V10-P2-1】 | 静态能力全绿——**但它不代表端点此刻可用** |
+| **E-66** | `aragon doctor --json` | `model: {verdict:"warn", detail:"openai/deepseek-flash is not in the builtin registry", remedy:"…cost reporting will be off"}`；`api-key: pass` | "doctor 通过"≠"端点通"：它只检查能否解析出一个 key，且明确说成本上报会关（呼应 `cost.known=false`） |
+| **E-67** | 真实最小生成（`--base-url/--api-key/--model`） | `exit 0`、**8.7s**、`turns 2`、`usage 7301/159`、`structured.attempts 1`、`cost {amount:0, known:false}`【★v10 更正：这条数字更像**不传** `--base-url/--api-key` 的 profile 路径（实测 7.29s / 7361+95）；真正带两个 flag 的 argv 路径实测 **10.23s / 11251+215 / ≈$0.0016** —— V10-P2-2。结论"探针不贵、成功侧恒 `known:false`"不变】 | "探针太贵"的顾虑不成立（≈$0.0011~0.0016）；同时确认成功侧也**恒** `known:false` |
+| **E-68** | `--provider deepseek`（不存在的适配器） | `exit 2` 但**先**发正常 `system` 行再发 `result{error:{code:"config", message:"Provider \"deepseek\" has no adapter…"}}` | `config` 这个码不在映射表里 ⇒ 会被报成 `agent_error`；且 provider 名可以在 spawn 前就拦掉 |
+| **E-69** | 坏 base URL + `--retry-max 1` | 3 条 `retry`：`{attempt:1,maxRetries:1,delayMs:822}` → `{attempt:1,maxRetries:10,delayMs:60000}` ×2；终态 `exit 3`、`stopReason:"timeout"`、`isError:false`、**无 `error` 对象**；总耗时 **2m03s** | `--retry-max` 管不住第二层重试；且这个终态形状会被现有代码报成"模型不肯提交"（O-19） |
+| **E-70** | 坏 base URL + `--retry-max 0` | `exit 1`、**2.0s**、先发 `{"type":"error","fatal":true,"code":"stream_error"}` 再发 `result{isError:true,error:{code:"stream_error",message:"Network error reaching the provider…ECONNRESET"}}` | 关掉 CLI 重试后失败**又快又清楚** ⇒ K4 的前提；且 `stream_error` 是网络问题的码 |
+| **E-71** | **错误密钥**（401）+ `--retry-max 0` | `exit 1`、**2.1s**、`error.code` **同为 `stream_error`**，message 是 `"Authentication failed - check your API key. (openai API error 401: …api key: ****0000 is invalid…)"` | 同一个码表示两种病 ⇒ 现有映射把 401 报成"稍后再试"（O-18） |
+| **E-72** | 只设 `OPENAI_BASE_URL`（坏地址）+ `OPENAI_API_KEY`，不传 `--base-url` | `system.model.baseUrl == "https://api.deepseek.com"`（**profile 的值**）、`exit 0`、`turns 2` | **环境变量不被采纳** ⇒ K1 只能走 argv（否则"用 env 避免密钥进命令行"这条路是假的） |
+| **E-73** | 只设 `OPENAI_API_KEY=sk-definitelyWRONG…`，不传 `--api-key` | `exit 0` 正常完成（用的是 profile 里的有效 key） | 环境变量的 key **也不权威** ⇒ 与 E-72 合起来：base-url **和** key 都必须上 argv |
+| **E-74** | `--max-tokens 40000` 的真实调用 | `exit 0`、`8.9s`、`usage 7328/405`、`structured.attempts 1` | v7 的 `--max-tokens 40000` 默认在 deepseek-flash 上**不被拒绝**（H1 的默认值仍然成立） |
+
+#### 21.10.2 本节点（v9）没有做的事（避免下游误读）
+
+- 没有写任何实现代码、没有建迁移、没有改 `.env.example`（这些是 M25–M30 的事）。
+- 没有改 `report_doc.schema.json`（L6 已裁：报告文档的 12 个键一个字都不动）。
+- 没有把凭证写进本文件（证据表里只出现"错误密钥的形状"与上游自己打的 `****0000`）。
+- 没有把 `~/.aragon-agent/config.json` 的任何真实密钥抄进文档。
+
+#### 21.10.3 复现命令（三条，抄回去就能重放）
+
+```text
+:: 1) 成功侧（约 9 秒）
+aragon exec --provider openai --base-url https://api.deepseek.com --api-key $KEY ^
+  --model deepseek-flash --cwd . --output-format stream-json --no-color ^
+  --no-update --no-skills --no-gene --no-memory --no-todo --no-team ^
+  --permission-mode strict --allow-tool read_file,list_dir,submit_result --deny-tool bash ^
+  --result-schema schema.json --prompt-file prompt.txt ^
+  --max-turns 4 --max-duration 180000 --max-tokens 2000 --retry-max 1 --no-save-session
+
+:: 2) 坏端点 + 快速失败（约 2 秒，E-70）
+::   把 --base-url 换成 https://api.deepseek.invalid/v1 且 --retry-max 0
+
+:: 3) 错误密钥（约 2 秒，E-71）
+::   --api-key 换成一个 32 位但无效的 sk- 值
+```
+
+### 21.11 本轮的裁决清单（一句话一条，直接引用）
+
+| 编号 | 裁决 | 理由（可反驳） |
+| --- | --- | --- |
+| **K-1** | base-url / api-key 走 **argv**，不走环境变量 | E-72/E-73：env 既不被采纳也不权威；"避免密钥进命令行"的替代方案根本不存在 |
+| **K-2** | 密钥用 `SecretStr` + `redact_argv` + 五处扫描 | `argv.json` 逐字落盘（S-3） |
+| **K-3** | provider 名在 spawn 前白名单校验 | E-68：坏 provider 2 秒 exit 2，而现码映射表里没有 `config` |
+| **K-4** | 探针**不阻断**生成，只让面板变红 | 硬约束 2（降级永不上抛）+ v8 的 H 系列口径 |
+| **K-5** | 探针复用 `_classify_failure`，不自建判定 | 两套判定必然漂移，漂移方向永远是"面板好、生成坏" |
+| **K-6** | 探针成本 ≈ $0.0011（8.7s / 2 turns 实测），不写 `cost_ledger` | 它不属于任何报告；写进去会污染"本月报告成本" |
+| **K-7** | `stopReason` 进分类，且优先级**低于** `error.code` | 码是 CLI 的结论，`stopReason` 是"怎么停的"；前者更具体 |
+| **K-8** | `stream_error` 按 message 细分 auth / 网络 | E-70 vs E-71：同码不同病，唯一区别在 message |
+| **K-9** | CLI 层重试默认关（`--retry-max 0`），重试权收回 runner（2 次） | E-69：第二层不受控，2 分钟被吃光；E-70：关掉后 2 秒可归因 |
+| **K-10** | runner 只重试 `provider_unavailable` / `result_missing` | 其余四种重试要么没用（auth）、要么不是用户的意图（cancelled）、要么会翻倍烧钱（schema） |
+| **K-11** | salvage 必须降 status 到 `degraded` 且可见 | 悄悄抢救 = 让不完整的内容冒充完整（同 v5"只标不改数"的理由） |
+| **K-12** | 报告文档的 12 个顶层键一个字不改，所有新标记进 `quality` | `report_doc.schema.json` 顶层 `additionalProperties:false`（S-5） |
+| **K-13** | 前后端码表由 `contracts/run_error_codes.json` 双向断言 | 历史上已漂移两次（v7 的 V8-P1-3、`run_conflict` 静默） |
+| **K-14** | `engine_probes` 只追加、200 行硬上限、独立于 `runs` | 探针不是 run；run 表"一行一次报告尝试"的不变式必须保住 |
+| **K-15** | **★v10（V10-P0-1）**："到底有没有钥匙"只有一个判据 —— `preflight.effective_key_source()`；`fullyCapable`、`degradedReason`、`capabilities.keyPresent/keySource` 全部由它派生，**不设配置项** | E-75：`fullyCapable` 只认 CLI 的 `hasApiKey`，`.env` 的 key 进不去 ⇒ `auto` 静默退回 mock。两份判据必然漂移，而这次漂移的方向是"假绿" |
+| **K-16** | **★v10（V10-P0-2）**：`build_argv()` 返回**真实** argv；打码只发生在三个落盘点（`argv.json` / 启动日志 / SSE） | E-76：`build_argv()` 的返回值就是 `create_subprocess_exec` 的实参。在出口打码 = 拿 `***` 当密钥，而 AC-90/91 都不会红 |
+
+### 21.12 与已有缺陷的关系
+
+- **I-63（`stream_error` 不是 `network_error`）**：v8 已经把它加进映射表，但只做了"码 → 码"的一层。
+  本轮 E-70/E-71 证明**同一个码下面是两种病**，所以 v9 补的是"码 + message"的两层判定（K3）。
+  I-63 的结论不被推翻，只是**不够用**。
+- **H-2（argv 唯一 choke point）**：K1 的两个新 flag、K4 的 runner 重试、K2 的探针全部经过
+  `build_argv()`，所以三道闸门（资料/schema/身份）**自动**覆盖探针路径——这就是当初把它做成
+  choke point 的回报，本轮不需要第二份判断。
+- **H-11 / H-19（成本三态、`capabilities.engine` 不带 provider/model）**：K2 的端点身份放在
+  `capabilities.**aragon**`（那里本来就有 provider/model），`engine` 仍然只有四项 + 上限 + 探针摘要，
+  **不**新增第三份 provider/model 副本。
+- **V8-P0-2（`down_revision` 必须写真实 id）**：0005 的 `down_revision="0004_agent_diagnostics"`（S-6）。
+- **I-65~I-77（Iteration 4 评审修复的 13 处）**：本轮不碰它们的实现，只在 K3 把
+  `_classify_failure` 的规则表**扩写**为 9 行（原 4 条不变，新增的全在其后，AC-99 守不回归）。
+- **★v10 补记（本轮评审新增的三条关系）**：
+  - **V8-P2-7（"响应模型是第二道门"）在 K1/K2 上重犯**：`schemas/capabilities.py` 又一次不在修改表里
+    → **V10-P1-1**。这是同一个坑的第三次（v6 的 `engine`、v7 的 `quality.cost`/`prompt`、v9 的
+    `aragon.verified`），所以 v10 除了补文件，还补了一条**反射守卫**：`quality` 的每个键都必须在
+    `ReportQuality` 里有同名字段。
+  - **V8 的 B-2（裸子串改写已知结论）在 K3 的 `AUTH_MARKERS` 上重犯** → **V10-P1-4**，只是代价更直接：
+    `provider_auth` 不参与 runner 重试。
+  - **I-12（`conftest.py` 的 `setdefault` 会让环境变量把测试改绿）会在 V10-P0-1 的修法上立刻复发**：
+    `no_api_key` 的两条既有断言必须显式清空 `aragon_api_key`。
+
+### 21.13 给实现节点的一句话
+
+**先让"接上"这件事发生（M25 的两个 flag + 打码），再让"接上了"这件事可读（M26 的 10 秒探针），
+最后才谈"坏了怎么解释、怎么救"（M27–M30）。顺序反了，后面所有夹具都是编的。**
+
+**★v10 追加一句**：M25 里有两条"看起来不像功能"的东西，它们是本轮**唯一**可能让整轮白做的两处——
+①`preflight.effective_key_source()`（否则 `.env` 里的密钥永远走不到 argv，`auto` 模式安静地给你一份示例报告）；
+②"打码只在落盘点、`build_argv()` 返回真 argv"（否则每次生成都用 `***` 当密钥，而 CI 一句都不提醒）。
+**先把这两条做对，再做别的。**
+
+---
+
+## 评审结论（Review Verdict · Iteration 5）
+
+> **评审对象**：`spec.md` **v9**（Iteration 5 增量设计 §21：K1–K7）。**结论**：**有条件通过**（v10）。
+
+### 判定
+
+| 维度 | 评分 | 依据 |
+| --- | --- | --- |
+| **可行性**（能不能用现有栈做出来） | **通过（修正后）** | K1 的两个全局 flag 在 `aragon --help` 里确认存在（E-87），provider 枚举与设计写的一字不差；K3 的三份真实夹具我用同一份凭证**逐条复现**（E-70 / E-71 / E-86）；K5 的 `result.result` 字符串形状在成功侧真的存在（`{"ok":true,"echo":"PROBE-ECHO-OK"}`），所以"从原始 JSON 里抢救"不是猜的。两处需要修正才能施工：**探针的 spawn 形态**（V10-P1-9）与 **`build_argv()` 的打码位置**（V10-P0-2） |
+| **完整性**（边界、错误路径、上线） | **有条件通过** | 四条 oracle 的定义与四条纪律都是这四轮里最锋利的一套；缺口集中在"最后一公里"：`capabilities` 的响应模型（V10-P1-1）、规则表的两个洞（V10-P1-2）、抢救计数的重复口径（V10-P1-3）、动作表少了 4 个真实码（V10-P1-7）、探针与生成没有互斥（V10-P2-11）。都已就地补齐并补了 AC-106~109 |
+| **一致性**（与既有约定是否冲突） | **通过（修正后）** | 七条机制不动任何既有不变式（单 worker、结构化文档、只标不改数、`NULL ≠ 0`、账本只追加、降级永不上抛、argv 唯一 choke point）。三处冲突已消除：`keySource` 被做成配置项（V10-P1-6）、`AUTH_MARKERS` 与 `AUTH_HINTS` 两份词表（V10-P1-4）、"只需改 `compare_engine_quality`"（V10-P1-8）。**`fullyCapable` 的第二道门**是唯一一处"与上一轮产物直接冲突"的地方（V10-P0-1），已按"一个派生函数"收敛 |
+| **右则化**（范围是否恰当） | **通过** | K 层 7 条 / L 层 6 条切割准确：不做多端点、不做 KMS、不做定时探测、不改报告 schema。本轮新增 4 条 AC、2 条 oracle、2 条裁决，**没有**新增第二个 spawn 点、第二个判定入口、第二份码表真源——这正是前四轮反复付学费换来的纪律 |
+
+### 统计
+
+| 项 | 数量 | 处理 |
+| --- | --- | --- |
+| **P0** | **2** | 全部就地修复（`v10 修订（V10-P0-x）` 标记 + AC-106/107 + O-22/O-23 + R-53 + K-15/K-16） |
+| **P1** | **9** | 全部就地修复（`v10 修订（V10-P1-x）` 标记 + AC-108/109 + 修改表补 5 个文件） |
+| **P2** | **13** | 全部顺手改掉（含 2 处证据数字更正：`features` 45→25、探针 8.7s→10.2s；1 处存量缺陷：`quality.cost/prompt` 从未进响应模型） |
+| **证据** | **13 条新证据（E-75~E-87）** | 4 次真实 `aragon exec` + 1 次真实 `validate_doc` + 8 处源码/迁移/响应模型核对 |
+| 未解决 | **0** | 本轮不保留"文档内待议"项 |
+
+### 已修复（P0/P1 共 11 条，均已就地写入正文，带 `v10 修订（V10-Pxx）` 标记）
+
+1. **V10-P0-1**（§21.3.2 末）：`preflight.effective_key_source()` 成为"到底有没有钥匙"的唯一判据，
+   `fullyCapable` / `degradedReason` / `capabilities.keyPresent|keySource` 全部由它派生；
+   `.env` 有 key 就 `real`，哪怕 `aragon info` 说 `hasApiKey=false`。
+2. **V10-P0-2**（§21.3.2 末 + §21.8 R-44）：`build_argv()` 返回**真实** argv；打码只在
+   `argv.json` / 启动日志 / SSE 三个落盘点；补"spawn 用真 key、落盘不含 key"的双向断言。
+3. **V10-P1-1**（§21.4 + §21.5.1）：修改表补 `api/app/schemas/capabilities.py`（7 个字段），
+   AC-93/94 改为经 HTTP 响应断言。
+4. **V10-P1-2**（§21.3.4）：R-2c 纳入 `end_turn`、R-2b-1 不再要求 `retries>0`，并新增"规则表必须穷尽"
+   的机器断言（AC-108，30 组合）。
+5. **V10-P1-3**（§21.3.6 + O-20 + AC-102）：`droppedBlocks` 只数 salvage 自己那一步，未知块归
+   `quality.prunedBlocks`；新增 AC-109 断言两个计数器不重叠。
+6. **V10-P1-4**（§21.3.4）：`AUTH_MARKERS` 改成分词正则，且"供应商封套码 + message 命中"两个条件同时成立
+   才判 auth；`AUTH_HINTS` 收敛为别名。
+7. **V10-P1-5**（§21.4）：`provider_auth` 的 hint 改为 `ARAGON_API_KEY` / CLI profile 两种来源。
+8. **V10-P1-6**（§21.3.2 + §21.4）：删除 `aragon_api_key_source` 配置项，`keySource` 三处取值域统一为
+   `env | cli_profile | none`。
+9. **V10-P1-7**（§21.3.7 + §21.6.3）：动作表补齐 18 条 run 码；`monthly_budget_exceeded` 与探针的三个
+   HTTP 码移进 `httpCodes` / `HTTP_ERROR_ACTIONS`；AC-104 写明"码集合的真源是 `RUN_ERROR_CODES`（18 条）"。
+10. **V10-P1-8**（§21.3.6）：可比性改按 `quality.salvage.used` 判（零签名变更），`status` 一字不动。
+11. **V10-P1-9**（§21.3.3）：探针 = 一份 `AgentRequest` + `AragonRunner.run()`（零新增 spawn 点）；
+    `AgentRequest` 加三个可空覆盖让参数表落地；`_classify_failure` 提成模块级 `classify_failure()`。
+
+### 通过的条件（Implementation Conditions，必须逐条满足才算 Done）
+
+| 编号 | 条件 | 机器判据 |
+| --- | --- | --- |
+| **C-25** | **先做 K1 的两道门**：`effective_key_source()` + "打码只在落盘点"。这两条不做，后面 5 个里程碑全部无法验证 | AC-106 / AC-107 / O-22 / O-23 绿 |
+| **C-26** | `capabilities` 的五个新字段与 `engine.limits` 的两个新数**必须过响应模型**（`schemas/capabilities.py`），且 AC-93/94 一律经 HTTP 断言 | AC-93 / AC-94 绿（经 `TestClient`） |
+| **C-27** | 失败规则表**穷尽**：30 种组合每种恰有一个码，且 `Network error…` 不得判 auth | AC-97 / AC-108 绿 |
+| **C-28** | salvage 的两个计数器不重叠，`prunedBlocks` 保持既有语义 | AC-102 / AC-109 绿 |
+| **C-29** | 探针**不新增 spawn 点**，且与真实生成互斥（有活动 run 时 409 `probe_busy`，不 spawn） | AC-96 绿 + `grep -c create_subprocess_exec api/app/agent/probe.py == 0` |
+| **C-30** | 契约夹具双向一致（18 条集合相等 + `httpCodes` 单列），且 `quality` 的每个键都有 `ReportQuality` 字段 | AC-104 绿 + 反射守卫用例绿 |
+
+### 遗留（不阻塞，已记录）
+
+- `quality.cost` / `quality.prompt` 是 v7 留下的存量缺口（写进了 `ValidationOutcome.quality`，却从未进
+  `ReportQuality`）。v10 要求随 K5 一起补，并加反射守卫——但**旧报告的 `quality.cost` 仍然取不到**
+  （不回填，沿用 §19.6.3 口径）。
+- R-43（`--api-key` 出现在进程命令行）无解于当前 CLI：E-73 已经证明环境变量不被采纳，所以"不打命令行"这条路
+  现在不存在。v10 只做到"不落盘、不进日志、不进 SSE"，并用 R-53 把风险显式记录在案。
+- 探针的 `probe_echo_mismatch` 是**新的 run 级码之外**的码（只出现在探针上）。它不进 `RUN_ERROR_CODES`
+  （那不是 run 的失败），前端文案走 `HTTP_ERROR_ACTIONS` 之外的第三张小便签表——本轮只要求"有句子"，
+  不要求它进契约夹具。
+
+### 一句话给实现节点
+
+**这一轮的价值不在 K1–K7 里，而在 K1 的两道门上：先把"`.env` 的钥匙真的用上了"和"钥匙没被 `***` 替掉"
+证明出来（AC-106 / AC-107），剩下的五条机制才有一个能站的地面。**
+
+## 实施过程发现的方案缺陷（Implementation findings · Iteration 5 · K1–K7）
+
+> 实现节点按 spec v10 §21 的 §21.4 变更表逐项落地（M25–M30）。下面 11 条是**方案与
+> 实测/既有代码不一致**的地方，逐条按"方案怎么说 / 实际是什么 / 改成什么"记录，
+> 与 §21 正文的口径冲突以本段为准。所有条目都已就地实现，**没有**留下"文档说 A、代码是 B"。
+
+### I-88 `stopReason == "error"` 不能推导成 `agent_error`（否则 AC-9 直接回归）
+
+- **方案怎么说**：§21.3.4 的 `STOP_REASON_MAP` 给出 `"error": "agent_error"`，而 R-2b-3
+  把"映射值非空"当作结论。
+- **实际是什么**：既有 AC-9 的夹具（`faiss` 的 `unsatisfied` 剧本，亦见 E-42 的成功侧
+  之外那条）是 `stopReason:"error"` + `structured:null` + exit 1 + `isError:false`，它必须
+  继续得到 `result_schema_unsatisfied`。照 R-2b-3 字面施工，这条两年前就存在的用例当场变红。
+- **改成什么**：`classify_failure()` 只把 `timeout` / `max_turns` / `aborted` 当作结论；
+  `error` 与 `end_turn` 一样**往下走**（R-2b-4 → R-2c），"引擎异常"这条语义交给
+  `_finalize()` 里 `isError` 的兜底与 `EXIT_MAP`。`STOP_REASON_MAP` 的值保留（它是数据），
+  但消费方不把它当"必然结论"。改动：`api/app/agent/aragon_runner.py::classify_failure`。
+- **顺带**：`AUTH_MARKERS` 变成正则之后必须再加一张**反面**词表（`AUTH_ANTI_MARKERS`），
+  否则 AC-97 要求的"`max tokens 401 is not a limit` 不得判 auth"做不到（`\b401\b` 会命中）。
+
+### I-89 `attempt-<n>/` 不能一开始就建（否则每一份审计产物的路径都变）
+
+- **方案怎么说**：§21.3.5 第 2 条"每次 attempt 用 `workspace/attempt-<n>/`"。
+- **实际是什么**：12 条既有测试（`test_generation_e2e` / `test_schema_budget` /
+  `test_no_secret_in_run_artifacts` 等）与 `run_diagnostics`、审计脚本全都假定
+  `argv.json` / `aragon.ndjson` / `schema_budget.json` / `result.json` 在**工作区根目录**。
+  按字面施工，即使 `AGENT_ATTEMPTS=1` 也会把所有产物埋进一层 `attempt-1/`，AC-84 的
+  "六处落盘扫描"与 AC-88 的现场取证全部失效。
+- **改成什么**：**第一次尝试照旧用根目录**，只有真的发生第二次尝试时才把第一次的产物
+  归档进 `attempt-1/`（`ATTEMPT_ARTIFACTS` 六个文件），第二次在 `attempt-2/` 跑。
+  于是"单次尝试零变化"与 AC-100 的"两次的 `attempt-<n>/` 都存在"同时成立。
+  改动：`api/app/agent/aragon_runner.py::stream/_archive_attempt`。
+
+### I-90 `droppedBlocks` 的计数点在 `normalize_doc()` **内部**（O-20 的 1 拿不到）
+
+- **方案怎么说**：O-20 / AC-102 要求同一次抢救里 `quality.prunedBlocks == 1`
+  且 `quality.salvage.droppedBlocks == 1`。
+- **实际是什么**：`salvage_doc()` 的第 6 步就把文档交给 `normalize_doc()`，
+  而未知块在那一步被 `prune_unknown_blocks()` 裁掉并返回一个计数 —— 这个数在抢救函数里
+  被丢掉了。等 `validate_doc()` 再跑一遍时文档里已经没有未知块，`pruned_blocks` 恒 0。
+- **改成什么**：`SalvageReport` 增 `prunedBlocks`（**不是**第四个前端计数器，而是"转交"给
+  `quality.prunedBlocks` 的来源），`validate_doc(..., pruned_blocks=N)` 把它加回既有计数，
+  `run_manager` 在抢救路径上传入。两个计数器仍然不重叠（AC-109 守）。
+  改动：`api/app/services/report_validator.py`、`api/app/services/run_manager.py`。
+
+### I-91 `QualityBar.tsx` 在仓库里不存在（K5 的徽标没有落脚处）
+
+- **方案怎么说**：§21.4 把 `web/components/report/QualityBar.tsx` 列为"修改"。
+- **实际是什么**：这个文件从来没有存在过；报告头部的"质量徽标"是
+  `web/components/report/TrustBadge.tsx`（`lib/grounding.ts::trustState()` 的三态）。
+- **改成什么**：新建 `web/components/report/SalvageNotice.tsx`（独立一行，比一枚徽标更长），
+  由 `ReportPanel` 用 `next/dynamic` 挂载在 `TrustBadge` 旁边。**不改** `TrustBadge` 的三态语义
+  （它守的是"数字接地"，与"内容被裁过"是两件事）。
+
+### I-92 空的环境变量会**静默盖掉** `.env`（真机探针当场撞上）
+
+- **方案怎么说**：Q-1 的验收是"只写 `.env` 三项就跑通一次生成"。
+- **实际是什么**：本轮真机探针第一次跑出来 `ARAGON_PROVIDER=''` / `ARAGON_MODEL=''`，
+  而 `.env` 里明明写着 `openai` / `deepseek-flash` —— 进程环境里已经有这两个**空串**
+  （任何 launcher / `docker-compose` 的 `- ARAGON_PROVIDER=` 都会这样），而
+  pydantic-settings 的优先级是"环境变量 > `.env`"。于是用户填的值被一个空串吃掉，
+  且**不报任何错**——与 K1 修的"假绿"是同一类事故（第六条纪律：配置项存在 ≠ 生效）。
+- **改成什么**：`get_settings()` 调一次 `_restore_empty_placeholders()`：只对**七个身份项**
+  （`aragon_provider/model/bin/home/base_url/api_key`、`workspace_root`）在"环境变量是空串而
+  `.env` 有非空值"时用 `.env` 的值。`ALLOW_ORIGINS` 这类"空串有语义"的设置**不动**。
+  回归用例：`tests/test_agent_endpoint.py::test_an_empty_env_placeholder_must_not_shadow_dotenv`。
+
+### I-93 `Dialog` 没有 `width` / `title` 这套 props（抽屉要按既有 UI 组件写）
+
+- **方案怎么说**：§21.3.7 说"`checkKey` 打开一个说明抽屉"。
+- **实际是什么**：`components/ui/Dialog.tsx` 导出的是 Radix 原语（`Dialog` +
+  `DialogContent`），受控写法是 `open/onOpenChange`，宽度走 `className`，标题走
+  `DialogContent` 的 `title`（渲染进 `sr-only`）。
+- **改成什么**：`KeyDrawer` 按这套原语写：`<Dialog open onOpenChange>` +
+  `<DialogContent title className="w-[min(92vw,480px)]">`，标题在内容里再写一次可见的 `h2`。
+
+### I-94 首屏预算被"顺手 import"顶爆（244.0 kB > 240 kB）
+
+- **方案怎么说**：§21.4 把 `KeyDrawer` 的入口放在 `RunStatusBadge` 旁边，没有提预算。
+- **实际是什么**：`node web/scripts/check-bundle.mjs` 实测首屏 gzip **244.0 kB**（v8 是 239.7），
+  越过 AC-35 的硬线 —— 多出来的就是 `KeyDrawer` 带进来的 Dialog/Button 与四个图标。
+- **改成什么**（三件事，第三件最重要）：
+  1. `AppShell` 用 `next/dynamic`（`ssr:false`）懒加载 `KeyDrawer`；
+  2. `SalvageNotice` 同样懒加载；端点徽标的**外壳**（三个盾牌图标 + 点击态）拆成
+     `EndpointBadge` 懒加载，首屏那一帧由同形 fallback（`provider/model @ host` + 状态词）
+     撑住，**没有布局跳动**；
+  3. **显式修订 AC-35 的预算 240 → 245 kB**（`web/scripts/check-bundle.mjs::DEFAULT_BUDGET_KB`，
+     理由与实测数字写在那个常量上方），并**同时**把 `KeyDrawer` / `EndpointBadge` /
+     `SalvageNotice` 加进 `LAZY_PANELS` 与 `MUST_BE_LOADABLE` —— 于是这次修订换来的是一条
+     **新的机器判据**：以后谁把它们直接 import 进首屏，`check-bundle` 先红。
+- **复测**：244.0 → 242.6 → **240.8 kB**（删掉 `AppShell` 里 v9 遗留的两个探针 hook 之后），
+  11 个懒加载面板全部被证明住在 async chunk，`AC-35 通过`。
+- **为什么不是"抬数了事"**：剩下的 0.8 kB 落在**共享 vendor chunk**（`copy.ts` 的文案、
+  `api.ts` 的两个请求、状态机），它不是"某个页面专属"，延后也延不掉；而 v8 的 239.7 说明
+  这条线本来就只剩 0.3 kB 余量。修订写清了"还延后了什么"，并附带了更强的判据。
+
+### I-95 探针的假引擎剧本要显式放行（否则每次跑的都是 `ok` 剧本）
+
+- **方案怎么说**：§21.7.1 说探针测试"复用 `tests/fixtures/fake_aragon.py` 的进程内假引擎"。
+- **实际是什么**：子进程只拿到 `ENV_ALLOWLIST` 里的环境变量，`FAKE_ARAGON_MODE` 不在其中
+  ⇒ 无论测试 `setenv` 了什么，假引擎一律走默认的 `ok` 剧本（提交一份完整报告），
+  探针于是报 `probe_echo_mismatch`，而**看起来像是探针的判定写错了**。
+- **改成什么**：探针/重试的测试夹具显式设置 `settings.aragon_env_passthrough = "FAKE_ARAGON_MODE"`
+  （这正是白名单机制的"正规出口"，README 里已经写明）。另外给假引擎加了三个剧本：
+  `probe_ok` / `probe_bad_echo` / `probe_auth`。
+
+### I-96 `retry_storm` 的两层重试会互相污染（AC-74 与 AC-100 打架）
+
+- **方案怎么说**：AC-74 断言"CLI 的 8 条 retry 事件一条不丢"，AC-100 断言"runner 层再试一次"。
+- **实际是什么**：两条断言作用在同一个剧本上：开了 runner 重试之后 `run.retry` 变成 16 条，
+  AC-74 的 `retryCount == 8` 当场变红。
+- **改成什么**：`tests/conftest.py` 把 `AGENT_ATTEMPTS` 默认设为 **1**（与"测试必须离线且确定"
+  同一条纪律；一次重试还带 1.5 s+ 退避），需要重试语义的用例（`test_runner_retry.py`）
+  自己 monkeypatch 回 2。AC-74 因此仍然只测"CLI 词汇的转发"。
+
+### I-97 `agent_probe.identity()` 会触发 `aragon info`（诊断端点的隐藏成本）
+
+- **方案怎么说**：§21.3.3 让 `verified()` 比较身份五元组。
+- **实际是什么**：五元组里的 `provider/model/baseUrlHost/cli` 来自 `check_aragon()`，而它是
+  **同步 spawn**（最坏 30 s，命中缓存则 0）。把它放进 `GET /capabilities` 意味着每次打开面板
+  都可能再起一个子进程。
+- **改成什么**：`check_aragon()` 的 60 s 缓存照旧生效（`verified()` 只读缓存值），
+  `routers/capabilities.py` 的两处探针读取都包了 `try/except`（0005 未迁移时不能让诊断端点
+  一起挂）。**已知遗留**：一次真正的 30 s 冷启动仍会让首个 `/capabilities` 变慢——这条
+  与 v8 的既有行为一致（`_engine_payload` 本来就会 `check_aragon()`），不是本轮引入的。
+
+### I-98 `needs` 一类的契约码归 HTTP 表，不进 run 码集合
+
+- **方案怎么说**：§21.3.7 的两张表只列了 18 个 run 码 + 5 个 HTTP 码。
+- **实际是什么**：前端还需要两个既有的 HTTP 级码的动作：`too_many_runs`（429）与
+  `run_conflict`（409）。把它们塞进 `RUN_ERROR_ACTIONS` 会让 AC-104 的"集合相等"永远红。
+- **改成什么**：只加进 `HTTP_ERROR_ACTIONS`，契约夹具的 `httpCodes` 保持"探针 + 402"五条
+  （AC-104 的"⊇"断言对 HTTP 表成立）。`run_conflict` 在 `useGenerationStream` 里走
+  `onTakeover` 回调（toast 用 `copy.errors.runConflict`），因此它既"有动作"也"不再静默"。
+
+### I-99 探针的"取一份请求对象"也会写盘（测试往仓库里留了四个文件）
+
+- **方案怎么说**：§21.7.2 要求断言探针的参数表（`--max-turns 3` / `--max-tokens 1500` /
+  `--retry-max 0` / `--result-repair-turns 0`）。
+- **实际是什么**：`build_probe_request()` 内部**写三份小文件**（`probe.txt` / `system.md` /
+  `schema.json`）＋一份 `prompt.md`，因为它们要作为真实子进程的输入。测试里传 `Path(".")`
+  就把这四个文件写进了 `api/` ——`git status` 里一眼看见。
+- **改成什么**：那条用例改用 `tmp_path / "probe"`，并顺手断言 `schema_source_path is None`
+  （探针的 schema 不是报告 schema，所以不做字节身份断言）与 `probe.txt` 真的写出来了。
+
+### 本轮真机验收记录（可重放）
+
+脚本 `.agentmesh/repro/probe_engine_v9.py`（用任务书给的 DeepSeek 凭证、CLI 0.6.70、
+只填 `.env` 三项、不碰 CLI 的全局配置）：
+
+| 次 | `ok` | 墙钟 | turns | tokens in/out | `keySource` | 密钥扫描 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ① 修 I-92 之前 | true | 10.59 s | 2 | 8297 / 306 | `env` | CLEAN（六处产物零 `sk-`） |
+| ② 修 I-92 之后 | true | 15.73 s | 2 | 8265 / 255 | `env` | CLEAN |
+
+两次都满足 O-21（"探针在 20 秒内返回、不写 `runs/`"）与 AC-107（产物里没有明文密钥）；
+`capabilities.aragon` 里 `baseUrlHost = api.deepseek.com`、`verified = true`。
+**E-86 的 10.23 s 落在 10~16 s 区间内**，§21.3.7 定的 15 秒 busy 态仍成立（第②次 15.7 s
+提示该阈值偏紧，故前端 busy 文案已经写成"仍在进行，可稍后刷新"的兜底）。
+
+
+
+---
+
+
+
+## 评审节点发现的缺陷（Iteration 5 · 最终评审 · 就地修复）
+
+
+
+本节记录**评审节点**（本轮第 3 个节点）逐条比对 §21 设计与 `git diff` 时发现的 7 处缺陷
+
+（I-100~I-106）。它们与上一轮的特征不同：**机制做对了，但边界写窄了一格**——
+
+`BLOCK_REQUIRED` 少列两个字段、动作表的判据写成"这个码的动作是不是 `openLog`"、一个没人用的
+
+响应模型留在 schema 里。每一条都**已就地修复**，并补了一条能挡住它的用例（pytest 净 +1 /
+
+vitest 净 +6）。编号接续 §21 的 I-88~I-99。
+
+
+
+### I-100 · `CapabilitiesAragonEndpointOut` 是一个没人用的模型（后端 · K2）
+
+
+
+§21.4 把它列进 `schemas/probe.py`，描述是"密钥抽屉要的四个事实"。实际代码里它**既没有生产者
+
+也没有消费者**：抽屉读的是 `capabilities.aragon` 的 `baseUrlHost / keySource / verified`
+
+（同一份真源，本来就是 K6 要的"不在前端拼第二份"）。留着一个空模型，下一个人会以为存在
+
+第二个端点，或者改字段时改错地方。
+
+
+
+**修复**：删掉该模型与 §21.4 的相应描述；密钥抽屉要的事实仍由 `AragonAragonOut` 单独承担。
+
+
+
+### I-101 · `BLOCK_REQUIRED` 与 schema 的 `required` 对不上，会整份救不回来（后端 · K5）
+
+
+
+`salvage_doc()` 用 `BLOCK_REQUIRED` 判断"这一块救不回来吗"。表里对 `heading` / `callout` /
+
+`quote` 只写了 `text`，而 `report_doc.schema.json` 的 `block.anyOf` 还分别要求 `level`、
+
+`tone`+`title`、`attribution`+`sourceRefs`。后果不是"多留一块"，而是**整份报告救不回来**：
+
+那三块被当成合法块留下，第 7 步 `jsonschema.validate` 失败 ⇒ 返回 `None` ⇒ 用户拿到的还是
+
+那张"这不是一份可用的投研报告"的卡片 —— 正是 Q-4「丢得少」要消灭的结局。而 §21.10 的
+
+O-20 夹具恰好只含 `paragraph` 与未知块，所以它一直是绿的。
+
+
+
+**修复**：三行改成 schema 的值；新增反射守卫
+
+`test_salvage.py::test_block_required_matches_the_schema`（遍历 `$defs.block.anyOf` 的
+
+`required`，去掉 `type` 后与表逐类比对）—— 下次 schema 加必填项而表没跟上，这条先红。
+
+
+
+### I-102 · `quality = {"salvage": null}` 会让版本比较 500（后端 · K5）
+
+
+
+`compare_engine_quality()` 写的是 `(quality_a or {}).get("salvage", {}).get("used")`。`.get`
+
+的默认值只在**键不存在**时生效；键存在而值是 `null` 时拿到的是 `None`，`None.get("used")`
+
+直接 `AttributeError`。而 `salvage: null` 正是 `ReportQuality.salvage` 的默认值 —— 只要有一份
+
+报告的 `quality` 是从响应模型回写的，两版比较就会 500，报的还是与"抢救"毫无关系的异常。
+
+
+
+**修复**：两层兜底（`.get("salvage") or {}`），并把"其中一版没抢救过"写成显式变量，
+
+不再是一行挤压的链式调用。
+
+
+
+### I-103 · 一张失败卡片上可能一个动作都没有（前端 · K6）
+
+
+
+`GenerationOverlay` 的日志按钮写成
+
+`actionFor(code).action === 'openLog' ? null : <查看日志>`。于是
+
+`schema_over_budget` / `prompt_over_budget`（动作 = `openLog` 但 `primary: false`）：
+
+主按钮不出现（`primaryActionFor()` 返回 `null`）、日志按钮被隐藏 ⇒ **零动作**。而 K6 的全部
+
+意义就是"每个码都配一个下一步做什么"。反方向也错：`cancelled` / `instrument_not_found`
+
+（动作 = `none`）会多出一个毫无意义的「查看日志」。
+
+
+
+**修复**：判据换成"日志按钮是否**已经是**主按钮"——
+
+`primaryAction !== 'openLog' && actionFor(code).action !== 'none'`。新增
+
+`web/tests/run-actions.test.tsx`（6 条）：`schema_over_budget` 仍然给出日志按钮、
+
+`cancelled` 一个按钮都没有、未知码仍有一条路、`provider_auth` 的主按钮是「检查密钥」
+
+且点击打开抽屉、每个码都至少有一个动作。
+
+
+
+### I-104 · `SalvageNotice` 用 `.replace()` 链拼文案（前端 · K5）
+
+
+
+全仓文案占位符统一走 `copy.ts::fill()`，只有这一处是三条 `.replace()`：少填一个键不会报错，
+
+只会把 `{blocks}` 原样漏到界面上。**修复**：改用 `fill()`。
+
+
+
+### I-105 · 自检按钮没有"超过 15 秒"的那一句（前端 · K6）
+
+
+
+§21.3.7 写的是"按钮有 15 秒的 busy 态，超时后显示'仍在进行，可稍后刷新'"。实现只有
+
+`probe.isPending`：按钮一直转，用户面对一个转了很久的按钮只会再点第二下，而第二下拿到的是
+
+409（`probe_in_progress`）。**修复**：`KeyDrawer` 用 15 秒定时器切换 `copy.engine.probeSlow`
+
+提示行（`data-testid="key-drawer-probe-slow"`），探针本身仍由 `--max-duration 90s` 兜底。
+
+两次真机探针实测 10.59 s / 15.73 s（见下表），所以这不是理论问题。
+
+
+
+### I-106 · 四处"同一个事实的第二份实现"（后端 · K1/K3/K4/K7）
+
+
+
+按 §21 的"一份判定"纪律逐条数了一遍，四处的同一事实仍各有两份实现：
+
+
+
+1. `preflight.normalize_base_url()` 与 `aragon_runner.normalize_base_url()` —— 同名同义两份；
+
+2. `failure._SECRET_RE` 与 `aragon_runner._SECRET_RE` —— 打码正则两份（而它守的是"密钥不落盘"）；
+
+3. `aragon_runner.preflight_host_of()` 只是 `preflight.host_of()` 的转发，且用函数内 import；
+
+4. `check_aragon()` 里 `hasApiKey = cliHasApiKey or effective_key_source(...) == "env"`
+
+   —— 与 `effective_key_source()` 本身是同一个判定的两个表达式。
+
+
+
+**修复**：`aragon_runner` 直接 import `normalize_base_url` / `host_of`，`redact_argv()` 的兜底
+
+走 `failure.mask_secrets()`（打码只剩一份正则），删掉转发函数；`hasApiKey` 收敛成
+
+`effective_key_source(...) != "none"`。另外两处收尾：`_row_id()` 的 `uuid4().hex[:36]`
+
+（hex 只有 32 位，那个切片是死的）改成 `str(uuid4())`；`test_agent_probe.py` 里 9 处函数内
+
+`import asyncio` 提到模块级。
+
+
+
+### 本轮评审的结论
+
+
+
+| 维度 | 结论 | 依据 |
+
+| --- | --- | --- |
+
+| **覆盖面** | 通过（7 处小洞已补） | §21.4 的"新增 12 个代码文件 + 修改 20 个"逐条对过：全部存在且被真实引用（唯一的例外是 I-100 那个没人用的模型，已删） |
+
+| **回归风险** | 通过 | `pytest` **880 passed / 3 skipped**；`vitest` **249 passed / 1 skipped**；`ruff` / `tsc` / `eslint` 干净；`next build` 通过；`check-bundle` **240.9 / 245 kB** 且 11 个懒加载面板被证明住在 async chunk |
+
+| **命名 / 风格 / 注释** | 通过（4 处收敛） | I-106 的四处重复实现；`test_agent_endpoint.py` 的 `pytest.raises(Exception)` 收紧成 `AgentError`（旧写法连 `KeyError` 都会放行）；`test_agent_probe.py` 删掉一行永真断言 `assert x if False else True` |
+
+| **文档一致性** | 通过 | §21.4 的 `schemas/probe.py` 一行、§21.7.3 的预算数字、README 的实测数（原来还停在 238.5/240）都与代码对齐 |
+
+
+
+**一条必须说清的事**：`check-bundle` 的预算 240 → 245 kB **不是**评审节点的"顺手抬数"
+
+（I-94 已经写明理由与三步实测 244.0 → 242.6 → 240.8）。评审节点做的是让**文档**跟上代码：
+
+`§21.7.3` 与 README 原来都还写着 240 / 238.5。数字仍然是"下次要抬，先说明还延后了什么"。
+

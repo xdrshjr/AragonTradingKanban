@@ -452,6 +452,9 @@ export function WorkspaceClient({
   const generation = useGenerationStream({
     onDone: (reportId) => selectVersion(reportId),
     onError: (code, message) => notify.error(`${message}（${code}）`),
+    // ★v9（K6 / §21.3.7）：接管不再是静默的 —— 用 `copy.errors.runConflict`
+    // （这条文案写了两年，一直没有被任何代码用过）。
+    onTakeover: () => notify.info(copy.errors.runConflict),
     // ★v6 G3 / R-25：402 走弹窗而不是红条 —— 主按钮就是「仍然生成」。
     onBudgetBlocked: (detail) => {
       const asNumber = (value: unknown): number => (typeof value === 'number' ? value : 0);
@@ -547,6 +550,7 @@ export function WorkspaceClient({
         reportDetail={detailQuery.data ?? null}
         agentMode={capabilities.agentMode}
         degradedReason={capabilities.aragon.degradedReason ?? null}
+        aragon={capabilities.aragon}
         onSelectInstrument={selectInstrument}
         onSelectVersion={selectVersion}
         onTogglePin={togglePin}

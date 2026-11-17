@@ -105,6 +105,29 @@ class RunNotActive(Conflict):
     message = "该运行已结束，无法取消"
 
 
+class ProbeInProgress(Conflict):
+    """★v9（K2 / V10-P2-6）：探针单飞 —— **另一次自检**在跑。
+
+    三个新 HTTP 码都走 `AppError` 子类，**不裸抛 `HTTPException`**：后者会被
+    `_http_handler` 压成 `conflict` / `service_unavailable`，前端分不出来
+    （而"再等等"与"关掉开关"是两个完全不同的动作）。
+    """
+
+    code = "probe_in_progress"
+    message = "另一次引擎自检正在运行，请稍后"
+
+
+class ProbeBusy(Conflict):
+    """★v9（V10-P2-11）：**有真实生成在跑**，探针不 spawn。
+
+    与 `probe_in_progress` 分开：前者是"别人在忙"（稍后即可），后者是"另一次自检在跑"。
+    前端把按钮置灰而不是弹错。
+    """
+
+    code = "probe_busy"
+    message = "有生成任务正在运行，稍后再点自检"
+
+
 class BudgetExceeded(Conflict):
     code = "budget_exceeded"
     message = "生成超出预算（turns / duration）"
@@ -161,6 +184,20 @@ class AragonUnavailable(Unavailable):
 class StructuredResultUnsupported(Unavailable):
     code = "structured_result_unsupported"
     message = "生成引擎缺少结构化结果能力（submit_result / ajv）"
+
+
+class ProbeDisabled(Unavailable):
+    """`AGENT_PROBE_ENABLED=0`。与 `agent_mock_mode` 分开：原因不同，动作也不同。"""
+
+    code = "probe_disabled"
+    message = "引擎自检已被配置关闭（AGENT_PROBE_ENABLED=0）"
+
+
+class AgentMockMode(Unavailable):
+    """`AGENT_MODE=mock` 时探针没有意义（它量的是真实端点）。"""
+
+    code = "agent_mock_mode"
+    message = "当前是示例模式（AGENT_MODE=mock），引擎自检不可用"
 
 
 class Unauthorized(AppError):

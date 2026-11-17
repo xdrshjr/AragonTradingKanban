@@ -133,6 +133,8 @@ export const copy = {
     /** ★v7（H7）：引擎在重试时的可见文案——"第 3/6 次重试"比一个转圈更能解释等待。 */
     retrying: '重试中',
     retryNotice: '引擎遇到 {errorType}，正在第 {attempt}/{max} 次重试',
+    /** ★v9（K4）：本服务自己的重试（`layer:"runner"`）。与「引擎重试」分开说。 */
+    retryNoticeRunner: '本服务正在第 {attempt}/{of} 次尝试（引擎那一次没有产出结果）',
     /** ★v7：被用户中止（与"失败"分开说，避免把主动行为说成故障）。 */
     aborted: '生成已中止',
     /** ★v7：失败卡片上那句"下一步做什么"的标签（内容由服务端下发，H-12）。 */
@@ -161,6 +163,44 @@ export const copy = {
       unknown: '生成引擎不可用',
     } as Record<string, string>,
     synthetic: '部分数据来自合成数据源，仅用于演示',
+  },
+
+  /**
+   * ★v9（K6/K2）：端点徽标与自检的三态文案。
+   * `verified/unverified/failed` 是 `endpointState()` 的取值域，组件不拼句子。
+   */
+  engine: {
+    verified: '已验证',
+    unverified: '未验证',
+    failed: '凭证失败',
+    probing: '自检中…',
+    probeButton: '跑一次引擎自检',
+    /** ★v9（K6）：自检超过 15 秒仍没回来（实测 10.23 s，E-86），别让用户以为卡死。 */
+    probeSlow: '仍在进行（最长 90 秒），也可以稍后再打开这个面板看结论',
+    probeHint: '点一次自检（约 10 秒，约 $0.002）即可确认这个端点此刻是通的',
+    /** 自检结论：成功时把"通了多久"说清，失败时把码与下一步说清。 */
+    probeOk: '自检通过 · {ms}ms',
+    probeFailed: '自检未通过 · {code}',
+    keyEnv: '密钥来自 .env（ARAGON_API_KEY）',
+    keyCliProfile: '密钥来自 CLI 自己的配置（.env 里没有填）',
+    keyNone: '两处都没有密钥',
+    /** 密钥抽屉里那句必须说的话（红线 7）。 */
+    keySafety: '密钥只在服务端子进程命令行里出现，从不写进日志 / 报告 / 数据库。',
+    checkKeyTitle: '检查模型密钥',
+    staleReasons: {
+      never: '还没有自检过',
+      expired: '上次自检已过期',
+      identity_changed: '引擎配置已变更，尚未验证',
+      failed: '上次自检未通过',
+    } as Record<string, string>,
+  },
+
+  /** ★v9（K5）：抢救徽标。数字由服务端算好（两个计数器相加），前端不拼第二个真源。 */
+  salvage: {
+    title: '这份报告有 {total} 处格式问题已移除后展示',
+    body: '模型产出的内容有 {total} 处格式不合法（{blocks} 个块 / {keys} 个多余字段），已移除后展示；建议重新生成。',
+    unsalvageable: '模型产出的内容无法抢救，已退化为临时报告。',
+    expand: '看看丢了什么',
   },
 
   errors: {

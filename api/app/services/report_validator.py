@@ -141,6 +141,9 @@ class ValidationOutcome:
     cost: dict[str, Any] | None = None
     #: ★v7 H5: `quality.prompt` — `{version, sha1, bytes}`。**不进**引擎指纹（裁决 H-5）。
     prompt: dict[str, Any] | None = None
+    #: ★v9 H5 / K5: `quality.salvage` —— 抢救记录。`None` = 没走抢救（老报告也是 `None`，
+    #: 读路径按"可缺失"处理，**不回填**，沿用 §19.6.3 口径）。
+    salvage: SalvageReport | None = None
 
     @property
     def quality(self) -> dict[str, Any]:
@@ -161,6 +164,8 @@ class ValidationOutcome:
             payload["cost"] = self.cost
         if self.prompt is not None:
             payload["prompt"] = self.prompt
+        if self.salvage is not None:
+            payload["salvage"] = self.salvage.as_payload()
         return payload
 
     @property
@@ -361,6 +366,8 @@ def validate_doc(
     cost: dict[str, Any] | None = None,
     prompt: dict[str, Any] | None = None,
     schema_path: Path | None = None,
+    salvage: SalvageReport | None = None,
+    pruned_blocks: int | None = None,
 ) -> ValidationOutcome:
     """Full validation pipeline for a model-produced document.
 
@@ -390,6 +397,10 @@ def validate_doc(
     # and the caller's document (a runner's module-level template, for instance)
     # must come out untouched.
     repaired, repairs, pruned, missing = normalize_doc(copy.deepcopy(doc), snapshot, provisional=provisional)
+    # ★实施发现（I-91）：抢救路径已经裁过一次未知块（`salvage_doc` 内部的
+    # `normalize_doc`），那个数字由调用方转交进来，否则 `quality.prunedBlocks` 会归零。
+    if pruned_blocks:
+        pruned += max(0, int(pruned_blocks))
     errors: list[str] = []
 
     # 构造性正确：直接用当次交付的那份字节，不复用进程级缓存的"真源"。
@@ -421,6 +432,10 @@ def validate_doc(
         status = "provisional" if not errors else "degraded"
     elif errors:
         status = "degraded"
+    elif salvage is not None and salvage.used:
+        # ★v9（K5 / 裁决 K-11）：抢救过的报告**永远是 degraded**，不是 ready 也不是
+        # provisional。悄悄抢救 = 让不完整的内容冒充完整（同 v5"只标不改数"的理由）。
+        status = "degraded"
     elif mock:
         status = "ready"
     elif ratio < GROUNDED_THRESHOLD or missing:
@@ -442,6 +457,7 @@ def validate_doc(
         engine=engine,
         cost=cost,
         prompt=prompt,
+        salvage=salvage,
     )
     logger.info(
         "validate grounded=%.3f missing=%s pruned=%s status=%s errors=%s source=%s fact=%s/%s skipped=%s",
@@ -456,6 +472,221 @@ def validate_doc(
         grounding.skipped,
     )
     return outcome
+
+
+@dataclass(slots=True)
+class SalvageReport:
+    """★v9（K5 / §21.3.6）：抢救"接近合规"的模型产出时，到底丢了什么。
+
+    三个计数器**互不重叠**（分工写死在 §21.3.6 的 v10 修订里）：
+
+    * `droppedKeys`     —— 多余的**顶层**键（报告文档的 12 个键是白名单）；
+    * `droppedSections` —— 缺 `id`/`title` 的节；
+    * `droppedBlocks`   —— **合法 `type` 但字段不全**的块。
+
+    未知 `type` **不在这里数**：它已经被 `prune_unknown_blocks()` 在更早一步裁掉并计入
+    `quality.prunedBlocks`（`report_validator.py` 的 `normalize_doc()` 在校验之前就调用它，
+    实测 E-79：`prunedBlocks == 1`）。两个计数器重叠会让"丢了 3 处"变成"丢了 4 处"。
+    """
+
+    used: bool = False
+    droppedKeys: int = 0
+    droppedSections: int = 0
+    droppedBlocks: int = 0
+    #: ★实施发现（I-91）：未知 `type` 的块由**本函数**内部的 `normalize_doc()` 裁掉，
+    #: 所以"裁了几个"这个数只有这里知道。它不是 salvage 的第四个计数器，而是**转交**
+    #: 给 `quality.prunedBlocks` 的那个既有数的来源（两个计数器仍然不重叠）。
+    prunedBlocks: int = 0
+    reasons: list[str] = field(default_factory=list)
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "used": self.used,
+            "droppedKeys": self.droppedKeys,
+            "droppedSections": self.droppedSections,
+            "droppedBlocks": self.droppedBlocks,
+            # 最多 5 条、去重、每条 ≤80 字符（前端要能展开，但不要把日志贴上去）。
+            "reasons": self.reasons[:5],
+        }
+
+    @property
+    def total(self) -> int:
+        """前端显示"3 处"的**唯一**来源：服务端算好，不在前端拼第二个真源。"""
+        return self.droppedKeys + self.droppedSections + self.droppedBlocks
+
+
+#: 每一类块的**必填项**（`report_doc.schema.json` 的 `block.anyOf` 里各自的 `required`，
+#: 去掉 `type` 之后的值）。只在 salvage 里用：缺一项就是"这一块救不回来"，丢掉并计数。
+#:
+#: ★评审修订（I-101）：这张表原来对 `heading` / `callout` / `quote` 只写了 `text`，而 schema
+#: 还要求 `level`、`tone`+`title`、`attribution`+`sourceRefs`。后果不是"少救一块"，而是
+#: **整份报告救不回来**：那三块被当成"合法块"留下，第 7 步 `jsonschema.validate` 直接失败
+#: ⇒ 返回 `None` ⇒ 用户拿到一张"这不是一份可用的投研报告"的临时卡片，而这正是 K5 要消灭的
+#: 那种结局（Q-4「丢得少」）。表与 schema 的一致性由
+#: `tests/test_salvage.py::test_block_required_matches_the_schema` 机器守着。
+BLOCK_REQUIRED: dict[str, tuple[str, ...]] = {
+    "paragraph": ("text",),
+    "heading": ("level", "text"),
+    "bullets": ("items",),
+    "callout": ("tone", "title", "text"),
+    "metrics": ("items",),
+    "table": ("columns", "rows"),
+    "chart": ("chart",),
+    "quote": ("attribution", "sourceRefs", "text"),
+    "timeline": ("events",),
+    "comparables": ("peers",),
+    "scenario": ("scenarios",),
+    "divider": (),
+}
+
+
+def salvage_doc(raw: Any, snapshot: dict[str, Any]) -> tuple[dict[str, Any] | None, SalvageReport]:
+    """★v9（K5）：把"接近合规"的模型产出救成一份**过 schema 校验**的文档。
+
+    七步，每步只做一件事，任何一步失败就返回 `(None, report)`：
+
+    1. `raw` 必须是 dict；按 schema 的 `properties` 白名单（12 个键）裁掉多余键；
+    2. `sections` 逐节要求 `id`/`title`/`blocks`；缺 `id` 的节丢弃；
+    3. `blocks` 逐块按**各自必填项**判定：`paragraph` 缺 `text` 丢弃、`table` 缺 `rows`
+       丢弃……**未知 `type` 不在这里处理**（它已被 `prune_unknown_blocks()` 更早裁掉）；
+    4. `rating.stance` 不在枚举内 → `watch`；`conviction` clamp 到 1..5；
+    5. `keyMetrics` 逐条要求 `label` 且 `value` 可转字符串；
+    6. 交给 `normalize_doc()`（既有：补 asOf / 补 sources / 补空章节 / 裁未知块）走同一条路；
+    7. `jsonschema.validate` —— **不过就是 `None`**（绝不允许"半份不合法文档"被存下来）。
+
+    为什么必须可见（裁决 K-11）：一份"少了两块"的报告被当成完整报告，会让用户拿它做
+    判断——这正是 v5 §19 立下"只标不改数"的同一个理由。所以 salvage 必须降 status 到
+    `degraded`，并且每个被丢掉的块都要有一个理由。
+    """
+    report = SalvageReport(used=False)
+    if not isinstance(raw, dict):
+        report.reasons.append("unsalvageable")
+        return None, report
+
+    schema = load_schema()
+    allowed = set((schema.get("properties") or {}).keys())
+
+    # ── 1. 顶层键白名单 ────────────────────────────────────────────────────
+    candidate: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in allowed:
+            candidate[key] = value
+        else:
+            report.droppedKeys += 1
+            report.reasons.append(f"未知顶层键 {key}"[:80])
+    if not candidate:
+        report.reasons.append("unsalvageable")
+        return None, report
+
+    # ── 2. sections 逐节 ───────────────────────────────────────────────────
+    sections = candidate.get("sections")
+    kept_sections: list[dict[str, Any]] = []
+    if isinstance(sections, list):
+        for section in sections:
+            if not isinstance(section, dict):
+                report.droppedSections += 1
+                report.reasons.append("章节不是对象")
+                continue
+            if not section.get("id"):
+                report.droppedSections += 1
+                report.reasons.append("章节缺 id")
+                continue
+            kept_sections.append(section)
+    else:
+        kept_sections = []
+    candidate["sections"] = kept_sections
+
+    # ── 3. blocks 逐块（按各自必填项；未知 type 交给 prune_unknown_blocks）──
+    for section in kept_sections:
+        blocks = section.get("blocks")
+        if not isinstance(blocks, list):
+            section["blocks"] = []
+            continue
+        kept_blocks: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                report.droppedBlocks += 1
+                report.reasons.append("块不是对象")
+                continue
+            kind = str(block.get("type") or "")
+            required = BLOCK_REQUIRED.get(kind)
+            if required is None:
+                # 未知 type：原样留着，让 `normalize_doc()` 的 `prune_unknown_blocks()`
+                # 裁掉并计入 `quality.prunedBlocks`（**不在这里数**，V10-P1-3）。
+                kept_blocks.append(block)
+                continue
+            missing = [field_name for field_name in required if block.get(field_name) in (None, "", [])]
+            if missing:
+                report.droppedBlocks += 1
+                report.reasons.append(f"{kind} 缺 {'/'.join(missing)}"[:80])
+                continue
+            kept_blocks.append(block)
+        section["blocks"] = kept_blocks
+
+    # ── 4. rating ──────────────────────────────────────────────────────────
+    rating = candidate.get("rating")
+    if isinstance(rating, dict):
+        if rating.get("stance") not in ("buy", "hold", "sell", "watch"):
+            rating["stance"] = "watch"
+            report.reasons.append("rating.stance 非法 → watch"[:80])
+        conviction = rating.get("conviction")
+        try:
+            value = int(conviction)
+        except (TypeError, ValueError):
+            value = 3
+        rating["conviction"] = max(1, min(5, value))
+        rating.setdefault("horizon", "6-12m")
+
+    # ── 5. keyMetrics ──────────────────────────────────────────────────────
+    metrics = candidate.get("keyMetrics")
+    if isinstance(metrics, list):
+        kept_metrics: list[dict[str, Any]] = []
+        for item in metrics:
+            if not isinstance(item, dict) or not item.get("label"):
+                report.reasons.append("指标缺 label")
+                continue
+            value = item.get("value")
+            if value is None or isinstance(value, (dict, list)):
+                report.reasons.append("指标 value 不可读")
+                continue
+            item["value"] = str(value)
+            kept_metrics.append(item)
+        candidate["keyMetrics"] = kept_metrics
+
+    # ── 6 + 7. 走既有的修补路径，然后**必须**过 schema ─────────────────────
+    # ★实施发现（I-91）：`normalize_doc()` 会调用 `prune_unknown_blocks()`，而那个数字
+    # 过去在这里就丢了 —— 于是 O-20 / AC-102 要的 `quality.prunedBlocks == 1` 永远拿不到
+    # （第二次 `validate_doc` 时未知块已经不在文档里了）。先把"待裁的未知块"数出来。
+    report.prunedBlocks = sum(
+        1
+        for section in kept_sections
+        for block in section.get("blocks") or []
+        if isinstance(block, dict) and str(block.get("type") or "") not in BLOCK_REQUIRED
+    )
+    repaired, _repairs, _pruned, _missing = normalize_doc(
+        copy.deepcopy(candidate), snapshot, provisional=False
+    )
+    try:
+        jsonschema.validate(repaired, schema)
+        ReportDoc.model_validate(repaired)
+    except Exception as exc:  # jsonschema.ValidationError / pydantic ValidationError
+        logger.info("salvage 仍不合 schema：%s", str(exc)[:200])
+        report.reasons.append(f"救不回来：{str(exc)[:60]}")
+        report.used = False
+        return None, report
+
+    report.used = (
+        report.droppedKeys + report.droppedSections + report.droppedBlocks > 0
+    )
+    # 理由去重并截断（`as_payload()` 只放前 5 条）。
+    report.reasons = list(dict.fromkeys(reason for reason in report.reasons if reason))
+    logger.info(
+        "salvage ok keys=%s sections=%s blocks=%s",
+        report.droppedKeys,
+        report.droppedSections,
+        report.droppedBlocks,
+    )
+    return repaired, report
 
 
 def build_provisional_doc(

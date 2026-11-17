@@ -357,6 +357,20 @@ export interface ReportQuality {
   cost?: QualityCost | null;
   /** ★v7 H5: 当次提示词的版本与指纹。**不进**引擎指纹（裁决 H-5）。 */
   prompt?: QualityPrompt | null;
+  /**
+   * ★v9（K5）：抢救记录。`undefined` = 没走抢救（老报告也没有这个键，**不回填**）。
+   * 三个计数器互不重叠：未知块归 `prunedBlocks`，这里只数 salvage 自己丢的东西。
+   */
+  salvage?: QualitySalvage | null;
+}
+
+/** `quality.salvage` —— 与 `report_validator.SalvageReport.as_payload()` 同形。 */
+export interface QualitySalvage {
+  used: boolean;
+  droppedKeys: number;
+  droppedSections: number;
+  droppedBlocks: number;
+  reasons: string[];
 }
 
 /** `quality.cost` —— 与 `agent/cost_model.py::CostResolution.as_payload()` 同形。 */
@@ -688,7 +702,42 @@ export interface AragonCapability {
   doctor?: string | null;
   /** ★v7：目标模型是否在 `aragon models` 的名单里。`null` = 没测（自检关闭）。 */
   modelKnown?: boolean | null;
+  /* ── ★v9（K1/K2）：五个新字段。V10-P1-1：它们也必须在 `schemas/capabilities.py` 里
+     声明，否则 pydantic 会静默丢弃（这是同一个坑的第三次）。─────────────── */
+  /** 只 host[:port]，**永不**回显 path/query。 */
+  baseUrlHost?: string | null;
+  /** `keySource != "none"` —— 合并事实（`.env` 的 key 也算）。 */
+  keyPresent?: boolean;
+  /** `env | cli_profile | none`（唯一取值域，不设配置项）。 */
+  keySource?: 'env' | 'cli_profile' | 'none';
+  /** 探针的唯一真源：这个端点**此刻**是通的吗。 */
+  verified?: boolean;
+  verifiedAt?: string | null;
   errors: string[];
+}
+
+/** ★v9（K2）：`GET/POST /agent/probe` 的形状（§21.5.1）。 */
+export interface ProbeOutcome {
+  ok: boolean;
+  code: string | null;
+  message?: string | null;
+  ms: number;
+  turns?: number | null;
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  structureAttempts?: number | null;
+  engine: { provider?: string | null; model?: string | null; baseUrlHost?: string | null };
+  cli?: string | null;
+  probedAt?: string | null;
+}
+
+export interface ProbeStatus {
+  last: ProbeOutcome | null;
+  verified: boolean;
+  verifiedAt: string | null;
+  staleReason: 'never' | 'expired' | 'identity_changed' | 'failed' | null;
+  probeCostHintUsd?: number | null;
+  probeTtlSec: number;
 }
 
 export interface Capabilities {

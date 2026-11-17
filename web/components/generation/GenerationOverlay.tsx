@@ -5,6 +5,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RotateCw, X
 import { cn } from '@/lib/cn';
 import { copy, costSourceLabel, fill } from '@/lib/copy';
 import { durationLabel } from '@/lib/format';
+import { ACTION_LABELS, actionFor, primaryActionFor } from '@/lib/runErrors';
 import { useUiStore } from '@/lib/store';
 import type { RunStageId } from '@/lib/types';
 
@@ -34,6 +35,10 @@ export interface GenerationOverlayProps {
   onRetry: () => void;
   agentMode: 'real' | 'mock';
   onOpenReport?: (reportId: string) => void;
+  /** ★v9（K6）：`checkKey` / `openSettings` 打开密钥抽屉（说明 + 自检按钮）。 */
+  onOpenKeyDrawer?: () => void;
+  /** ★v9（K6）：`openLog` 展开日志区。 */
+  onOpenLog?: () => void;
 }
 
 /**
@@ -48,6 +53,8 @@ export function GenerationOverlay({
   onRetry,
   agentMode,
   onOpenReport,
+  onOpenKeyDrawer,
+  onOpenLog,
 }: GenerationOverlayProps) {
   // Collapse lives in the store so the header capsule can expand the card
   // (spec §6.3: clicking the running badge opens the progress overlay).
@@ -55,6 +62,26 @@ export function GenerationOverlay({
   const setCollapsed = useUiStore((state) => state.setOverlayCollapsed);
   const visible = state.phase !== 'idle';
   if (!visible) return null;
+
+  /**
+   * ★v9（K6）：六个动作 → 三次回调。表在 `lib/runErrors.ts`，这里只做分发。
+   *
+   * `wait` / `none` 不出现按钮（`primaryActionFor()` 返回 null），所以这里永远拿不到
+   * 它们；若真的拿到，什么也不做比弹一个"再等等"的空动作诚实。
+   */
+  const runAction = (action: string) => {
+    if (action === 'retry') {
+      onRetry();
+      return;
+    }
+    if (action === 'checkKey' || action === 'openSettings') {
+      onOpenKeyDrawer?.();
+      return;
+    }
+    if (action === 'openLog') {
+      onOpenLog?.();
+    }
+  };
 
   const running = state.phase === 'submitting' || state.phase === 'running';
   const done = state.phase === 'done';
@@ -65,6 +92,20 @@ export function GenerationOverlay({
     STAGES.findIndex((stage) => stage.id === state.stage),
   );
   const elapsed = state.startedAt ? (state.finishedAt ?? Date.now()) - state.startedAt : 0;
+  // ★v9（K6）：主按钮由码表决定（一张卡片上只出现一个）。
+  const primaryAction = primaryActionFor(state.error?.code);
+  /**
+   * ★评审修订（I-103）：日志按钮的显隐判据是"它是不是**已经**作为主按钮出现"，
+   * 而不是"这个码的动作是不是 openLog"。
+   *
+   * 旧写法 `action === 'openLog' ? null : <查看日志>` 有两个洞：
+   * ① `schema_over_budget` / `prompt_over_budget`（动作 = openLog，但 `primary: false`）
+   *    ⇒ 主按钮不出现、日志按钮被隐藏 ⇒ 卡片上一个动作都没有；
+   * ② 反过来，`cancelled` / `instrument_not_found`（动作 = `none`）会多出一个毫无意义的
+   *    「查看日志」—— 用户主动取消的那一次不需要动作。
+   */
+  const errorAction = actionFor(state.error?.code);
+  const showLogAction = primaryAction !== 'openLog' && errorAction.action !== 'none';
 
   return (
     <section
@@ -243,6 +284,40 @@ export function GenerationOverlay({
                 {state.error.code === 'usage_error' ? `${copy.errors.usageRejected} · ` : ''}
                 {state.error.code} · {state.error.message}
               </p>
+              {/* ★v9（K6 / §21.3.7）：从"打印一个码"变成"给一个动作"。
+                  动作表在 `lib/runErrors.ts`（与 `contracts/run_error_codes.json` 双向
+                  约束），文案在 `copy.errors` —— 组件不拼句子（H-12 的同一条纪律）。 */}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {primaryAction ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    data-testid="error-primary-action"
+                    data-action={primaryAction}
+                    onClick={() => runAction(primaryAction)}
+                  >
+                    {ACTION_LABELS[primaryAction]}
+                  </Button>
+                ) : null}
+                {showLogAction ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    data-testid="error-open-log"
+                    onClick={() => runAction('openLog')}
+                  >
+                    {ACTION_LABELS.openLog}
+                  </Button>
+                ) : null}
+              </div>
+              {/* ★v9（K2）：同一个 provider_* 失败已连续 ≥2 次 ⇒ 先自检一次。
+                  次数由服务端算好（`repeatCount`），前端只比较。 */}
+              {(state.error.code === 'provider_auth' || state.error.code === 'provider_unavailable') &&
+              (state.error.repeatCount ?? 0) >= 2 ? (
+                <p className="mt-1 text-[10.5px] leading-snug text-[var(--text-secondary)]">
+                  {copy.engine.probeHint}
+                </p>
+              ) : null}
               {/* ★v8 评审（H3.5 的落地点）：同一根因第 N 次 → 换一句更强的措辞。
                   次数由服务端算好（`repeatCount`），前端只比较，不自己数。 */}
               {state.error.repeatCount !== undefined && state.error.repeatCount >= REPEAT_ALERT_THRESHOLD ? (

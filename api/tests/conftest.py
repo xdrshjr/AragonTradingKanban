@@ -38,6 +38,14 @@ os.environ["SCHEDULER_ENABLED"] = "0"  # the ticker is driven explicitly in test
 # ★v7（I-61）：`aragon doctor` + `aragon models` 实测合计 11.1s。整套测试每次 preflight
 # 都付这笔账毫无意义（结论十分钟内不会变），所以默认关掉；需要断言这两项的测试自己打开。
 os.environ["ARAGON_SELF_CHECK"] = "0"
+# ★v9（K4）：runner 层重试在测试里默认关掉（`AGENT_ATTEMPTS=1`）。
+# 两个理由：①一次重试带 1.5s+ 的退避，会把整套测试拖慢；②既有 AC-74 断言的是
+# "CLI 的 8 条 retry 事件一条不丢"，而 runner 重试会让它变成 16 条 —— 那条用例
+# 测的是 CLI 词汇的转发，不该被本服务自己的重试改写。需要重试语义的用例
+# （AC-100 / AC-101）自己把它 monkeypatch 回 2。
+os.environ["AGENT_ATTEMPTS"] = "1"
+# 引擎自检在测试里**永不联网**：需要探针的用例显式注入假引擎（tests/test_agent_probe.py）。
+os.environ["AGENT_PROBE_ENABLED"] = "1"
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import build_engine  # noqa: E402

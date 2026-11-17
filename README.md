@@ -168,9 +168,56 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
 | 版本 | `>=0.6.66,<0.7` | 记 warn + 降级 mock |
 | 结构化结果 | `"structured_result" in features` 且 `result.ajv === true` | 强制 mock |
 | 提交工具 | `"submit_result" in tools` | 强制 mock |
-| 凭据 | `hasApiKey === true` | 强制 mock |
+| 凭据 | `effective_key_source() != "none"`（见下） | 强制 mock |
 
 `GET /api/v1/capabilities` 会把这些原样告诉前端，界面据此显示"示例模式"横幅和**具体原因**（不是一句"引擎不可用"）。
+
+#### 「到底有没有钥匙」只有一个判据（v9）
+
+`ARAGON_API_KEY` 是 v9 新加的一等设置：它和 `ARAGON_BASE_URL` 一起被拼进 `aragon exec` 的
+全局 flag（`--base-url` / `--api-key`），因为**实测证明环境变量不被 CLI 采纳**——
+`OPENAI_BASE_URL` / `OPENAI_API_KEY` 都不会生效。所以"换一个第三方 OpenAI 兼容端点"只有
+这一条路。
+
+于是"有没有钥匙"变成两个来源的合并事实，由 `preflight.effective_key_source()` 唯一判定：
+
+| 取值 | 含义 | `fullyCapable` |
+| --- | --- | --- |
+| `env` | `.env` 里的 `ARAGON_API_KEY`（**比 CLI 自己的 profile 更强**） | ✅ |
+| `cli_profile` | 只有 CLI 自己的配置里有钥匙 | ✅ |
+| `none` | 两处都没有 | ❌ 降级 mock |
+
+修之前这里只看 CLI 的 `hasApiKey`：**只填 `.env` 的机器上会静默退回示例模式**——
+用户拿到一份"示例"报告，而界面上没有任何一行红字。那是这类事故里最坏的一种（不是红，是绿）。
+`/capabilities` 因此多出 `keyPresent` / `keySource` / `baseUrlHost` / `verified` / `verifiedAt` 五个字段。
+
+> ⚠️ **`--api-key` 会出现在进程命令行里**（同机其他用户/工具可读）。这是当前 CLI 的唯一入口
+> （环境变量不被采纳），所以本项目的承诺是**更窄但真实的那半条**：密钥不落盘、不进日志、
+> 不进 SSE、不进报告、不进数据库 —— `argv.json` 落盘时会打码成 `***`，而 `build_argv()`
+> 的返回值**必须**是真的（打码只在三个落盘点做，否则每次生成都会拿着 `***` 去请求）。
+
+### 三步接上第三方端点（v9）
+
+```text
+1) 在 .env 里填三项：
+     ARAGON_BASE_URL=https://api.deepseek.com
+     ARAGON_API_KEY=sk-…
+     ARAGON_MODEL=deepseek-flash
+2) 重启 API，打开工作台，点右上角端点徽标 → 「跑一次引擎自检」（约 10 秒，约 $0.002）
+3) 徽标从「未验证」变「已验证」⇒ 生成就不再用示例模式
+```
+
+自检跑的是**一次最小真实生成**：读一个 6 字节的文件 + 提交一份 153 字节的结构化结果。
+它同时验证四件事——端点可达、密钥有效、`read_file` 已注册、`submit_result` 能提交。
+「`aragon doctor` 全绿」不等于这些（它只检查"配置里能不能解析出一个 key"）。
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /api/v1/agent/probe` | 跑一次自检（`{"force": true}` 跳过 TTL 缓存）。失败也是 **200**：那是一次测量，不是一次请求失败 |
+| `GET /api/v1/agent/probe` | 纯读：`{last, verified, verifiedAt, staleReason, probeCostHintUsd, probeTtlSec}`，**不 spawn** |
+
+`staleReason` 四态：`never` / `expired`（超 TTL）/ `identity_changed`（改了端点、模型或 CLI 版本）/ `failed`。
+探针**永不阻断生成**：它只让面板变红（降级永不上抛）。有生成在跑时探针不 spawn（409 `probe_busy`）。
 
 ---
 
@@ -426,7 +473,7 @@ web/
 > 并入 `ReportPanel`（Tab 与其键盘交互本来共享同一份 state）。12 种块、章节
 > 导航、日期→K 线联动这些**能力**一个不少，只是文件更少、state 更集中。
 
-测试：`api/tests`（含 argv 契约、fake CLI 的全部失败剧本、cron 表驱动、租约并发、依赖方向守卫、v6 的数字分类表与导入无环）、`web/tests`（含 `grounding` / `reading-view` / `range-hint` / `cost-panel` 四套新用例 + Playwright）。首屏预算由 `web/scripts/check-bundle.mjs` 机器化断言（**238.5 kB / 240 kB**，八个面板均不在首屏 chunk，且 `ReadingView` / `RangeHint` / `CostPanel` 必须能在 `react-loadable-manifest.json` 里被证明住在 async chunk —— AC-52 的双向判据）。
+测试：`api/tests`（含 argv 契约、fake CLI 的全部失败剧本、cron 表驱动、租约并发、依赖方向守卫、v6 的数字分类表与导入无环）、`web/tests`（含 `grounding` / `reading-view` / `range-hint` / `cost-panel` 四套新用例 + Playwright）。首屏预算由 `web/scripts/check-bundle.mjs` 机器化断言（**240.9 kB / 245 kB** —— 预算 v9 由 240 放到 245，理由与三次实测见 `check-bundle.mjs::DEFAULT_BUDGET_KB` 的注释与 spec 的 I-94；**11 个面板**均不在首屏 chunk，且 `ReadingView` / `RangeHint` / `CostPanel` / `KeyDrawer` / `EndpointBadge` / `SalvageNotice` 必须能在 `react-loadable-manifest.json` 里被证明住在 async chunk —— AC-52 的双向判据。v9 新增的三块面板进这张表，正是「把预算抬 5 kB」换来的那条更严的判据）。
 
 > 判据不是某个固定数字（`504` 会随重构上下浮动），而是「`pytest --collect-only` 的实测数量**不得低于**改动前」。
 

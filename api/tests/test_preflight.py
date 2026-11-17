@@ -74,10 +74,20 @@ def test_missing_submit_result_forces_mock(fake_aragon) -> None:
     assert decide_mode(settings, capability) == "mock", "auto must not attempt a doomed run"
 
 
-def test_missing_api_key_forces_mock(fake_aragon) -> None:
+def test_missing_api_key_forces_mock(fake_aragon, monkeypatch) -> None:
+    """★v9（V10-P0-1）：CLI 说没钥匙 **且** 我们自己的 `.env` 也没有 ⇒ 才降级。
+
+    必须显式清空 `aragon_api_key`：开发机的 `.env` 里恰好有 `ARAGON_API_KEY` 时，
+    这条断言会误红，而它想证明的是"两处都没有"这一种情形（`conftest` 的 `setdefault`
+    教训，I-12 同型）。
+    """
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(get_settings(), "aragon_api_key", SecretStr(""), raising=False)
     settings = fake_aragon(info="no_key")
     capability = check_aragon(force=True)
     assert capability.hasApiKey is False
+    assert capability.keySource == "none"
     assert capability.degradedReason == "no_api_key"
     assert decide_mode(settings, capability) == "mock"
 

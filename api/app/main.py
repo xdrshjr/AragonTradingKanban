@@ -32,6 +32,7 @@ from .db.session import SessionLocal, engine, fts_available
 from .errors import Unauthorized, register_exception_handlers
 from .logging import configure_logging, get_logger, request_id_var
 from .routers import (
+    agent,
     asks,
     capabilities,
     cost,
@@ -228,6 +229,8 @@ def create_app() -> FastAPI:
     # ★v6 G3：成本面板的读侧（`/cost/summary` / `/cost/entries` / `/cost/budget`）。
     app.include_router(cost.router, prefix=api_prefix)
     app.include_router(watchlist.router, prefix=api_prefix)
+    # ★v9（K2）：引擎自检（`POST/GET /agent/probe`）。
+    app.include_router(agent.router, prefix=api_prefix)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:

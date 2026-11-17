@@ -34,7 +34,15 @@ from ..schemas.capabilities import (
     EngineSchemaOut,
     FeaturesOut,
 )
-from ..services import ask_service, cost_service, numeric_claims, report_validator, run_diagnostics, search_index
+from ..services import (
+    agent_probe,
+    ask_service,
+    cost_service,
+    numeric_claims,
+    report_validator,
+    run_diagnostics,
+    search_index,
+)
 from ..services.market_data.registry import get_registry
 from ..services.run_manager import MAX_CONCURRENT_RUNS
 
@@ -107,11 +115,45 @@ def _engine_payload(db: Session, settings, capability, fingerprint) -> EngineCap
         maxOutputTokens=max(1, int(settings.aragon_max_output_tokens)),
         valueBytes=int(cli_result.get("valueBytes") or 262_144),
         schemaBytes=int(cli_result.get("schemaBytes") or schema_budget.FALLBACK_LIMITS["schemaBytes"]),
+        # ★v9（K4/K2）：两个新数 + 一条只在 CLI 重试被打开时才出现的告警。
+        agentAttempts=max(1, int(settings.agent_attempts)),
+        probeTtlSec=max(0, int(settings.agent_probe_ttl_sec)),
+        retryLayersWarning=(
+            "cli_second_layer_uncontrolled" if int(settings.aragon_retry_max) > 0 else None
+        ),
     )
     base["priceVersion"] = PRICE_VERSION
     failure = run_diagnostics.recent_failure(db)
     base["lastFailure"] = EngineLastFailureOut.model_validate(failure) if failure else None
+    # ★v9（K2）：最近一次自检摘要（`engine.lastProbe`）。H-19 不变：model/provider 仍不进来。
+    try:
+        last_probe = agent_probe.last_probe(db)
+    except Exception:  # pragma: no cover - 0005 未迁移时不能把诊断端点也弄挂
+        last_probe = None
+        logger.warning("capabilities: engine_probes 不可读（0005 未迁移？）")
+    base["lastProbe"] = (
+        {"ok": last_probe.ok, "ms": last_probe.ms, "at": last_probe.probed_at, "code": last_probe.code}
+        if last_probe is not None
+        else None
+    )
     return EngineCapabilityOut.model_validate(base)
+
+
+def _aragon_payload(db: Session, capability) -> dict[str, object]:
+    """★v9（K2）：`aragon` 子对象的 wire 载荷。
+
+    `verified/verifiedAt` 的**唯一**真源是 `engine_probes`（K2 落库的那张表），所以这里
+    把 `agent_probe.verified()` 的结论写进载荷 —— `preflight.note_verified()` 只更新
+    进程内快照，重启之后那份就没了，而表还在。
+    """
+    payload: dict[str, object] = dict(capability.as_payload())
+    try:
+        ok, verified_at, _stale = agent_probe.verified(db)
+        payload["verified"] = ok
+        payload["verifiedAt"] = verified_at
+    except Exception:  # pragma: no cover - 0005 未迁移
+        logger.warning("capabilities: 探针结论不可读，verified 保持进程内快照值")
+    return payload
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
@@ -126,7 +168,9 @@ def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
     fingerprint = current_fingerprint(schema_bytes=report_validator.schema_bytes())
     engine = _engine_payload(db, settings, capability, fingerprint)
     return CapabilitiesResponse(
-        aragon=capability.as_payload(),  # type: ignore[arg-type]
+        # ★v9（K2 / V10-P1-1）：`verified/verifiedAt` 由 `engine_probes` 派生；
+        # 其余四个字段（`baseUrlHost/keyPresent/keySource`）来自 `as_payload()`。
+        aragon=_aragon_payload(db, capability),  # type: ignore[arg-type]
         agentMode=mode,  # type: ignore[arg-type]
         dataProviders=providers,
         engine=engine,

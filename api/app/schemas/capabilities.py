@@ -24,6 +24,18 @@ class AragonAragonOut(BaseModel):
     #: ★v7（V8-P1-2）：引擎"是谁"的第四个事实。来自 `exec` 的 `system` 事件
     #: `model.baseUrl`（不在 `aragon info --json` 里），没有就为空。
     baseUrl: str | None = None
+    #: ★v9（K1/K2 / V10-P1-1）：**响应模型是第二道门**。
+    #: `routers/capabilities.py` 传的是 `capability.as_payload()` 并带
+    #: `# type: ignore[arg-type]` —— pydantic 会**静默丢弃**没声明的键。所以
+    #: "在 `preflight.as_payload()` 里加字段"这件事**不算做完了**，必须同时改这里。
+    #: 这是同一个坑的第三次（v6 的 `engine`、v7 的 `quality.cost/prompt`、v9 的这五个）。
+    baseUrlHost: str | None = None
+    keyPresent: bool = False
+    #: `env | cli_profile | none`（唯一取值域，不设配置项 —— V10-P1-6）。
+    keySource: str = "none"
+    #: ★v9（K2）：探针的唯一真源。`verifiedAt` 为 `None` = 从未验证。
+    verified: bool = False
+    verifiedAt: str | None = None
     #: ★v7：两项只 warn 不降级的自检结果（`doctor` 摘要 / 模型是否在名录里）。
     doctor: str | None = None
     modelKnown: bool | None = None
@@ -101,6 +113,14 @@ class EngineLimitsOut(BaseModel):
     maxOutputTokens: int = 0
     valueBytes: int = 0
     schemaBytes: int = 0
+    #: ★v9（K4 / V10-P1-1）：runner 层总尝试次数（1 = 不重试）。前端据此把
+    #: `run.retry{layer:"runner"}` 显示成"本服务重试 1/2"而不是"引擎重试"。
+    agentAttempts: int = 1
+    #: ★v9（K2）：自检的 TTL —— 面板据此告诉用户"5 分钟内不会重复自检"。
+    probeTtlSec: int = 0
+    #: ★v9（K4）：`ARAGON_RETRY_MAX > 0` 时非空。实测 CLI 有**第二层**重试不认
+    #: `--retry-max`（`maxRetries=10`、每次退避 60 s），会把时长预算吃光。
+    retryLayersWarning: str | None = None
 
 
 class EngineLastFailureOut(BaseModel):
@@ -143,6 +163,10 @@ class EngineCapabilityOut(BaseModel):
     priceVersion: str | None = None
     #: ★v7：最近一次失败；从未失败 → `null`。
     lastFailure: EngineLastFailureOut | None = None
+    #: ★v9（K2）：最近一次引擎自检的摘要；从未自检 → `null`。
+    #: H-19 的口径不变：`model`/`provider` 仍然**不**进 `engine`（唯一真源在 `aragon`），
+    #: 这里只有"什么时候、成没成、多贵"这三件事。
+    lastProbe: dict[str, object] | None = None
 
     model_config = {"populate_by_name": True}
 
