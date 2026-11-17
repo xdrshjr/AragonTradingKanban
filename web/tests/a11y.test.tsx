@@ -237,7 +237,13 @@ describe('AC-36: 新面板的可访问性结构契约（axe 未安装 → 结构
         }
 
         expect(domProblems(root, panel.name)).toEqual([]);
-      });
+        // This one render costs ~3.3-4.6 s on a cold module graph (dynamic import of a
+        // whole panel + a full Radix tree), so the default 5 s budget turns suite load
+        // into a coin flip: it timed out at 5,069 ms once while the rest of the suite
+        // was busy, and passed at 3,997 ms on the next run. The assertion is unchanged;
+        // only the wall-clock budget is stated, because a green CI gate has to mean
+        // "the code is wrong", not "the machine was busy".
+      }, 20_000);
     });
   }
 });
