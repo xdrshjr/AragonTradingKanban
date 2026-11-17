@@ -316,7 +316,7 @@ pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增�
 | 生成 2 分钟后失败 `result_schema_unsatisfied` | 模型未能提交合规结构 | 看 `api/workspace/runs/<id>/aragon.ndjson`；`ARAGON_MODEL` 换成更强的模型 |
 | 报告写着"临时版" | 该次生成失败，落的是可读兜底版 | 原始产出仍可阅读；点"生成最新版本"重试 |
 | 进度条长时间不动 | API 跑了多个 worker | 必须 `--workers 1`（启动会直接报错拦下） |
-| 数据带"合成数据"标记 | 真实数据源全挂，降级到 synthetic | 检查网络/依赖；`DATA_PROVIDERS` 调整顺序 |
+| 数据带"合成数据"标记 | 真实数据源全挂，降级到 synthetic | 检查网络/依赖；`DATA_PROVIDERS` 调整顺序。合成分价由**固定日历锚点**（`_WALK_ANCHOR`）单向生成：同一日期永远同一价，区间/复权/跨日都不再改写历史；锚点常量一改，全部合成价位整体变更一次（正常现象，不是数据损坏） |
 | 成本显示"成本未知" | CLI 返回 `cost.known=false` | 正常现象——未知不会被伪装成 $0.00 |
 | K 线空白 | 该标的无行情数据 | 面板底部会标注数据来源与根数 |
 | 报告头出现「3 个数字未找到依据」 | 有三个数字在快照里找不到出处 | 点开徽标 → 每条样本都带 `blockId`，点一下跳到那一格。**不会**自动替换数字 |

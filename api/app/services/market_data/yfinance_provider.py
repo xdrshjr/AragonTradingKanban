@@ -118,7 +118,10 @@ class YFinanceProvider:
             day_high=last_row.high,
             day_low=last_row.low,
             volume=last_row.volume,
-            updated_at=datetime.fromtimestamp(last_row.ts, tz=UTC).isoformat().replace("+00:00", "Z"),
+            # ★I-5 / BUG-8: the fetch moment, not the bar's own stamp — a daily bar
+            # stamped at the session open would otherwise read as "in the future" and
+            # never expire (`quote_is_fresh`). Same convention as `SyntheticProvider`.
+            updated_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             source=self.name,
         )
 

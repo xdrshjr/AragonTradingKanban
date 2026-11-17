@@ -102,14 +102,27 @@ export function PricePanel({
   const indicators = barsQuery.data?.indicators ?? {};
   const latest = bars[bars.length - 1];
 
-  const lastClose = latest?.c ?? lastPrice ?? null;
+  // ★BUG-2 / R-3: one pair, one source. The candles' own price axis prints
+  // `bars[-1].c` (CandleChart leaves `lastValueVisible` on), so pairing a bars
+  // close with a quote `changePct` rendered a data point that never existed
+  // ("1,729.52 ▼2.2%" on bars that were +0.46%). Preferring `quote` instead would
+  // only move the contradiction next to the axis label, so the pair stays on bars
+  // whenever there are bars to draw — price, change and the date Tag all follow
+  // it — and falls back to `quote` as a whole pair only when the chart is empty
+  // (no axis label, hence nothing to contradict).
+  const pairSource: 'bars' | 'quote' | 'none' = latest ? 'bars' : lastPrice != null ? 'quote' : 'none';
+
+  const lastClose = pairSource === 'bars' && latest ? latest.c : pairSource === 'quote' ? (lastPrice ?? null) : null;
   const change = useMemo(() => {
-    if (changePct !== null && changePct !== undefined) return changePct;
-    if (bars.length < 2 || !latest) return null;
-    const previous = bars[bars.length - 2];
-    if (!previous) return null;
-    return (latest.c / previous.c - 1) * 100;
-  }, [bars, changePct, latest]);
+    if (pairSource === 'bars' && latest) {
+      if (bars.length < 2) return null;
+      const previous = bars[bars.length - 2];
+      if (!previous) return null;
+      return (latest.c / previous.c - 1) * 100;
+    }
+    if (pairSource === 'quote') return changePct ?? null;
+    return null;
+  }, [bars, changePct, latest, pairSource]);
 
   const changeTone = (change ?? 0) >= 0 ? 'text-[var(--chart-up)]' : 'text-[var(--chart-down)]';
 

@@ -70,7 +70,19 @@ async def bars(
     rows, cached_source = cache.read_bars(
         db, instrument.id, timeframe=timeframe.value, adjust=adjust.value, start_ts=start_ts
     )
-    used_cache = bool(rows) and not force
+    # ★BUG-1 / BUG-7 (R-2a/b): a cache hit needs *both* properties. "Some row
+    # exists" let the first range a user opened cap every wider one forever, and
+    # "not stale" was never checked here at all. The key is what lets the freshness
+    # rule count §9's TTL from the last refill instead of from the bar's own stamp
+    # (see `cache._FETCHED_AT`), so a running session cannot leave the chart a whole
+    # session behind `/quote`.
+    bars_key = (instrument.id, timeframe.value, adjust.value)
+    used_cache = (
+        bool(rows)
+        and not force
+        and cache.bars_cover(rows, start_ts)
+        and cache.is_bars_cache_fresh(rows, instrument.market, key=bars_key)
+    )
     source = cached_source or "synthetic"
     warnings: list[str] = []
 

@@ -125,7 +125,12 @@ class AkshareProvider:
             day_high=last_row.high,
             day_low=last_row.low,
             volume=last_row.volume,
-            updated_at=datetime.fromtimestamp(last_row.ts, tz=UTC).isoformat().replace("+00:00", "Z"),
+            # ★I-5 / BUG-8: `updated_at` means "when we fetched this", like
+            # `SyntheticProvider` writes it. Stamping the bar's own close moment made
+            # the row immortal while the session was open (07:00 UTC vs 03:00 UTC now
+            # => `now - stamped` was negative), so the rail could keep a price the
+            # chart had already left behind.
+            updated_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             source=self.name,
         )
 

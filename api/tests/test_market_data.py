@@ -156,11 +156,11 @@ def test_historical_bars_never_go_stale() -> None:
 
     ancient = datetime.now(UTC) - timedelta(days=400)
     bars = [BarRow(ts=int(ancient.timestamp()), open=1, high=1, low=1, close=1)]
-    assert cache.is_bars_cache_fresh(bars, "CN") is True
+    assert cache.is_bars_cache_fresh(bars, "CN", key=("CN:600519.SH", "1d", "qfq")) is True
 
 
 def test_empty_bar_cache_is_never_fresh() -> None:
-    assert cache.is_bars_cache_fresh([], "CN") is False
+    assert cache.is_bars_cache_fresh([], "CN", key=("CN:600519.SH", "1d", "qfq")) is False
 
 
 def test_market_open_heuristic() -> None:

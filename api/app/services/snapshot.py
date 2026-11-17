@@ -100,7 +100,15 @@ async def build_snapshot(
 
     start_ts = range_to_epoch("3y")
     bars, cached_source = cache.read_bars(session, instrument.id, timeframe="1d", adjust="qfq", start_ts=start_ts)
-    used_cache = bool(bars) and cache.is_bars_cache_fresh(bars, instrument.market) and not force
+    # ★R-2(a): same rule as `/bars` — freshness alone would let a narrow cache
+    # answer the 3y window the report is built on. Same key too, so the snapshot and
+    # the chart share one refill stamp instead of each paying its own fetch.
+    used_cache = (
+        bool(bars)
+        and not force
+        and cache.bars_cover(bars, start_ts)
+        and cache.is_bars_cache_fresh(bars, instrument.market, key=(instrument.id, "1d", "qfq"))
+    )
     source = cached_source or "synthetic"
 
     if not used_cache:
