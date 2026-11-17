@@ -15,6 +15,9 @@ class AgentEventType(StrEnum):
     text = "agent.text"
     progress = "agent.progress"
     log = "agent.log"
+    #: ★v7 §20.3.4 / H3：CLI 的 `retry` 事件（429 / 5xx / 网络错误的带抖动退避）。
+    #: `agent.*` 是 CLI 的词汇，转发到 `run_events` 时改名 `run.retry`。
+    retry = "agent.retry"
 
 
 @dataclass(slots=True)
@@ -64,6 +67,15 @@ class AgentResult:
     model: str | None = None
     source: str = "aragon"
     ndjson_path: str | None = None
+    #: ★v7 §20.3.7 / H6：`system` 事件里的 `model` 三元组
+    #: `{provider, model, baseUrl}`。**没有就留 None，不猜**：`baseUrl` 不在
+    #: `aragon info --json` 里（E-39），它只出现在 `exec` 的 system 事件里。
+    engine_info: dict[str, Any] | None = None
+    #: ★v7 §20.3.4：本地累计的 `retry` 事件数。**不能用 `attempt` 当累计**
+    #: （实测同一进程里 attempt 会从 1 重新开始），所以由 runner/local 自增。
+    retries: int = 0
+    #: `result.structured.attempts`（CLI 侧已用掉的修复轮），失败时也带出来。
+    structured_attempts: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -83,6 +95,13 @@ class AgentRequest:
     instrument_name: str
     max_turns: int = 40
     max_duration_ms: int = 900_000
+    #: ★实施发现（I-60）：`schema_path` 交给 CLI 的那份（工作区副本）；这里是它的
+    #: **真源**，`build_argv()` 拿它做字节身份断言（`schema_drift`）。
+    #: 设计里这道闸门被写成"与 `schemas_dir/report_doc.schema.json` 相比"——但 `argv`
+    #: 契约是生成与 deep ask **共用**的（裁决 H-2），而 ask 交的是 `ask.schema.json`
+    #: （943B）。硬编码真源会让每一次深度追问都判成漂移。所以真源是**入参**：
+    #: 生成传 report_doc，追问传 ask，`None` 表示这条路径不做身份断言。
+    schema_source_path: Path | None = None
 
 
 @runtime_checkable

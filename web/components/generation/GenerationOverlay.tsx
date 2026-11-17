@@ -1,9 +1,9 @@
 'use client';
 
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RotateCw, X } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { copy } from '@/lib/copy';
+import { copy, costSourceLabel, fill } from '@/lib/copy';
 import { durationLabel } from '@/lib/format';
 import { useUiStore } from '@/lib/store';
 import type { RunStageId } from '@/lib/types';
@@ -20,6 +20,12 @@ const STAGES: { id: RunStageId; pct: number }[] = [
   { id: 'validate', pct: 85 },
   { id: 'persist', pct: 100 },
 ];
+
+/**
+ * 「这不是偶发失败」的阈值。与 `api/app/services/run_diagnostics.REPEAT_ALERT_THRESHOLD`
+ * 同一个数、同一个含义：服务端算次数，前端只比较（措辞不同，判据唯一）。
+ */
+const REPEAT_ALERT_THRESHOLD = 3;
 
 export interface GenerationOverlayProps {
   state: GenerationState;
@@ -85,10 +91,17 @@ export function GenerationOverlay({
               : done
                 ? copy.generation.doneTitle
                 : cancelled
-                  ? copy.generation.cancelled
+                  ? copy.generation.aborted
                   : copy.generation.failedTitle}
           </h2>
         </span>
+        {/* ★v7（§20.3.4）：重试可见。一个转圈能解释"在等"，解释不了"为什么等"。 */}
+        {state.retryCount > 0 ? (
+          <Badge tone="warn" title={copy.generation.retrying}>
+            <RotateCw className="mr-1 inline size-2.5" aria-hidden="true" />
+            {state.retryCount}
+          </Badge>
+        ) : null}
         {running ? <Badge tone="accent">{(state.pct ?? 0).toString()}%</Badge> : null}
         <IconButton label={collapsed ? '展开' : '收起'} onClick={() => setCollapsed(!collapsed)}>
           {collapsed ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
@@ -198,10 +211,53 @@ export function GenerationOverlay({
             ) : null}
           </footer>
 
-          {state.phase === 'error' && state.error ? (
-            <p className="border-t border-[var(--border-subtle)] bg-[var(--warn-weak)] px-3 py-1.5 text-[10.5px] leading-snug text-[var(--warn)]">
-              {state.error.code} · {state.error.message}
+          {/*
+            ★v7（H4 / R-31）：成本三态**分措辞**。把估算写成"已确认成本"会让账本上的
+            每个数都失去意义，所以这里永远先看 `costSource`，再看金额。
+          */}
+          {done || failed ? (
+            <p
+              data-testid="generation-cost"
+              className="border-t border-[var(--border-subtle)] px-3 py-1.5 text-[10.5px] leading-snug text-[var(--text-secondary)]"
+            >
+              <span className="font-medium text-[var(--text-primary)]">
+                {costSourceLabel(state.costSource)}
+              </span>
+              {state.costUsd !== null
+                ? ` $${state.costUsd.toFixed(2)}`
+                : state.costUsdEst !== null
+                  ? ` $${state.costUsdEst.toFixed(2)}`
+                  : ''}
+              {/* 估算时并把"含估算"说清：一个数不够，两个数才是诚实的。 */}
+              {state.costSource === 'estimated' && state.costUsdEst !== null
+                ? ` · ${fill(copy.cost.includingEstimated, { usd: state.costUsdEst.toFixed(2) })}`
+                : ''}
             </p>
+          ) : null}
+
+          {state.phase === 'error' && state.error ? (
+            <div className="border-t border-[var(--border-subtle)] bg-[var(--warn-weak)] px-3 py-1.5">
+              <p className="text-[10.5px] leading-snug text-[var(--warn)]">
+                {/* ★v8 评审：`usage_error` 有三个来源（参数 / 配置 / schema 精化后的误判），
+                    所以除了码本身还要一句人话标签——否则用户看到的是 `usage_error` 四个字。 */}
+                {state.error.code === 'usage_error' ? `${copy.errors.usageRejected} · ` : ''}
+                {state.error.code} · {state.error.message}
+              </p>
+              {/* ★v8 评审（H3.5 的落地点）：同一根因第 N 次 → 换一句更强的措辞。
+                  次数由服务端算好（`repeatCount`），前端只比较，不自己数。 */}
+              {state.error.repeatCount !== undefined && state.error.repeatCount >= REPEAT_ALERT_THRESHOLD ? (
+                <p data-testid="generation-repeat" className="mt-0.5 text-[10.5px] font-medium leading-snug text-[var(--warn)]">
+                  {fill(copy.errors.sameCauseThrice, { count: state.error.repeatCount })}
+                </p>
+              ) : null}
+              {/* ★v7（P-2 / H-12）：hint 由服务端下发——只有服务端知道 exit code 与引擎日志。 */}
+              {state.error.hint ? (
+                <p className="mt-0.5 text-[10.5px] leading-snug text-[var(--text-secondary)]">
+                  <span className="font-medium">{copy.generation.hintLabel} · </span>
+                  {state.error.hint}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           {state.phase === 'error' ? (
             <p className="border-t border-[var(--border-subtle)] px-3 py-1.5 text-[10.5px] leading-snug text-[var(--text-tertiary)]">

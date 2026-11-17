@@ -35,6 +35,9 @@ os.environ["ALLOW_SYNTHETIC"] = "1"
 os.environ["API_TOKEN"] = ""
 os.environ["LOG_LEVEL"] = "WARNING"
 os.environ["SCHEDULER_ENABLED"] = "0"  # the ticker is driven explicitly in tests
+# ★v7（I-61）：`aragon doctor` + `aragon models` 实测合计 11.1s。整套测试每次 preflight
+# 都付这笔账毫无意义（结论十分钟内不会变），所以默认关掉；需要断言这两项的测试自己打开。
+os.environ["ARAGON_SELF_CHECK"] = "0"
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import build_engine  # noqa: E402

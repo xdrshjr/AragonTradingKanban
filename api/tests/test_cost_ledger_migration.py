@@ -74,7 +74,9 @@ def _revision(engine: sa.Engine) -> str:
 def test_upgrade_creates_the_ledger_with_a_nullable_usd(migrated) -> None:
     """`usd` **可空**是这条迁移的核心：`NULL` = 未知，`0` = 已知且免费（AC-55）。"""
     config, engine = migrated
-    command.upgrade(config, "head")
+    # ★v7：升到**本条迁移**为止（`head` 现在是 0004，新列由 `test_migration_0004`
+    # 守着），这样这一条断言永远只谈 0003 建的形状。
+    command.upgrade(config, "0003_cost_ledger")
 
     inspector = sa.inspect(engine)
     assert "cost_ledger" in inspector.get_table_names()
@@ -96,7 +98,7 @@ def test_upgrade_creates_the_ledger_with_a_nullable_usd(migrated) -> None:
 def test_the_idempotency_key_is_enforced_by_the_database(migrated) -> None:
     """AC-57 的数据库侧：重试插入被唯一键拒绝，而不是把同一次生成记两遍。"""
     config, engine = migrated
-    command.upgrade(config, "head")
+    command.upgrade(config, "0003_cost_ledger")
     insert = sa.text(
         "INSERT INTO cost_ledger (kind, ref_id, symbol, report_id, model, usd, known, created_at) "
         "VALUES (:kind, :ref, NULL, NULL, NULL, :usd, :known, :created)"
@@ -142,11 +144,13 @@ def test_downgrade_drops_only_the_ledger(migrated) -> None:
 def test_revision_chain_points_at_0002() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
 
-    assert script.get_current_head() == "0003_cost_ledger"
+    # ★v7：head 已经是 0004；这条断言守的是**整条链**没有断点（0003 的父节点仍是 0002）。
+    assert script.get_current_head() == "0004_agent_diagnostics"
     revision = script.get_revision("0003_cost_ledger")
     assert revision is not None
     assert revision.down_revision == "0002_ask_search_schedule"
-    assert [rev.revision for rev in script.walk_revisions()][:3] == [
+    assert [rev.revision for rev in script.walk_revisions()][:4] == [
+        "0004_agent_diagnostics",
         "0003_cost_ledger",
         "0002_ask_search_schedule",
         "0001_init",

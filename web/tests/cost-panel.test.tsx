@@ -34,11 +34,17 @@ function summary(overrides: Partial<CostSummary> = {}): CostSummary {
     from: '2026-01-11T00:00:00Z',
     to: '2026-02-10T00:00:00Z',
     spentUsd: 3.42,
+    // ★v7：三态各一列。默认全是"已报告"，所以两个数相等（AC-79 的那条性质）。
+    estimatedUsd: 0,
+    spentIncludingEstimatedUsd: 3.42,
     knownRuns: 18,
+    reportedRuns: 18,
+    estimatedRuns: 0,
     unknownRuns: 0,
     byKind: { run: 2.91, ask_deep: 0.51 },
     byModel: [{ model: 'claude-sonnet', usd: 3.42, runs: 18 }],
     budget: { monthlyUsd: 25, remainingUsd: 21.58, resetAt: '2026-03-01T00:00:00Z', state: 'ok' },
+    priceVersion: '2026-03',
     ledgerGap: 0,
     ...overrides,
   };

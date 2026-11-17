@@ -6,15 +6,20 @@ Every value has a working default, so the API boots with no `.env` at all
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .logging import get_logger
 
 API_DIR = Path(__file__).resolve().parents[1]
 REPO_DIR = API_DIR.parent
+
+logger = get_logger("config")
 
 
 def _normalize_sqlite_url(url: str) -> str:
@@ -55,6 +60,10 @@ class Settings(BaseSettings):
     force_preflight: bool = False
     aragon_required_tools: str = "read_file,glob,grep,list_dir,submit_result"
     aragon_bin: str = ""
+    #: ★v7（I-61）：`aragon doctor` + `aragon models` 两项 warn-only 自检的开关。
+    #: 实测这两项合计 11.1s（`models` 要问一次模型列表），而结论十分钟内不会变；
+    #: 关掉它不影响任何生成能力，只少一条"这台机器自检如何"的提示。
+    aragon_self_check: bool = True
     aragon_provider: str = ""
     aragon_model: str = ""
     aragon_max_turns: int = 40
@@ -66,6 +75,37 @@ class Settings(BaseSettings):
     #: separated. The base whitelist stays minimal; this is the sanctioned door.
     aragon_env_passthrough: str = ""
     max_report_cost_usd: float = 0.60
+
+    # ── Agent robustness (H1/H2, ★v7 §20.3.2 / §20.3.3) ──────────────────
+    #: `lean` → inject the six `--no-*` global flags (measured: −2551 input tokens
+    #: per turn, +76%, and no more `[skills] warn` on stderr). `full` keeps the
+    #: machine's own posture; it exists because an operator must be able to go back
+    #: in one line (AC-68), not because it is expected.
+    aragon_agent_posture: Literal["lean", "full"] = "lean"
+    #: CLI default is 10 with up to 30 s backoff each; 10 attempts can eat the whole
+    #: `ARAGON_MAX_DURATION_MS` and turn "the network was down" into "the model was
+    #: too slow" (E-45: 6 attempts ≈ 44 s). 6 keeps the two distinguishable.
+    aragon_retry_max: int = 6
+    #: Replaces the hard-coded `--max-tokens auto`. Measured max output 34586, so
+    #: 40000 makes CLI truncation predictable instead of invisible.
+    aragon_max_output_tokens: int = 40_000
+    #: `--result-repair-turns`; clamped by `capability.result.maxRepairTurns` at
+    #: argv-build time so a CLI that tightens its own ceiling cannot hand us exit 2.
+    aragon_repair_turns: int = 2
+    #: `prompt.md + system.md + schema.json` must stay under this. The gate exists
+    #: to stop someone inlining a 47.6 KB bars.csv into the prompt (R-39).
+    aragon_max_prompt_bytes: int = 32_768
+    #: JSON price override, e.g. `{"deepseek-flash":{"in":0.00014,"out":0.00028}}`.
+    #: An ops door: a price change is a restart, not a release (§20.3.5).
+    #: ★v8 评审：字段名不带 `aragon_` 前缀时，pydantic-settings 认的环境变量叫
+    #: `PRICE_OVERRIDE`，而 `.env.example` / `pricing.py` / spec §20.3.5 全都写
+    #: `ARAGON_PRICE_OVERRIDE` —— 于是那个"运维出口"其实是个死开关：照着文档配一路
+    #: 读到的都是空串，估算继续用旧价，且**不报任何错**（`extra="ignore"` 把未知键吞了）。
+    #: 用 `AliasChoices` 同时接受两个名字，既有部署（若已用 `PRICE_OVERRIDE`）不受影响。
+    price_override: str = Field(
+        default="",
+        validation_alias=AliasChoices("ARAGON_PRICE_OVERRIDE", "PRICE_OVERRIDE", "price_override"),
+    )
 
     # ── Market data ──────────────────────────────────────────────────────
     data_providers: str = "akshare,yfinance,synthetic"
@@ -130,6 +170,37 @@ class Settings(BaseSettings):
     @property
     def env_passthrough(self) -> list[str]:
         return [item.strip() for item in self.aragon_env_passthrough.split(",") if item.strip()]
+
+    @property
+    def price_overrides(self) -> dict[str, dict[str, float]]:
+        """`PRICE_OVERRIDE` 解析结果。坏 JSON 只 warn 一次并当作"没有覆盖"。
+
+        永不抛：一个配置项写坏了不该让 API 起不来（§14「每个值都有可用默认」）。
+        """
+        raw = (self.price_override or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("PRICE_OVERRIDE 不是合法 JSON，已忽略：%s", raw[:120])
+            return {}
+        if not isinstance(parsed, dict):
+            logger.warning("PRICE_OVERRIDE 必须是对象，已忽略：%s", raw[:120])
+            return {}
+        result: dict[str, dict[str, float]] = {}
+        for model, price in parsed.items():
+            if not isinstance(price, dict):
+                logger.warning("PRICE_OVERRIDE[%s] 不是对象，已忽略", model)
+                continue
+            entry: dict[str, float] = {}
+            for key in ("in", "out"):
+                value = price.get(key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    entry[key] = float(value)
+            if entry:
+                result[str(model).strip().lower()] = entry
+        return result
 
     @property
     def workspace_dir(self) -> Path:

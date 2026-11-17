@@ -16,6 +16,7 @@ Design constraints this file exists to honour:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import uuid
@@ -28,13 +29,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..agent import build_runner
+from ..agent import build_runner, preflight
+from ..agent.cost_model import resolve_cost
+from ..agent.failure import failure_fingerprint, hint_for, is_retryable
 from ..agent.runner_base import AgentError, AgentEvent, AgentEventType, AgentRequest, AgentResult
 from ..config import get_settings
 from ..logging import get_logger
 from ..models import Instrument, Run, RunEvent
 from ..schemas.run import ACTIVE, STAGE_BOUNDS, STAGE_ORDER, STAGE_START, stage_end_pct, stage_label
-from . import cost_service, report_service, report_validator
+from . import cost_service, report_service, report_validator, run_diagnostics
 from . import snapshot as snapshot_service
 
 logger = get_logger("run_manager")
@@ -42,9 +45,30 @@ logger = get_logger("run_manager")
 MAX_CONCURRENT_RUNS = 2
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "timeout", "budget_exceeded")
 
+#: ★v7（H-9 / I-42）：没有 `AgentResult` 时临时报告携带的三态成本（"不知道"而不是"0"）。
+UNKNOWN_COST_PAYLOAD: dict[str, Any] = {
+    "source": "unknown",
+    "reportedUsd": None,
+    "estimatedUsd": None,
+    "usd": None,
+    "priceVersion": None,
+}
+
 
 def _iso(moment: datetime | None = None) -> str:
     return (moment or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _schema_identity(path: Path) -> str | None:
+    """工作区 schema 的 12 位 sha1（"当次交给 CLI 的那份"）；读不到 → `None`。
+
+    它在 `write_snapshot_files()` 之后立刻算，写进 `quality.engine.schemaSha1`
+    （★v8 V8-P0-1）：事后任何一次"CLI 接受、Python 拒绝"都能对上号。
+    """
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+    except OSError:  # pragma: no cover - 工作区被删才会走到
+        return None
 
 
 def read_run_state(session: Session, run_id: str) -> tuple[str, bool] | None:
@@ -310,10 +334,17 @@ class RunManager:
         system_path = workspace / "system.md"
         try:
             prompt_path = snapshot_service.write_snapshot_files(bundle, workspace, system_path)
+        except AgentError as exc:
+            # ★v7（§20.3.3 / AC-72）：`write_schema_copy()` 在写完副本后立刻做身份断言，
+            # 所以 `schema_drift` 在 spawn 之前、prepare 阶段就失败。
+            logger.warning("workspace assembly refused run=%s code=%s", run.id, exc.code)
+            self._finalize_failure(session, run, exc.code, exc.message, bundle.snapshot)
+            return
         except Exception as exc:
             logger.exception("workspace assembly failed run=%s", run.id)
             self._finalize_failure(session, run, "internal", f"资料组装失败：{exc}"[:300], bundle.snapshot)
             return
+        schema_sha1 = _schema_identity(workspace / "schema.json")
 
         bars = bundle.bars
         self_check = []
@@ -334,6 +365,8 @@ class RunManager:
             prompt_path=prompt_path,
             system_prompt_path=system_path,
             schema_path=workspace / "schema.json",
+            # ★v8（V8-P0-1）：真源随 request 走，`build_argv()` 拿它做字节身份断言。
+            schema_source_path=get_settings().schemas_dir / "report_doc.schema.json",
             instrument_symbol=instrument.symbol,
             instrument_name=instrument.name,
             max_turns=settings.aragon_max_turns,
@@ -353,12 +386,20 @@ class RunManager:
         if result is None:
             return  # cancelled; already finalized
 
+        # ★v8 评审（§20.3.7）：`baseUrl` 只出现在 `exec` 的 `system` 事件里，
+        # 写回进程级能力快照，`/capabilities.aragon.baseUrl` 才不会永远是 null。
+        preflight.note_base_url((result.engine_info or {}).get("baseUrl"))
+
         if result.exit_code is not None:
             run.exit_code = result.exit_code
-        run.provider = result.provider
-        run.model = result.model
-        run.cost_usd = result.cost_usd
-        run.cost_known = result.cost_known
+        # ★v8（V8-P2-9）：这两行**替换**了旧的两行 `run.provider = result.provider` /
+        # `run.model = result.model` —— `runs` 表没有 provider/model 列，那两行是被
+        # SQLAlchemy 当普通属性静默丢弃的赋值（E-48），于是"哪个模型生成的这一版"
+        # 永远是 NULL。诊断列才是这条信息的真正落点。
+        run_diagnostics.apply_agent_result(run, result)
+        # ★v7（H4/O-13）：三态成本只由 `resolve_cost()` 判定一次，这里只落列。
+        resolution = resolve_cost(result)
+        run_diagnostics.apply_cost(run, resolution)
         run.tokens_in = result.usage.input_tokens
         run.tokens_out = result.usage.output_tokens
         session.commit()
@@ -379,7 +420,12 @@ class RunManager:
             bundle.snapshot,
             mock=result.source == "mock",
             source=result.source,
-            engine=self._engine_quality(),
+            engine=self._engine_quality(schema_sha1),
+            cost=resolution.as_payload(),
+            prompt=report_validator.prompt_quality(system_path),
+            # ★v8（V8-P0-1 / AC-88）：用**当次交给 CLI 的那份**校验。mock 路径下
+            # 工作区里同样有那份副本（`write_snapshot_files` 写的），所以两条路一致。
+            schema_path=request.schema_path,
         )
         for repair in outcome.repairs[:6]:
             self._record(session, run, "run.log", {"level": "info", "message": f"结构修补：{repair}"}, touch_run=False)
@@ -409,6 +455,8 @@ class RunManager:
             model=result.model,
             cost_usd=result.cost_usd,
             cost_known=result.cost_known,
+            cost_source=resolution.source,
+            cost_usd_est=resolution.estimated_usd,
             tokens_in=result.usage.input_tokens,
             tokens_out=result.usage.output_tokens,
             duration_ms=duration_ms,
@@ -431,27 +479,39 @@ class RunManager:
                 "version": report.version,
                 "status": report.status,
                 "pct": 100,
-                "costUsd": result.cost_usd,
-                "costKnown": result.cost_known,
+                "costUsd": resolution.usd,
+                "costKnown": resolution.known,
+                # ★v7（H4）：三态一起给，前端才不会把估算当回执。
+                "costSource": resolution.source,
+                "costUsdEst": resolution.estimated_usd,
+                "retryCount": run.retry_count,
+                "structuredAttempts": run.structured_attempts,
                 "usage": result.usage.as_payload(),
                 "durationMs": duration_ms,
                 "groundedRatio": round(outcome.grounded_ratio, 4),
                 "source": result.source,
             },
         )
-        self._check_cost(session, run, result)
+        self._check_cost(session, run, result, resolution)
         logger.info("run succeeded id=%s report=%s v%s", run.id, report.id, report.version)
 
-    def _engine_quality(self) -> dict[str, Any] | None:
-        """★v6 G4：`quality.engine` 的四元组，拿不到指纹时返回 **None**。
+    def _engine_quality(self, schema_sha1: str | None = None) -> dict[str, Any] | None:
+        """★v6 G4：`quality.engine` 的四元组 + ★v7 的 `schemaSha1`。
 
         `None` 不是失败——它让老报告与新报告在同一套读路径下都能正确渲染
         （`comparability.same = null`），而不是伪造一份"看起来一样"的指纹（O-13）。
+        `schemaSha1` 记的是**当次交给 CLI 的那份**字节（V8-P0-1），事后任何一次
+        "CLI 接受、Python 拒绝"都能对上号。`model`/`provider` **仍不进来**（C-18）。
         """
         from ..agent.fingerprint import current_fingerprint
 
         fingerprint = current_fingerprint(schema_bytes=report_validator.schema_bytes())
-        return None if fingerprint is None else fingerprint.as_quality()
+        if fingerprint is None:
+            return None
+        payload = fingerprint.as_quality()
+        if schema_sha1:
+            payload["schemaSha1"] = schema_sha1
+        return payload
 
     def _advance(self, session: Session, run: Run, stage: str) -> None:
         """Emit `run.stage` with a monotonic pct (§7.4)."""
@@ -538,6 +598,17 @@ class RunManager:
             else:
                 payload["pct"] = min(STAGE_BOUNDS["research"][0], max(run.pct, STAGE_START["research"] + 5))
             self._record(session, run, "run.progress", payload)
+            return
+        if event.type == AgentEventType.retry:
+            # ★v7（§20.3.4 / P-4 / O-15）：`agent.retry` → `run.retry`。
+            # `agent.*` 是 CLI 的词汇（`runner_base.AgentEventType`），`run.*` 是 run 的
+            # 词汇；SSE 类型名与外层事件名一致，都是 `run.retry`，载荷逐字段透传
+            # （`retries` 是 runner 的**本地累计**，不是 `attempt`——后者会重置）。
+            payload = dict(event.payload)
+            self._record(session, run, "run.retry", payload, touch_run=False)
+            run.retry_count = int(run.retry_count or 0) + 1
+            session.commit()
+            return
 
     # ── failure, cancellation, recovery ─────────────────────────────────
     def _finalize_failure(
@@ -559,17 +630,32 @@ class RunManager:
                 provisional = report_validator.build_provisional_doc(
                     snapshot, raw_text=(result.text if result else "") or "", error_code=code, error_message=message
                 )
+                # ★v7（H-9 / I-42 的同一条纪律）：临时报告也要记成本与来源。
+                # token 数为 0 时 `resolve_cost` 给 `unknown`（"0 成本"与"未知成本"是
+                # 两件事），所以这里永远写一个三态，而不是省略这个键。
+                provisional_cost = (resolve_cost(result) if result is not None else None)
+                quality_payload: dict[str, Any] = {
+                    "groundedRatio": 0.0,
+                    "missingSections": [],
+                    "prunedBlocks": 0,
+                    "source": "aragon-text",
+                    "cost": (
+                        provisional_cost.as_payload() if provisional_cost is not None else UNKNOWN_COST_PAYLOAD
+                    ),
+                }
                 report = report_service.create_version(
                     session,
                     session.get(Instrument, run.instrument_id),  # type: ignore[arg-type]
                     provisional,
                     status="provisional",
-                    quality={"groundedRatio": 0.0, "missingSections": [], "prunedBlocks": 0, "source": "aragon-text"},
+                    quality=quality_payload,
                     run_id=run.id,
                     provider=result.provider if result else None,
                     model=result.model if result else None,
                     cost_usd=result.cost_usd if result else None,
                     cost_known=result.cost_known if result else False,
+                    cost_source=provisional_cost.source if provisional_cost is not None else "unknown",
+                    cost_usd_est=provisional_cost.estimated_usd if provisional_cost is not None else None,
                     duration_ms=None,
                     is_provisional=True,
                 )
@@ -590,7 +676,18 @@ class RunManager:
         run.error_code = code
         run.error_message = message[:1000]
         run.finished_at = _iso()
-        session.commit()
+
+        # ★v7（H3.5 / H-9）：失败也要留下三条信息——同一根因的指纹、下一步做什么、
+        # 这次花了多少钱。指纹的**公式**在 `agent/failure.py`，这里只调用。
+        fingerprint = failure_fingerprint(code, message, run.exit_code)
+        resolution = resolve_cost(result) if result is not None else None
+        run_diagnostics.record_failure(session, run, fingerprint=fingerprint, resolution=resolution)
+        run = session.get(Run, run.id) or run
+        # ★v8 评审（H3.5 的数据通路）：前端要能说"这不是偶发失败：最近 N 次同一原因"，
+        # 就必须有人把 `N` 算出来下发。算它在 `run_diagnostics`（聚合查询），
+        # 判定阈值在 `REPEAT_ALERT_THRESHOLD`——前端只负责比较与措辞。
+        repeat_count = run_diagnostics.fingerprint_repeat_count(session, run.instrument_id, fingerprint)
+
         self._record(
             session,
             run,
@@ -599,28 +696,59 @@ class RunManager:
                 "code": code,
                 "message": message[:600],
                 "exitCode": run.exit_code,
-                "retryable": code
-                in ("internal", "budget_exceeded", "result_schema_unsatisfied", "agent_error", "interrupted"),
+                # ★v7（P-2 / H-12）：retryable 与 hint 都来自 `failure.RUN_ERROR_CODES`
+                # 一张表，前端不再自己拼文案（AC-76 因此可机器判定）。
+                "retryable": is_retryable(code),
+                "hint": hint_for(code),
+                "retryCount": run.retry_count,
+                "structuredAttempts": run.structured_attempts,
+                "failureFingerprint": fingerprint,
+                # 同一标的最近 N 条 run 里同指纹的次数（含本次）。前端 `>= 3` 时换措辞。
+                "repeatCount": repeat_count,
+                "tokensIn": run.tokens_in,
+                "tokensOut": run.tokens_out,
+                "costSource": run.cost_source,
+                "costUsdEst": run.cost_usd_est,
+                "costUsd": run.cost_usd,
             },
         )
         logger.warning("run finished status=%s code=%s run=%s", status, code, run.id)
 
-    def _check_cost(self, session: Session, run: Run, result: AgentResult) -> None:
-        """§11.2: warn only when the cost is actually known."""
+    def _check_cost(
+        self,
+        session: Session,
+        run: Run,
+        result: AgentResult,
+        resolution: Any | None = None,
+    ) -> None:
+        """§11.2 / ★v7：两档告警——`reported` 超限 → warn；`estimated` 超限 → info。
+
+        估算不该吓人（它可能偏 10%），但也不该静默：静默会让"这个月为什么花了这么多"
+        在下个月变成一句无法回答的问题。
+        """
         settings = get_settings()
-        if not result.cost_known or result.cost_usd is None:
+        resolved = resolution if resolution is not None else resolve_cost(result)
+        usd = resolved.usd
+        if usd is None:
             return
-        if result.cost_usd > settings.max_report_cost_usd:
-            self._record(
-                session,
-                run,
-                "run.log",
-                {
-                    "level": "warn",
-                    "message": f"本次生成成本 ${result.cost_usd:.2f} 超出预算阈值 ${settings.max_report_cost_usd:.2f}",
-                },
-                touch_run=False,
-            )
+        if usd <= settings.max_report_cost_usd:
+            return
+        level = "warn" if resolved.source == "reported" else "info"
+        label = "已确认成本" if resolved.source == "reported" else "估算成本"
+        self._record(
+            session,
+            run,
+            "run.log",
+            {
+                "level": level,
+                "message": (
+                    f"本次生成{label} ${usd:.2f} 超出预算阈值 "
+                    f"${settings.max_report_cost_usd:.2f}"
+                    f"{'' if resolved.source == 'reported' else '（按 token × 单价估算，非引擎回执）'}"
+                ),
+            },
+            touch_run=False,
+        )
 
     def request_cancel(self, session: Session, run_id: str) -> Run:
         run = session.get(Run, run_id)

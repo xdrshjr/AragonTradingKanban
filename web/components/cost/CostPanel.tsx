@@ -167,9 +167,25 @@ export function CostPanel({ open, onOpenChange }: CostPanelProps) {
           {summary ? (
             <>
               <div className="space-y-0.5">
+                {/*
+                  ★v7（H4 / R-31）：两个数并排，永不合并。
+                  `spentUsd` 只含引擎回执；`spentIncludingEstimatedUsd` 才是"这个月大概花了多少"。
+                  把估算折进第一个数会让"已确认"这三个字变成谎言。
+                */}
                 <p className="text-[13px] font-semibold text-[var(--text-primary)]">
+                  <span className="mr-1 text-[10.5px] font-normal text-[var(--text-tertiary)]">
+                    {copy.cost.confirmed}
+                  </span>
                   {fill(copy.cost.spent, { usd: usd(summary.spentUsd) })}
                 </p>
+                {summary.estimatedRuns > 0 ? (
+                  <p className="text-[11.5px] text-[var(--text-secondary)]">
+                    <span className="mr-1 text-[10.5px] text-[var(--text-tertiary)]">{copy.cost.estimatedLabel}</span>
+                    {`$${usd(summary.estimatedUsd)}`}
+                    {` · ${fill(copy.cost.estimatedRuns, { count: summary.estimatedRuns })}`}
+                    {` · ${fill(copy.cost.includingEstimated, { usd: usd(summary.spentIncludingEstimatedUsd) })}`}
+                  </p>
+                ) : null}
                 {/* 未知成本单独一行：绝不折算成 $0.00，也绝不并进上一行。 */}
                 {summary.unknownRuns > 0 ? (
                   <p className="text-[11.5px] text-[var(--warn)]">
@@ -179,6 +195,11 @@ export function CostPanel({ open, onOpenChange }: CostPanelProps) {
                 {summary.ledgerGap > 0 ? (
                   <p className="text-[11px] text-[var(--warn)]">
                     {fill(copy.cost.gap, { count: summary.ledgerGap })}
+                  </p>
+                ) : null}
+                {summary.priceVersion ? (
+                  <p className="text-[10.5px] text-[var(--text-tertiary)]">
+                    {`${copy.cost.estimatedLabel} · ${summary.priceVersion}`}
                   </p>
                 ) : null}
               </div>
@@ -284,6 +305,11 @@ export interface BudgetGateDialogProps {
   budgetUsd: number;
   /** `POST /runs/estimate` 给不出时是 `null`——那时说"无法预估"，不显示 `$0.00`。 */
   estimateUsd: number | null;
+  /**
+   * ★v7（H4）：402 detail 里的 `note` —— 它会说清"其中 $x 是按 token × 单价估算，
+   * 不是引擎回执"。闸门用含估算的基数判定（H-7），所以必须把这个事实摆在批准按钮旁边。
+   */
+  note?: string | null;
   onOverride: () => void;
   onCancel: () => void;
 }
@@ -300,6 +326,7 @@ export function BudgetGateDialog({
   spentUsd,
   budgetUsd,
   estimateUsd,
+  note,
   onOverride,
   onCancel,
 }: BudgetGateDialogProps) {
@@ -320,6 +347,12 @@ export function BudgetGateDialog({
               ? copy.cost.estimateUnknown
               : fill(copy.cost.gateBody, { estimate: usd(estimateUsd) })}
           </p>
+          {/* ★v7（H-7 / R-35）：闸门的基数含估算，所以"哪部分是估算"必须写在按钮旁边。 */}
+          {note ? (
+            <p className="rounded-[var(--radius-sm)] bg-[var(--bg-surface-3)] px-2 py-1 text-[10.5px] leading-snug text-[var(--text-tertiary)]">
+              {note}
+            </p>
+          ) : null}
           <div className="flex items-center justify-end gap-1.5">
             <Button size="sm" variant="ghost" onClick={onCancel}>
               {copy.cost.gateCancel}

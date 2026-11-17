@@ -170,7 +170,34 @@ python -m alembic revision --autogenerate -m "change description"
 
 ---
 
-## 本期包含（v6：D 层 D1–D7）
+## 本期包含（v7：AI 引擎稳健性）
+
+Iteration 4 补的不是功能，而是**证据链**：点一次「生成最新版本」之后，任何一次失败都必须能回答
+三个问题——**这是什么失败、我下一步做什么、这次花了多少钱**。
+
+| 能力 | 入口 | 关键设计 | 验收 |
+| --- | --- | --- | --- |
+| **确定性 spawn（H1）** | 自动（`ARAGON_AGENT_POSTURE`） | `lean` 体位注入 6 个 `--no-*`（实测每轮省 2551 input tokens，+76%，且 stderr 不再被 skills 告警污染）；`--max-tokens 40000` 取代 `auto`；`--retry-max 6` 取代 CLI 默认的 10（否则网络问题会被记成"模型太慢"） | AC-67~AC-69 |
+| **进门前三道闸门（H2）** | 自动 | `schema_budget.measure()`：当前 18392 B / depth 11 / nodes 658，**深度余量只有 1**；漂移（workspace 与真源字节不一致）在 spawn 前失败；`prompt+system+schema ≤ 32KB` 拦住"把 bars.csv 内联进提示词" | AC-70~AC-72 / AC-88 |
+| **失败分类学（H3）** | 失败卡片 | 15 条 run 级码 + 逐码 hint（**服务端下发**，前端不拼文案）；分类第一真源是 CLI 的 `error.code` 而不是 exit code；`run.retry` 让重试可见；失败指纹（同一根因三次 → 更强措辞） | AC-73~AC-76 / AC-82 / AC-85 |
+| **成本三态（H4）** | `⌘K` →「成本…」 | `reported / estimated / unknown` 分列分措辞：`spentUsd` 只含引擎回执，`spentIncludingEstimatedUsd` 才含"按 token × 单价估算"的那部分；预算闸门用**含估算**的基数（否则对着一个恒 `known:false` 的账本永远放行） | AC-77~AC-80 / AC-86 / AC-89 |
+| **提示词纪律（H5）** | 自动 | 「提交前自检」6 条 + 「资料读取顺序与预算」4 条（实测一次真实生成 72,810 input tokens，其中 `bars.csv` 47.6 KB）；`quality.prompt = {version, sha1, bytes}` 只做追溯，**不进**引擎指纹 | AC-81 |
+| **能力与健康（H6）** | `/capabilities.engine` | `posture / schemaSha1 / schema{bytes,depth,nodes,headroom} / limits / priceVersion / lastFailure`；`aragon doctor` 与 `aragon models` **只 warn 不降级**（实测 `deepseek-flash` 不在内置名录里却能跑通） | AC-70 / C-22 |
+
+### 为什么"成本"要分三个数
+
+实测 5 次真实生成，CLI **一次都没有** 报出成本（`cost: {amount: 0, known: false}`）。
+于是 `/cost/summary` 的 `spentUsd` 恒为 0、预算闸门对着空账本永远放行——它不是"没超"，是
+**"永远不知道"**。而与此同时我们手上有 55.3 万 input token / 13.5 万 output token 的精确计数
+与一份公开单价比。所以引入了第三种来源 `estimated`：它与 `reported` 分列、分措辞、分计数，
+永不互相冒充（`NULL ≠ 0` 的语义一字未改）。
+
+### 为什么重试要自己数
+
+CLI 的 `retry` 事件里 `attempt` 会在新请求上**从 1 重新开始**（实测一个进程里出现两段 1→6）。
+拿它当累计会少报一半重试，所以 `retries` 是本地自增，`attempt / maxRetries` 只用于显示。
+
+## 上一期（v6：D 层 D1–D7）
 
 Iteration 3 补的不是功能数量，而是**「凭什么是可信的」**：三个真实的投研读者问题——
 「这个 1234.5 亿是从哪来的」「这份报告整体在说什么」「我这一年花了多少钱」——

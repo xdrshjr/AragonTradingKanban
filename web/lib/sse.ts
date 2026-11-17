@@ -15,6 +15,8 @@ export type RunStreamEventType =
   | 'agent.tool'
   | 'agent.text'
   | 'run.log'
+  //: ★v7（V8-P1-3）：CLI 的带抖动退避。`agent.*` 是 CLI 的词汇，`run.*` 是 run 的词汇。
+  | 'run.retry'
   | 'run.done'
   | 'run.error';
 
@@ -103,8 +105,20 @@ export function subscribeToRun(runId: string, options: StreamOptions): () => voi
       });
     };
 
+    // ★v8（V8-P1-3）：这张数组是**订阅清单**，不是类型。只把 `run.retry` 加进上面那个
+    // 类型联合，事件永远不会到达 `onEvent`——服务端发了，前端收不到，而测试如果只
+    // 测 reducer 就会全绿。`tests/retry-event.test.ts` 用假 `EventSource` 守这条。
     (
-      ['run.stage', 'run.progress', 'agent.tool', 'agent.text', 'run.log', 'run.done', 'run.error'] as RunStreamEventType[]
+      [
+        'run.stage',
+        'run.progress',
+        'agent.tool',
+        'agent.text',
+        'run.log',
+        'run.retry',
+        'run.done',
+        'run.error',
+      ] as RunStreamEventType[]
     ).forEach(wire);
 
     source.onerror = () => {

@@ -12,11 +12,13 @@ import time
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from app.agent.aragon_runner import AragonRunner
 from app.agent.preflight import check_aragon, reset_cache
 from app.agent.runner_base import AgentError, AgentRequest
 from app.config import get_settings
+from app.models import RunEvent
 
 FAKE_SCRIPT = Path(__file__).parent / "fixtures" / "fake_aragon.py"
 
@@ -142,10 +144,15 @@ def test_usage_error_is_classified(aragon_env) -> None:
 
 
 def test_provider_error_is_classified(aragon_env) -> None:
+    """★v7 / AC-73 ②：exit 1 + `error.code=rate_limited` → `provider_unavailable`。
+
+    这条过去断言 `agent_error`——因为旧实现只查 exit code（1 不在表里）。真实 CLI 用
+    同样的 exit 1 表示"结构化未提交"，两种失败必须靠 **CLI 给的码**区分（V8-P1-1）。
+    """
     runner, request = aragon_env("error")
     result = __import__("asyncio").run(runner.run(request))
     assert result.exit_code == 1
-    assert result.error_code == "agent_error"
+    assert result.error_code == "provider_unavailable"
 
 
 def test_garbage_lines_do_not_break_the_stream(aragon_env) -> None:
@@ -295,3 +302,84 @@ def test_runner_without_submit_result_never_spawns(aragon_env) -> None:
     with pytest.raises(AgentError) as excinfo:
         asyncio.run(consume())
     assert excinfo.value.code == "structured_result_unsupported"
+
+# ── 失败路径的诊断事实（★v8 评审补测：§20.7.1 集成层的承诺）──────────────────
+
+
+def _wait_terminal(client, run_id: str, timeout: float = 90) -> dict:
+    deadline = time.time() + timeout
+    body: dict = {}
+    while time.time() < deadline:
+        body = client.get(f"/api/v1/runs/{run_id}").json()
+        if body["status"] in ("succeeded", "failed", "cancelled", "timeout", "budget_exceeded"):
+            return body
+        time.sleep(0.25)
+    return body
+
+
+def test_retry_storm_reaches_the_api_with_hint_count_and_fingerprint(
+    client, session, monkeypatch, aragon_env
+) -> None:
+    """AC-74 / AC-75 / AC-76 端到端：一次抖动风暴在 `/runs/{id}` 上留下三件可读的事实。
+
+    ★v8 评审为什么必须补这条：在此之前 `run_manager._finalize_failure` 里的
+    `hint` / `retryCount` / `structuredAttempts` / `failureFingerprint` 与
+    `run_diagnostics.record_failure()` **没有任何测试覆盖**——把它们整段删掉，全套用例
+    依然全绿。换句话说"失败也能回答三个问题"这件事当时只写在文档里。
+    现在：删掉其中任意一项，这条用例都会红。
+
+    脚本是 `retry_storm`（E-45 的真实形状：8 条 retry、`attempt` 会重置、无 result 行、
+    exit 1）。
+    """
+    monkeypatch.setattr(get_settings(), "agent_mode", "auto", raising=False)
+    monkeypatch.setenv("FAKE_ARAGON_MODE", "retry_storm")
+    client.post("/api/v1/symbols/resolve", json={"query": "600519"})
+    run_id = client.post("/api/v1/instruments/CN:600519.SH/reports", json={}).json()["runId"]
+
+    body = _wait_terminal(client, run_id)
+    assert body["status"] == "failed", body
+
+    # ①这是什么失败：码来自 CLI 的 retry 观测，不是 exit 1 的默认解释。
+    assert body["errorCode"] == "provider_unavailable"
+    # ②我下一步做什么：hint 由服务端按码下发（前端不拼文案，H-12）。
+    assert body["hint"], "每个 run 级码都必须带一句人话 hint（AC-76）"
+    assert "exit code" not in body["hint"] and "stderr" not in body["hint"]
+    # ③这次花了多少钱 + 同一根因的证据。
+    assert body["retryCount"] == 8, "8 条 retry 事件，`attempt` 会重置所以必须用本地累计"
+    assert body["failureFingerprint"] and len(body["failureFingerprint"]) == 12
+    assert body["costSource"] in ("reported", "estimated", "unknown")
+
+    # 落库的 `run_events` 里也有同名同形的 `run.retry`（SSE 的持久半）。
+    rows = session.execute(select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)).scalars().all()
+    retries = [row for row in rows if row.type == "run.retry"]
+    assert len(retries) == 8
+    assert [row.payload["retries"] for row in retries] == list(range(1, 9)), (
+        "累计计数不许被 CLI 的 `attempt` 重置带跑（E-45：同一进程出现两段 1→6）"
+    )
+
+    errors = [row for row in rows if row.type == "run.error"]
+    assert errors, "失败必须留下一条 run.error"
+    payload = errors[-1].payload
+    for key in ("hint", "retryable", "retryCount", "failureFingerprint", "repeatCount"):
+        assert key in payload, f"run.error 缺少 {key}"
+    assert payload["repeatCount"] >= 1
+
+def test_workspace_records_the_prompt_budget_measurement(aragon_env) -> None:
+    """★v8 评审（V8-P2-5 的同型问题）：三道闸门的**实测值**都要落盘，含资料预算。
+
+    `schema_budget.json` 过去只写 schema 的三项。而 `prompt_over_budget` 是唯一以数字为
+    判据的闸门——它拦下的那一次最需要的正是"当时合计多少字节、上限是多少"。
+    """
+    import asyncio
+
+    runner, request = aragon_env("ok")
+    asyncio.run(runner.run(request))
+
+    payload = json.loads((request.workspace / "schema_budget.json").read_text(encoding="utf-8"))
+    for key in ("bytes", "depth", "nodes", "headroom", "promptBytes", "maxPromptBytes", "posture"):
+        assert key in payload, f"schema_budget.json 缺少 {key}"
+    assert payload["promptBytes"] > 0
+    assert payload["promptBytes"] <= payload["maxPromptBytes"], "默认配置下当前资料必须在上限之内"
+    # `headroom` 是本轮最该被看见的数字：当前真源的深度余量只有 1 层。
+    assert payload["headroom"] >= 0
+

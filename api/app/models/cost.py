@@ -41,12 +41,23 @@ class CostLedger(Base):
     #: `Integer` + `server_default="0"` (see `0001_init`), and a PG `BOOLEAN
     #: DEFAULT 1` is a hard DDL error. One convention, one double-branch migration.
     known: Mapped[bool] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    # ── ★v7（0004_agent_diagnostics）：估算值与来源三态。
+    # `usd_est` 只在 `source='estimated'` 时有值；`reported` 行必须为 NULL
+    # （AC-78/AC-86 断言这条互斥性，`can_start` 用 `COALESCE(usd, usd_est)` 求和）。
+    usd_est: Mapped[float | None] = mapped_column(Float)
+    #: `reported | estimated | unknown`。**字符串三态，不是布尔**（H-11）：
+    #: 布尔表达不了三种来源，且 `BOOLEAN DEFAULT 1` 在 PG 上是硬 DDL 错误（I-55）。
+    #: 也**不加 ORM `CheckConstraint`**：本项目禁止在应用层建表（`test_boundaries`
+    #: 的两条建表守卫），生产表由 Alembic 建、没有 CHECK ⇒ 那样写的结果是"测试库有
+    #: 约束、生产库没有"。白名单判定在 `cost_service.record()` 里（非法值记 `ledgerGap`）。
+    source: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown", server_default="unknown")
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
         Index("ix_cost_ledger_created", "created_at"),
         Index("ix_cost_ledger_kind", "kind", "created_at"),
         Index("ix_cost_ledger_symbol", "symbol", "created_at"),
+        Index("ix_cost_ledger_source", "source", "created_at"),
         # Retry-safe: the same run can never be counted twice.
         Index("ux_cost_ledger_ref", "kind", "ref_id", unique=True),
     )

@@ -44,6 +44,25 @@ class Run(Base):
     cancel_requested: Mapped[bool] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     reason: Mapped[str | None] = mapped_column(String(16))
 
+    # ── ★v7（0004_agent_diagnostics）：诊断与成本三态。全部可空或有默认值，
+    # 老行不需要回填（不回填是纪律，不是偷懒 —— §19.6.3 / H-10）。
+    #: 本次 run 观察到多少次 `retry` 事件（CLI 的带抖动退避）。**本地自增**，
+    #: 不用 `attempt`：实测同一进程里 attempt 会从 1 重新开始（E-45）。
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #: `result.structured.attempts`——CLI 侧已用掉的修复轮（失败时也带出来）。
+    structured_attempts: Mapped[int | None] = mapped_column(Integer)
+    #: ★v8（V8-P2-9）：`run_manager` 过去写的是 `run.provider = result.provider`，
+    #: 而 `runs` 表没有这两列 ⇒ 被 SQLAlchemy 当普通属性**静默丢弃**（E-48）。
+    #: 这两列是那条信息的真正落点（`reports.model` 只在成功时才存在）。
+    agent_provider: Mapped[str | None] = mapped_column(String(32))
+    agent_model: Mapped[str | None] = mapped_column(String(64))
+    #: 失败指纹（12 位十六进制）。同一标的连续三次同一根因 = 配置问题，不是运气。
+    failure_fingerprint: Mapped[str | None] = mapped_column(String(12))
+    #: 估算成本与三态来源。`cost_usd` / `cost_known` 的语义**一字未改**：
+    #: `cost_known=1` 当且仅当来源是 `reported`（§20.3.5 的列分工）。
+    cost_usd_est: Mapped[float | None] = mapped_column(Float)
+    cost_source: Mapped[str | None] = mapped_column(String(12))
+
     __table_args__ = (
         # One live run per instrument — including the `cancelling` hand-over state
         # (★P1-9), otherwise a second POST sneaks in during the kill window.

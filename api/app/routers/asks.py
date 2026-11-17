@@ -11,6 +11,7 @@ its event log is `ask_events`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -86,7 +87,7 @@ async def ask_report(
             }
         )
 
-    ask = ask_service.create_deep_ask(db, report, question)
+    ask = await asyncio.to_thread(ask_service.create_deep_ask, db, report, question)
     ask_service.schedule_deep(ask.id)
     # Deep is asynchronous: 202 is the contract, and a client branching on it must
     # never see 200 (§18.5.1).

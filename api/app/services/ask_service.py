@@ -33,6 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..agent.ask_runner import build_ask_request, make_runner, render_ask_prompt, run_deep_ask
+from ..agent.cost_model import CostResolution, resolve_cost
 from ..agent.preflight import check_aragon
 from ..agent.runner_base import AgentError, AgentEvent, AgentEventType
 from ..config import get_settings
@@ -598,7 +599,11 @@ async def run_deep(ask_id: str) -> None:
         record_event(session, ask.id, "ask.stage", {"stage": "research", "pct": 20, "label": "检索报告并作答"})
 
         try:
-            runner = make_runner()
+            # ★v8 评审（B-4）：`make_runner()` → `check_aragon()` → `_run_info` /
+            # `doctor` / `models` 都是**阻塞子进程**（最坏 30s + 15s + 30s）。这一行
+            # 在单 worker 的事件循环里跑，会连带卡住 SSE 心跳与取消路径；
+            # 生成那条路早已用 `asyncio.to_thread(build_runner, …)` 避开同一个坑。
+            runner = await asyncio.to_thread(make_runner)
         except AgentError as exc:
             _finalize_failure(session, ask, exc.code, exc.message)
             return
@@ -661,7 +666,9 @@ async def run_deep(ask_id: str) -> None:
             )
             return
 
-        _finalize_success(session, ask, report, result.doc)
+        # ★v7（V8-P1-4）：账本要拿到三态（reported / estimated / unknown）。
+        # 判定只在 `agent/cost_model.resolve_cost()` 一处，这里不自己算。
+        _finalize_success(session, ask, report, result.doc, resolve_cost(result))
     except asyncio.CancelledError:
         session.rollback()
         ask = session.get(ReportAsk, ask_id)
@@ -686,7 +693,13 @@ async def run_deep(ask_id: str) -> None:
         session.close()
 
 
-def _finalize_success(session: Session, ask: ReportAsk, report: Report, payload: dict[str, Any]) -> None:
+def _finalize_success(
+    session: Session,
+    ask: ReportAsk,
+    report: Report,
+    payload: dict[str, Any],
+    resolution: CostResolution | None = None,
+) -> None:
     doc = report.doc
     denied = bool(payload.get("denied"))
     raw_citations = [
@@ -721,6 +734,8 @@ def _finalize_success(session: Session, ask: ReportAsk, report: Report, payload:
         ask.latency_ms = 0
     session.commit()
     # ★v6 G3：深度追问同样进账本，写在自己 savepoint 里（失败不回滚答案）。
+    # ★v7（V8-P1-4）：补 `usd_est` / `source`——否则深答的行会被列的默认值标成
+    # `unknown`，而它其实是一次已知花费的调用（AC-86 对 run 与 ask_deep 两条路都断言）。
     cost_service.record(
         session,
         kind="ask_deep",
@@ -730,6 +745,8 @@ def _finalize_success(session: Session, ask: ReportAsk, report: Report, payload:
         model=get_settings().aragon_model or None,
         usd=ask.cost_usd,
         known=bool(ask.cost_known),
+        usd_est=resolution.estimated_usd if resolution is not None else None,
+        source=resolution.source if resolution is not None else ("reported" if ask.cost_known else "unknown"),
     )
     record_event(
         session,

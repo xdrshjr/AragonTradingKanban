@@ -28,6 +28,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..agent.cost_model import COST_SOURCES
 from ..agent.pricing import PRICE_VERSION, price_for
 from ..config import get_settings
 from ..logging import get_logger
@@ -78,17 +79,47 @@ def record(
     ref_id: str,
     usd: float | None,
     known: bool,
+    source: str,
+    usd_est: float | None = None,
     symbol: str | None = None,
     report_id: str | None = None,
     model: str | None = None,
 ) -> bool:
     """只追加一行账本。**失败绝不抛给调用方**（报告比账本重要，AC-57）。
 
+    ★v7（V8-P1-4 / V8-P1-7 / R-42）：`source` 是**必填**关键字参数。过去它靠列的
+    `DEFAULT 'unknown'` 兜底，于是"漏传 source"被静默错标成 unknown——一个已知成本的
+    行被算成"未知"，而且永远不报错。现在缺参直接 `TypeError`（在测试期就炸）。
+
+    三态互斥由**写入方**保证（AC-86）：`reported` → `usd` 有值且 `usd_est` 为 NULL；
+    `estimated` → `usd` 为 NULL 且 `usd_est` 有值；`unknown` → 两者皆 NULL。
+    非法 `source`（不在 `COST_SOURCES` 里）不写入，只 +1 `ledgerGap`——与"账本失败
+    绝不抛给调用方"同一条纪律。
+
+    ★v8（V8-P1-7）：这条白名单**就是**"为什么 `models/cost.py` 里没有 `CheckConstraint`"
+    的原因。本项目禁止在应用层建表（`test_boundaries` 的两条建表守卫），生产表由
+    Alembic 建、没有 CHECK ⇒ 在 ORM 里写约束的结果是"测试库有约束、生产库没有"，
+    正好把"schema 只有一个真源：Alembic"反过来用。
+
     `session.begin_nested()` 是必须的：没有 savepoint 时，捕获异常只留下一个
     aborted transaction，随后报告自己的 `commit()` 会抛 `PendingRollbackError` —
     "账本失败不影响报告"就成了一句注释而不是性质（这条对 v4 §I-34 的推广）。
     """
     global _LEDGER_GAPS
+    if source not in COST_SOURCES:
+        _LEDGER_GAPS += 1
+        logger.warning(
+            "cost ledger source 非法 kind=%s ref=%s source=%r（未写入，计入 ledgerGap）", kind, ref_id, source
+        )
+        return False
+
+    if source == "reported" and (usd is None or not known):
+        # 声称"已报告"却没有金额：事实不成立。降级成 unknown 比写一个假 0 诚实。
+        logger.warning("cost ledger source=reported 但 usd 缺失 kind=%s ref=%s，按 unknown 记账", kind, ref_id)
+        source = "unknown"
+    if source == "estimated" and usd_est is None:
+        source = "unknown"
+
     row = CostLedger(
         kind=kind,
         ref_id=ref_id,
@@ -96,8 +127,11 @@ def record(
         report_id=report_id,
         model=(model or None),
         # `NULL` = 未知；`0` = 已知且免费。两者语义相反（§19.11 第 3 条）。
-        usd=None if not known else usd,
-        known=1 if known else 0,
+        # 互斥由上面的三态归一化保证，调用方不可能写出 usd 与 usd_est 同时有值的行。
+        usd=usd if source == "reported" else None,
+        known=1 if source == "reported" else 0,
+        usd_est=usd_est if source == "estimated" else None,
+        source=source,
         created_at=_iso(),
     )
     try:
@@ -175,7 +209,12 @@ def _window_bounds(window: str, now: datetime | None = None) -> tuple[datetime, 
 
 
 def summary(session: Session, window: str = "30d") -> dict[str, Any]:
-    """窗口汇总。`spentUsd` **只含已知**，未知次数单列（AC-55）。"""
+    """窗口汇总。`spentUsd` **只含已知**，未知次数单列（AC-55）。
+
+    ★v7（H-4）：新增 `estimatedUsd / spentIncludingEstimatedUsd / reportedRuns /
+    estimatedRuns / priceVersion`。`spentUsd` 的语义**一字未变**（只累加引擎回执），
+    两个数在界面上并排显示——把它们合成一个数就是 R-31 说的"偏乐观"。
+    """
     start, end = _window_bounds(window)
     rows = (
         session.execute(
@@ -189,35 +228,38 @@ def summary(session: Session, window: str = "30d") -> dict[str, Any]:
     )
 
     spent = 0.0
+    estimated_total = 0.0
     known_runs = 0
+    estimated_runs = 0
     unknown_runs = 0
     by_kind: dict[str, float] = {"run": 0.0, "ask_deep": 0.0}
     by_model: dict[str, dict[str, float]] = {}
     for row in rows:
-        if row.usd is None:
-            unknown_runs += 1
-            continue
-        known_runs += 1
-        spent += float(row.usd)
         key = row.kind or "run"
-        by_kind[key] = round(by_kind.get(key, 0.0) + float(row.usd), 4)
-        model = row.model or "unknown"
-        bucket = by_model.setdefault(model, {"usd": 0.0, "runs": 0.0})
-        bucket["usd"] += float(row.usd)
-        bucket["runs"] += 1
+        if row.usd is not None:
+            # 已报告：金额来自引擎回执。
+            known_runs += 1
+            spent += float(row.usd)
+            by_kind[key] = round(by_kind.get(key, 0.0) + float(row.usd), 4)
+            model = row.model or "unknown"
+            bucket = by_model.setdefault(model, {"usd": 0.0, "runs": 0.0})
+            bucket["usd"] += float(row.usd)
+            bucket["runs"] += 1
+        elif row.usd_est is not None:
+            # 估算：单独累计，绝不并进 `spentUsd`。
+            estimated_runs += 1
+            estimated_total += float(row.usd_est)
+            model = row.model or "unknown"
+            bucket = by_model.setdefault(model, {"usd": 0.0, "runs": 0.0})
+            bucket["usd"] += float(row.usd_est)
+            bucket["runs"] += 1
+        else:
+            unknown_runs += 1
 
     monthly = budget_monthly_usd(session)
     now = datetime.now(UTC)
     month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
-    month_spent = float(
-        session.execute(
-            select(func.coalesce(func.sum(CostLedger.usd), 0.0)).where(
-                CostLedger.created_at >= _iso(month_start),
-                CostLedger.usd.is_not(None),
-            )
-        ).scalar_one()
-        or 0.0
-    )
+    month_spent, month_estimated = _month_totals(session, month_start)
 
     if monthly <= 0:
         budget = {
@@ -227,10 +269,13 @@ def summary(session: Session, window: str = "30d") -> dict[str, Any]:
             "state": "unlimited",
         }
     else:
-        remaining = round(max(0.0, monthly - month_spent), 4)
-        if month_spent > monthly:
+        # ★v7（H-7）基数与闸门同一口径：**含估算**。否则面板说"还剩 $0.10"而闸门
+        # 已经拦下——两个基数会让"为什么我被拦了"永远答不上来。
+        base = month_spent + month_estimated
+        remaining = round(max(0.0, monthly - base), 4)
+        if base > monthly:
             state = "exceeded"
-        elif month_spent >= monthly * NEAR_RATIO:
+        elif base >= monthly * NEAR_RATIO:
             state = "near"
         else:
             state = "ok"
@@ -245,8 +290,14 @@ def summary(session: Session, window: str = "30d") -> dict[str, Any]:
         "window": window if window in WINDOWS else "30d",
         "from": _iso(start),
         "to": _iso(end),
+        # `spentUsd` 语义一字未变：只含 reported（AC-55 / C-23）。
         "spentUsd": round(spent, 4),
+        # 新增两个数：估算单独一列，以及"含估算"的合计（界面并排显示，不合并成一个数）。
+        "estimatedUsd": round(estimated_total, 4),
+        "spentIncludingEstimatedUsd": round(spent + estimated_total, 4),
         "knownRuns": known_runs,
+        "reportedRuns": known_runs,
+        "estimatedRuns": estimated_runs,
         "unknownRuns": unknown_runs,
         "byKind": by_kind,
         "byModel": [
@@ -254,8 +305,38 @@ def summary(session: Session, window: str = "30d") -> dict[str, Any]:
             for model, bucket in sorted(by_model.items(), key=lambda item: -item[1]["usd"])
         ],
         "budget": budget,
+        "priceVersion": PRICE_VERSION,
         "ledgerGap": ledger_gaps(),
     }
+
+
+def _month_totals(session: Session, month_start: datetime) -> tuple[float, float]:
+    """本月 `(reported, estimated)` 两个合计。
+
+    ★v8（V8-P2-8）**口径写死**：基数必须是 `SUM(COALESCE(usd, usd_est))` 的
+    分解形式，而不是 `usd + usd_est`（会对 reported 行重复计），也不是
+    `SUM(usd_est)`（会漏掉全部 reported 行）。两种错都只在某些数据分布下显形。
+    """
+    reported = float(
+        session.execute(
+            select(func.coalesce(func.sum(CostLedger.usd), 0.0)).where(
+                CostLedger.created_at >= _iso(month_start),
+                CostLedger.usd.is_not(None),
+            )
+        ).scalar_one()
+        or 0.0
+    )
+    estimated = float(
+        session.execute(
+            select(func.coalesce(func.sum(CostLedger.usd_est), 0.0)).where(
+                CostLedger.created_at >= _iso(month_start),
+                CostLedger.usd.is_(None),
+                CostLedger.usd_est.is_not(None),
+            )
+        ).scalar_one()
+        or 0.0
+    )
+    return reported, estimated
 
 
 def entries(session: Session, limit: int = 50) -> list[CostLedger]:
@@ -282,6 +363,15 @@ def can_start(session: Session, kind: str = "run", *, estimate_usd: float | None
     * 未设预算（`BUDGET_MONTHLY_USD=0`）→ 放行，**不查库**；
     * `spent + estimate <= budget` → 放行；
     * 超限 → `allowed=False` + 402 的 detail（含 `override: true`，因为用户可以覆盖）。
+
+    ★v7（H-7）：判定基数从 `spentUsd`（只含 reported）换成**含估算**的合计。
+    否则闸门对着一个"每次都是 cost.known=false"的账本永远放行——它不是"没超"，
+    是"永远不知道"。这是本轮唯一一处会让"以前放行、现在拦下"的行为变化，所以：
+    ①只有真的设了月度预算才可能触发（默认 0 = 不设限）；②拦截文案说清哪部分是估算；
+    ③覆盖按钮与留痕沿用 v6，不加新机制（R-35）。
+
+    ★v8（V8-P2-8）SQL 口径写死：`SUM(COALESCE(usd, usd_est))`，由 `_month_totals()`
+    分解成两个数再相加——不用 `usd + usd_est`（reported 行会被重复计）。
     """
     monthly = budget_monthly_usd(session)
     if monthly <= 0:
@@ -289,32 +379,36 @@ def can_start(session: Session, kind: str = "run", *, estimate_usd: float | None
 
     now = datetime.now(UTC)
     month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
-    spent = float(
-        session.execute(
-            select(func.coalesce(func.sum(CostLedger.usd), 0.0)).where(
-                CostLedger.created_at >= _iso(month_start),
-                CostLedger.usd.is_not(None),
-            )
-        ).scalar_one()
-        or 0.0
-    )
+    spent, estimated_share = _month_totals(session, month_start)
+    base = spent + estimated_share
     unknown = int(
         session.execute(
             select(func.count())
             .select_from(CostLedger)
-            .where(CostLedger.created_at >= _iso(month_start), CostLedger.usd.is_(None))
+            .where(
+                CostLedger.created_at >= _iso(month_start),
+                CostLedger.usd.is_(None),
+                CostLedger.usd_est.is_(None),
+            )
         ).scalar_one()
     )
     pending = float(estimate_usd or 0.0)
-    if spent + pending <= monthly:
+    if base + pending <= monthly:
         return BudgetDecision(allowed=True)
 
+    note = (
+        f"其中 ${round(estimated_share, 4):.2f} 为按 token × 单价估算，不是引擎回执；"
+        f"已确认部分为 ${round(spent, 4):.2f}。"
+    )
     return BudgetDecision(
         allowed=False,
         detail={
-            "spentUsd": round(spent, 4),
+            "spentUsd": round(base, 4),
+            "spentReportedUsd": round(spent, 4),
+            "estimatedShareUsd": round(estimated_share, 4),
+            "note": note,
             "budgetUsd": monthly,
-            "remainingUsd": round(max(0.0, monthly - spent), 4),
+            "remainingUsd": round(max(0.0, monthly - base), 4),
             "resetAt": month_reset_at(now),
             # 未知成本单独给出次数，绝不折算进 spentUsd。
             "unknownRuns": unknown,
@@ -364,9 +458,21 @@ def estimate(session: Session, symbol: str, kind: str = "run") -> dict[str, Any]
         if not rows:
             return {"estimatedUsd": None, "reason": "no_history"}
         tokens = [(row[0] or 0) + (row[1] or 0) for row in rows]
-        # `runs` 表没有 model 列（权威在 `reports.model`），所以取该标的最近一版报告的模型。
+        # ★v7（V8-P2-6）：取值顺序改为 `runs.agent_model` → `reports.model` →
+        # `settings.aragon_model`（近因优先）。本轮新增了 `runs.agent_model`，所以
+        # "一次失败但已付费的 run 现在也有模型名可查"——v6 那条注释已不再成立。
         model = (
             session.execute(
+                select(Run.agent_model)
+                .where(
+                    Run.instrument_id == instrument.id,
+                    Run.status == "succeeded",
+                    Run.agent_model.is_not(None),
+                )
+                .order_by(Run.started_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            or session.execute(
                 select(Report.model)
                 .where(Report.instrument_id == instrument.id, Report.model.is_not(None))
                 .order_by(Report.version.desc())

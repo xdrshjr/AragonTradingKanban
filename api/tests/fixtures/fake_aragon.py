@@ -8,17 +8,26 @@ that a CLI without `submit_result` is refused rather than silently failing.
 
 Modes (`FAKE_ARAGON_MODE`):
 
-  ok           structured result, exit 0                      (the happy path)
-  unsatisfied  structured=null, isError=false, exit 3         (schema never met)
-  budget       no result at all, exit 3                       (budget exhausted)
-  usage        exit 2, empty stdout                           (bad arguments)
-  huge         one 200KB tool_result line, then a valid result (line buffer)
-  garbage      non-JSON lines interleaved, then a valid result (parser tolerance)
-  hang         never exits                                    (timeout / cancel)
-  error        exit 1 with an error line on stderr
-  ask_ok       a schema-valid ask answer citing a real source (v3 §18.3.2)
-  ask_denied   the same shape with `denied: true`  (「报告没写」must be sayable)
-  ask_badcite  cites a source id that does not exist (R-16 must drop it)
+  ok                     structured result, exit 0               (the happy path)
+  unsatisfied            structured=null, no error, exit **1**    (measured: E-42)
+  exit1_unsatisfied      result line with error.code=result_schema_unsatisfied, exit 1
+  schema_too_deep        exit 2 + `result_schema_too_deep` on stderr (history run 06456fcb)
+  no_result_line         exit 0 and never a result line             (result_missing)
+  retry_storm            8 retry events (attempt resets), no result line (E-45)
+  attempts_two_then_ok   two rejected submissions, then a valid result with attempts=2
+  budget                 no result at all, exit 3                  (budget exhausted)
+  usage                  exit 2, empty stdout                      (bad arguments)
+  huge                   one 200KB tool_result line, then a valid result (line buffer)
+  garbage                non-JSON lines interleaved, then a valid result (parser tolerance)
+  hang                   never exits                               (timeout / cancel)
+  error                  exit 1 with an error line on stderr
+  ask_ok                 a schema-valid ask answer citing a real source (v3 §18.3.2)
+  ask_denied             the same shape with `denied: true`  (「报告没写」must be sayable)
+  ask_badcite            cites a source id that does not exist (R-16 must drop it)
+
+★v7（§20.4 / P-8）：五个新剧本的退出码以**实测**为准，不是从 `--help` 猜的——
+`unsatisfied` 过去写 exit 3，真实 CLI 用 exit **1**（E-42），于是"exit 1 该落哪个码"
+这件事在测试里从来没有被真正覆盖过。AC-82 用表驱动逐行比对 `EXIT_MAP`。
 """
 
 from __future__ import annotations
@@ -151,6 +160,16 @@ def ask_payload(mode: str) -> dict:
     }
 
 
+def _system_event() -> dict:
+    """★v7 §20.3.7：实测的 `system` 首行形状——`baseUrl` 只在这里出现（E-39 的 info 没有）。"""
+    return {
+        "type": "system",
+        "subtype": "init",
+        "sessionId": "fake-session",
+        "model": {"provider": "openai", "id": "deepseek-flash", "baseUrl": "https://api.deepseek.com"},
+    }
+
+
 def handle_exec(argv: list[str]) -> int:
     argv_log(argv)
     mode = os.environ.get("FAKE_ARAGON_MODE", "ok")
@@ -163,6 +182,38 @@ def handle_exec(argv: list[str]) -> int:
     if mode == "usage":
         sys.stderr.write("error: unknown option '--bogus'\n")
         return 2
+
+    if mode == "schema_too_deep":
+        # ★v7：实测 exit 2 + 这句话（历史 run 06456fcb）。过去被分类成"参数错误"。
+        emit({"type": "system", "subtype": "init", "text": "校验 schema"})
+        sys.stderr.write("error: result_schema_too_deep: nests 13 levels deep; the limit is 12\n")
+        return 2
+
+    if mode == "no_result_line":
+        # ★v7：正常退出但一行 result 都没有（`_classify_exit(0)` 的唯一真实来源）。
+        emit({"type": "system", "subtype": "init", "text": "研究开始"})
+        emit({"type": "execution_progress", "turns": 2, "elapsedMs": 1200})
+        return 0
+
+    if mode == "retry_storm":
+        # ★v7 / E-45 的逐字形状：8 条 retry，`attempt` 序列出现两次 1→6（**会重置**）。
+        emit(_system_event())
+        for attempt, delay in ((1, 568), (2, 1753), (1, 977), (2, 1998), (3, 3743), (4, 6030), (5, 15208), (6, 15925)):
+            emit(
+                {
+                    "type": "retry",
+                    "sessionId": "fake-retry",
+                    "attempt": attempt,
+                    "maxRetries": 10,
+                    "errorType": "network_error",
+                    "delayMs": delay,
+                    "tier": 1,
+                    "tierCount": 2,
+                    "totalAttempts": attempt,
+                }
+            )
+        sys.stderr.write("aragon: provider request failed after retries\n")
+        return 1
 
     if mode in ASK_MODES:
         emit({"type": "system", "text": "读报告"})
@@ -206,7 +257,23 @@ def handle_exec(argv: list[str]) -> int:
         return 3
 
     if mode == "error":
+        # ★v7：真实 CLI 在供应商失败时给出**带 error.code 的 result 行**（探针 C / E-42
+        # 的形状），exit 1。这正是"exit code 相同、原因不同"那条规则要区分的情形。
+        emit(_system_event())
         sys.stderr.write("aragon: provider request failed (rate limited)\n")
+        emit(
+            {
+                "type": "result",
+                "isError": True,
+                "error": {"code": "rate_limited", "message": "provider request failed: rate limited"},
+                "stopReason": "error",
+                "exitCode": 1,
+                "text": "模型服务拒绝了这次请求。",
+                "structured": None,
+                "usage": {"inputTokens": 1200, "outputTokens": 0, "totalTokens": 1200},
+                "cost": {"amount": 0, "currency": "USD", "known": False},
+            }
+        )
         return 1
 
     if mode == "garbage":
@@ -226,7 +293,7 @@ def handle_exec(argv: list[str]) -> int:
             }
         )
 
-    emit({"type": "system", "text": "研究开始"})
+    emit({"type": "system", "subtype": "init", "text": "研究开始"})
     emit({"type": "tool_call", "name": "read_file", "input": {"path": "snapshot.json"}})
     emit(
         {
@@ -243,21 +310,58 @@ def handle_exec(argv: list[str]) -> int:
     emit({"type": "execution_progress", "turns": 3, "elapsedMs": 4200})
 
     if mode == "unsatisfied":
+        # ★v7：真实 CLI 用 exit **1**（E-42），不是 3。没有 `error` 对象 →
+        # 分类落 `result_schema_unsatisfied`（§20.3.4 第 2c 条）。
         emit(
             {
                 "type": "result",
                 "isError": False,
                 "error": None,
-                "stopReason": "max_turns",
-                "exitCode": 3,
+                "stopReason": "error",
+                "exitCode": 1,
                 "text": "我尝试提交报告，但结构化提交工具不可用。",
                 "structured": None,
                 "cost": {"amount": 0, "currency": "USD", "known": False},
             }
         )
-        return 3
+        return 1
+
+    if mode == "exit1_unsatisfied":
+        # ★v7：探针 C 的逐字形状（E-42）——`error.code` 在，`isError: true`。
+        emit(
+            {
+                "type": "result",
+                "isError": True,
+                "error": {
+                    "code": "result_schema_unsatisfied",
+                    "message": "No result matching schema.json was submitted.",
+                },
+                "stopReason": "error",
+                "exitCode": 1,
+                "text": "两次提交都被拒了。",
+                "structured": None,
+                "usage": {"inputTokens": 17864, "outputTokens": 1066, "totalTokens": 18930},
+                "cost": {"amount": 0, "currency": "USD", "known": False},
+            }
+        )
+        return 1
+
+    if mode == "attempts_two_then_ok":
+        # ★v7：两次被拒 + 第三次成功，`structured.attempts` 必须是 2（不是 1）。
+        for index in (1, 2):
+            emit(
+                {
+                    "type": "tool_result",
+                    "name": "submit_result",
+                    "input": {"attempt": index},
+                    "output": "rejected: result: required (nothing was submitted)",
+                    "isError": True,
+                    "durationMs": 5,
+                }
+            )
 
     doc = load_sample()
+    emit(_system_event())
     emit(
         {
             "type": "result",
@@ -271,7 +375,7 @@ def handle_exec(argv: list[str]) -> int:
                 "value": doc,
                 "schemaName": "report_doc.schema.json",
                 "schemaBytes": 19136,
-                "attempts": 1,
+                "attempts": 2 if mode == "attempts_two_then_ok" else 1,
                 "acceptedAt": "2026-02-10T01:04:00Z",
             },
             "usage": {"inputTokens": 68974, "outputTokens": 20676, "totalTokens": 89650},

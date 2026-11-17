@@ -18,7 +18,6 @@ import { useUiStore } from '@/lib/store';
 import type { ChartView, Instrument, ReportDetail, ReportSummary, WatchlistEntry } from '@/lib/types';
 
 import { PricePanel } from '../chart/PricePanel';
-import { GenerationOverlay } from '../generation/GenerationOverlay';
 import type { UseGenerationStreamResult } from '../generation/useGenerationStream';
 import { ReportPanel } from '../report/ReportPanel';
 import { IconButton } from '../ui/Button';
@@ -52,6 +51,19 @@ const ScheduleDialog = dynamic(
 const CommandPalette = dynamic(() => import('./CommandPalette').then((module) => module.CommandPalette), {
   ssr: false,
 });
+
+/**
+ * ★v7（AC-35 回归门）：生成覆盖层同样是个**浮层**，而且只在一个 run 进行中或刚结束时存在。
+ *
+ * 它过去是静态打包的（v1 起就在首屏），本轮给失败卡片加了两行文案、给成本加了三个标签、
+ * 给重试加了一个徽标，首屏 gzip 从 238.5 kB 涨到 241.0 kB —— **超预算 1 kB**。
+ * 按 §11.2 的既有口径处理（"浮层一律懒加载"），而不是把 240 kB 这个数往上调：
+ * 那个数存在的意义就是逼着人做这个选择。
+ */
+const GenerationOverlay = dynamic(
+  () => import('../generation/GenerationOverlay').then((module) => module.GenerationOverlay),
+  { ssr: false, loading: () => null },
+);
 
 export interface AppShellProps {
   instruments: RailItem[];

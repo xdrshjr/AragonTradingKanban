@@ -52,6 +52,8 @@ export interface BudgetGateState {
   spentUsd: number;
   budgetUsd: number;
   estimateUsd: number | null;
+  /** ★v7（H-7）：402 detail 里的 `note`——"其中 $x 是估算，不是引擎回执"。 */
+  note: string | null;
 }
 
 /** 写图表口径参数：值为 null 就删除。 */
@@ -457,6 +459,8 @@ export function WorkspaceClient({
         spentUsd: asNumber(detail.spentUsd),
         budgetUsd: asNumber(detail.budgetUsd),
         estimateUsd: typeof detail.estimateUsd === 'number' ? detail.estimateUsd : null,
+        // ★v7：服务端已经算好了"其中多少是估算"，前端只转述（不自己拼这句话）。
+        note: typeof detail.note === 'string' ? detail.note : null,
       });
     },
   });
@@ -610,6 +614,7 @@ export function WorkspaceClient({
           spentUsd={budgetGate.spentUsd}
           budgetUsd={budgetGate.budgetUsd}
           estimateUsd={budgetGate.estimateUsd}
+          note={budgetGate.note}
           onCancel={() => setBudgetGate(null)}
           onOverride={() => {
             setBudgetGate(null);

@@ -14,7 +14,9 @@ Three jobs, in this order:
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +62,13 @@ _schema_cache: dict[str, Any] = {}
 
 
 def load_schema() -> dict[str, Any]:
+    """`schemas_dir/report_doc.schema.json`（带进程级缓存）。
+
+    ★v7（V8-P0-1 / 裁决 H-18）：这份缓存**不再被当成唯一真源**——真正会丢掉付费
+    报告的时间窗是"生成过程中的那两分钟"，期间任何一次 schema 改动都会让"CLI 收下的
+    那份"与"Python 校验的那份"不同。所以 `validate_doc(..., schema_path=…)` 优先用
+    **当次交给 CLI 的那份**（构造性正确），这个函数只作为向后兼容的默认值。
+    """
     if "schema" not in _schema_cache:
         path: Path = get_settings().schemas_dir / "report_doc.schema.json"
         _schema_cache["schema"] = json.loads(path.read_text(encoding="utf-8"))
@@ -70,6 +79,42 @@ def load_schema() -> dict[str, Any]:
 def schema_bytes() -> int:
     load_schema()
     return int(_schema_cache.get("bytes", 0))
+
+
+def schema_sha1() -> str | None:
+    """真源 schema 的 12 位 sha1（`quality.engine.schemaSha1` 的默认值）。
+
+    ★v8 评审：文件不在时返回 `None` 而不是抛——`/capabilities` 是诊断端点，
+    一个坏掉的 schema 恰恰是最需要它**能打开**的时刻。
+    """
+    path: Path = get_settings().schemas_dir / "report_doc.schema.json"
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+    except OSError:  # pragma: no cover - 只有真源被删才会走到
+        return None
+
+
+#: `<!-- version: 7 -->` —— 提示词版本标记（AC-81 读它，也在页面上展示）。
+PROMPT_VERSION_RE = re.compile(r"<!--\s*version:\s*(\d+)\s*-->")
+
+
+def prompt_quality(path: Path) -> dict[str, Any] | None:
+    """`quality.prompt = {version, sha1, bytes}`；文件不存在 → `None`（不编造）。
+
+    ★v7（裁决 H-5）：提示词指纹**不进**引擎指纹。指纹是可比性的输入，多一个输入项
+    会让**所有历史报告**变成"引擎不同"，于是版本比较永远带一条琥珀横幅——那恰好违反
+    G4 的初衷（只提示真正的差异）。`quality.prompt` 只做展示与追溯。
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:  # pragma: no cover - 工作区被删才会走到
+        return None
+    match = PROMPT_VERSION_RE.search(raw.decode("utf-8", errors="replace"))
+    return {
+        "version": int(match.group(1)) if match else None,
+        "sha1": hashlib.sha1(raw).hexdigest()[:12],
+        "bytes": len(raw),
+    }
 
 
 @dataclass(slots=True)
@@ -91,6 +136,11 @@ class ValidationOutcome:
     #: ★v6 G4: `quality.engine` — `{fingerprint, cliVersion, allowTools, schemaBytes}`.
     #: Model/provider are deliberately **not** here (authority: `reports.model|provider`).
     engine: dict[str, Any] | None = None
+    #: ★v7 H4: `quality.cost` — `{source, reportedUsd, estimatedUsd, priceVersion}`。
+    #: 老报告没有这个键 → 界面按缺失渲染（"早期版本"），**不回填**（§19.6.3）。
+    cost: dict[str, Any] | None = None
+    #: ★v7 H5: `quality.prompt` — `{version, sha1, bytes}`。**不进**引擎指纹（裁决 H-5）。
+    prompt: dict[str, Any] | None = None
 
     @property
     def quality(self) -> dict[str, Any]:
@@ -107,6 +157,10 @@ class ValidationOutcome:
             payload["grounding"] = self.grounding.as_payload()
         if self.engine is not None:
             payload["engine"] = self.engine
+        if self.cost is not None:
+            payload["cost"] = self.cost
+        if self.prompt is not None:
+            payload["prompt"] = self.prompt
         return payload
 
     @property
@@ -304,6 +358,9 @@ def validate_doc(
     provisional: bool = False,
     source: str | None = None,
     engine: dict[str, Any] | None = None,
+    cost: dict[str, Any] | None = None,
+    prompt: dict[str, Any] | None = None,
+    schema_path: Path | None = None,
 ) -> ValidationOutcome:
     """Full validation pipeline for a model-produced document.
 
@@ -321,6 +378,13 @@ def validate_doc(
     parameter rather than something computed here because `agent/` may not import
     `services/` (`test_boundaries` rule 4) — the dependency arrow is
     `run_manager → agent.fingerprint → report_validator`, never the reverse.
+
+    ``cost`` / ``prompt`` (★v7 H4/H5) 是同样形状的入参：只有调用方知道这次 run 的三态
+    成本与当次提示词的指纹。
+
+    ``schema_path`` (★v8 V8-P0-1 / AC-88) 是**当次交给 CLI 的那份** schema
+    （`workspace/schema.json`）。默认仍回退 `load_schema()` 以便旧调用者不回归，但
+    生产路径永远传它——两份文件、两次读取、零个断言正是 E-55 证明过会漂移的东西。
     """
     # Deep copy: the repair pass mutates nested sections/blocks/rating in place,
     # and the caller's document (a runner's module-level template, for instance)
@@ -328,7 +392,8 @@ def validate_doc(
     repaired, repairs, pruned, missing = normalize_doc(copy.deepcopy(doc), snapshot, provisional=provisional)
     errors: list[str] = []
 
-    schema = load_schema()
+    # 构造性正确：直接用当次交付的那份字节，不复用进程级缓存的"真源"。
+    schema = json.loads(schema_path.read_text(encoding="utf-8")) if schema_path is not None else load_schema()
     try:
         jsonschema.validate(repaired, schema)
     except jsonschema.ValidationError as exc:
@@ -375,6 +440,8 @@ def validate_doc(
         source=source or ("mock" if mock else "aragon"),
         grounding=grounding,
         engine=engine,
+        cost=cost,
+        prompt=prompt,
     )
     logger.info(
         "validate grounded=%.3f missing=%s pruned=%s status=%s errors=%s source=%s fact=%s/%s skipped=%s",

@@ -97,11 +97,14 @@ def render_ask_prompt(
     )
     path.write_text(prompt, encoding="utf-8")
     system_target = workspace / ASK_SYSTEM_FILE
-    system_target.write_text((settings.prompts_dir / "ask_system.md").read_text(encoding="utf-8"), encoding="utf-8")
+    # 与 I-58 同一条纪律（★v8 评审）：提示词也**按字节**复制。`read_text`+`write_text`
+    # 在 Windows 上把 `\n` 变成 `\r\n`，两份"文本上相同"的文件因此在 sha1 / 字节数上不同。
+    system_target.write_bytes((settings.prompts_dir / "ask_system.md").read_bytes())
     schema_target = workspace / ASK_SCHEMA_FILE
-    schema_target.write_text(
-        (settings.schemas_dir / ASK_SCHEMA_FILE).read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    # ★v7（I-58 的同型修正）：**按字节**复制，不做文本读写。`read_text`+`write_text`
+    # 在 Windows 上会把 `\n` 变成 `\r\n`，于是"文本相同"的副本在 sha1 上是另一份
+    # schema —— `build_argv()` 的 `schema_drift` 闸门会当场拦下每一次深度追问。
+    schema_target.write_bytes((settings.schemas_dir / ASK_SCHEMA_FILE).read_bytes())
     return path
 
 
@@ -119,6 +122,8 @@ def build_ask_request(
         prompt_path=prompt_path,
         system_prompt_path=workspace / ASK_SYSTEM_FILE,
         schema_path=workspace / ASK_SCHEMA_FILE,
+        # ★实施发现（I-60）：ask 路径的真源是 `ask.schema.json`，不是报告 schema。
+        schema_source_path=settings.schemas_dir / ASK_SCHEMA_FILE,
         instrument_symbol=instrument_symbol,
         instrument_name=instrument_name,
         max_turns=settings.ask_deep_max_turns,

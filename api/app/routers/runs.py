@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from ..agent.failure import hint_for
 from ..db.session import get_db
 from ..errors import RunNotFound, Unauthorized
 from ..logging import get_logger
@@ -55,6 +56,16 @@ def to_run_out(run: Run) -> RunOut:
                 else None
             ),
         ),
+        # ★v7（§20.5.1）：8 个新字段。`hint` 由服务端按码查表下发（H-12），
+        # 前端不再拼字符串——只有服务端知道 exit code 与引擎日志。
+        retryCount=int(run.retry_count or 0),
+        structuredAttempts=run.structured_attempts,
+        agentProvider=run.agent_provider,
+        agentModel=run.agent_model,
+        costSource=run.cost_source,
+        costUsdEst=run.cost_usd_est,
+        failureFingerprint=run.failure_fingerprint,
+        hint=hint_for(run.error_code) if run.error_code else None,
     )
 
 

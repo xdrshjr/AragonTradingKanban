@@ -1,11 +1,11 @@
-# Aragon Research Terminal · 投研报告工作台 — 设计方案 v6
+# Aragon Research Terminal · 投研报告工作台 — 设计方案 v8
 
 > 特性 slug：`investment-research-report`
-> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ **Subtask #1 设计评审（Iteration 3/3）修订（本节点）**
+> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ Subtask #1 设计评审（Iteration 3/3）修订 → Subtask #0 方案设计（Iteration 4/3）→ **Subtask #1 设计评审（Iteration 4/3）修订（本节点）**
 > 交付物：`web/`（Next.js 阅读器）+ `api/`（FastAPI + `aragon exec` 生成器）+ 工程脚手架
-> 文档状态：**v6 · Iteration 3 增量设计 + 评审修订**（v5 主体保留；本节点只做三件事：把 v5 的 **3 处 P0 / 8 处 P1** 就地修成"照行施工就能跑"的规格、补 **AC-60~AC-66** 把新修法机器化、把与代码现状不符的断言改成事实）
+> 文档状态：**v8 · Iteration 4 增量设计 + 评审修订（Agent 与生成链路稳健可用）**（v7 的 §20 主体保留；本节点修 **V8-P0 ×2 + V8-P1 ×7 + V8-P2 ×11**，就地在原位置标注 `v8 修订（V8-Pxx）`；补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、证据 **E-52~E-64**；**未改动任何源码**）
 >
-> **版本号口径（避免误读）**：任务书的"bump 到 v2"以被评审文档为基准，而本图每个迭代的评审节点各推进一个主版本号（v1→v2→v3→v4→v5→**v6**）。本节点评审对象是 **v5**，因此本次提升为 **v6**。历史对应关系见 §0 的版本表。
+> **版本号口径（避免误读）**：任务书的"bump 到 v2"以被评审文档为基准，而本图每个迭代的评审节点各推进一个主版本号（v1→v2→v3→v4→v5→v6→v7→**v8**）。本节点评审对象是 **v7**，因此本次提升为 **v8**。历史对应关系见 §0 的版本表。（顺带修掉一个陈旧标记：v7 节点把状态行写成了 v7，却没改文档标题，标题一直停在 v6——本轮一并归位。）
 >
 > **v3 的两条纪律（v4/v5/v6 继续遵守）**
 > 1. **不重复已交付的工作**：v2 §1–§17 描述的一切在 Iteration 1 已实现并提交（`756426a`，163 文件，276 pytest / 52 vitest / tsc / eslint / ruff 全绿，真实 aragon 生成 3 次留档）。后续轮次**不再重写**它们，只在发现文档与代码已不一致处就地改口径。
@@ -14,8 +14,11 @@
 > **v4 的第三条纪律（v6 继续执行）**
 > 3. **凡是"这样写就能跑"的机制，必须能被实测反驳。** v3 有 4 处规格按字面实现不出来，其中 3 处是"文档说某字段/某能力已存在，实际不存在"（`polarity`、块级 `blockId`、`store.ts::lastFocused`）——这类错误最有欺骗性：下游照着写、测试全绿，直到接真实运行时才炸（I-1 的先例）。因此每一轮评审的方法是**把关键断言拿本机实测**，证据表见 `## 评审记录（Review Notes · Iteration 2 / Iteration 3）`。
 >
-> **v6 的第四条纪律（本轮新增）**
+> **v6 的第四条纪律（v7/v8 继续执行）**
 > 4. **"新端点"必须先证明它真的不存在，"既有行为"必须先引一次源码。** 本轮 3 处 P0 全部同型：v5 把一个**从未存在**的 `POST /api/v1/runs` 当成既有端点来"扩展"（真实入口是 `POST /instruments/{id}/reports`），并给 402 闸门选了一个**已被 409 占用**的错误码 `budget_exceeded`，还让"正则单一真源"规则与"`numeric_claims` 需要 `block_text.block_id`"形成**循环 import**。三者都不是文风问题，是"按字面施工会在第一小时就卡住"的机制问题。
+>
+> **v8 的第五条纪律（本轮新增，评审节点提出）**
+> 5. **"既有守卫"必须先跑一次，再决定新代码放在哪。** v7 的三处机制缺陷全部同型：*结构本身不允许那种写法*——`assert_schema_identity` 被指定定义在 `services/` 却在 `agent/` 调用（`test_boundaries` 会红）、`down_revision` 写成 `"0003"`（真实 id 是 `"0003_cost_ledger"`，`alembic` 找不到）、分类的第 2a 条被写进一个拿不到 `result` 的函数。它们都不是"想错了"，而是**没把已有守卫当约束**：依赖方向有测试、迁移链有约定、`_finalize` 有既定的分支顺序。所以本轮的评审方法是：**先找出"这里已经有一条不许违反的规则"，再判断新设计是否与它相容。**
 
 ## 0. 文档版本与评审记录
 
@@ -26,12 +29,115 @@
 | v3 | 2026-02（Iteration 2） | 方案设计（本轮节点） | **增量设计，不重写 v2**。就地修正 9 处已过时口径（追问与调度器从非目标提为必做、`ask` 的 501 契约改为真实契约、错误码表补 8 条、AC 表补 14 条、风险表补 6 条、§15.1 加 v3 指路）；新增 **§18**：追问（检索优先 / 生成兜底）、全文检索（FTS5 + 中文 bigram 预切分）、版本结构 diff、cron 租约调度器、离线只读、bundle 与 a11y 收口；新增 AC-25~AC-38、R-15~R-23、里程碑 M7–M12、oracle 断言 O-1~O-5 | 待下游实现验证（本轮只出设计）→ 经 v4 评审为 **有条件通过** |
 | v4 | 2026-02（Iteration 2） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v3**。用本机实测复核 v3 的每条"机器契约/已存在"断言（20 条证据，见下一篇），就地修复 **P0×2**（FTS 索引结构不可产出摘要与 `sectionId`、调度器在工作线程里 `create_task` 必崩）与 **P1×12**（`polarity`/`blockId` 实际不存在、正文引用漏抽、ask 的 SSE 签发端点与子进程注册表、deep 的 cwd 会被清理、测试夹具建不出 FTS5、迁移与降级冲突、离线方案与跨源默认配置冲突、`block_text` 双源、性能预算自相矛盾、引用合法集合冲突），并补 **AC-39~AC-45** 与 10 条 P2 口径修正 | **有条件通过**（条件 C-8~C-12） |
 | v5 | 2026-02（Iteration 3） | Subtask #0 方案设计 | **增量设计，不重写 v0–v18**。定位从"功能补齐"转为"可托付"：新增 **§19**——G1 数字分类与接地报告（`fact/projection/identifier/derived` 四分类，修掉"同业估值被当事实比对"的口径不一致，未接地样本可定位到块）、G2 全文视图（`?view=full` + 大纲 + 阅读进度，与 Tab 模式共享渲染器）与区间反查（K 线 brush → `/reports/{id}/blocks`）、G3 成本账本与预算闸门（迁移 0003 · 只追加表 · `NULL ≠ 0` · 可覆盖留痕）、G4 引擎指纹与可比性提示、D7 e2e 脱钩 Python（fake API）。新增 **AC-46~AC-59**、**R-21~R-30**、里程碑 **M13–M18**、oracle 断言 **O-6~O-10**、裁决清单 18 条。本轮只写 `spec.md`，未改任何源码 | 待下游实现验证（本轮只出设计）→ 经 v6 评审为 **有条件通过** |
-| v6 | 2026-02（Iteration 3） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v5**。把 §19 的每条"端点/字段/既有行为"断言拿本机实测复核（18 条证据 E-21~E-38，见下一篇），就地修复 **P0×3**（`POST /runs` 从来不存在 ⇒ 预算闸门与 AC-56 不可达；402 错误码 `budget_exceeded` 已被 409 的 turns/duration 预算错误与 `web/lib/types.ts::RunStatus` 占用；"正则单一真源"规则与 `block_id` 依赖形成循环 import 且按字面会让现状判失败）与 **P1×8**（`Peer` 无 `sourceRefs` 使"升格为 fact"分支不可实现且可被模型自证、`diff_docs` 函数名与 `DiffResult` 的 `a/b`·`summary: str` 三处不符使 AC-58 按字面必 500、`capabilities.engine` 不存在且 model/provider 三重副本、`identifier` 分类缺 token 层机制会让日期污染 fact 分母、14 行分类表漏 `doc.keyMetrics[]` 使 `ungroundedCount` 与 `factMissing` 必然不等、`j/k` 已被 `nextSymbol/prevSymbol` 占用、`can_start` 插位会翻转 409/402 并留孤儿工作区、`run_in_progress` 实为 `run_conflict` 且 202 体无 `streamUrl`），并补 **AC-60~AC-66** 与 10 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-13~C-18） |
+| v6 | 2026-02（Iteration 3） | Subtask #1 设计评审 | **评审修订，不重写 v5**。把 §19 的每条"端点/字段/既有行为"断言拿本机实测复核（18 条证据 E-21~E-38，见下一篇），就地修复 **P0×3**（`POST /runs` 从来不存在 ⇒ 预算闸门与 AC-56 不可达；402 错误码 `budget_exceeded` 已被 409 的 turns/duration 预算错误与 `web/lib/types.ts::RunStatus` 占用；"正则单一真源"规则与 `block_id` 依赖形成循环 import 且按字面会让现状判失败）与 **P1×8**（`Peer` 无 `sourceRefs` 使"升格为 fact"分支不可实现且可被模型自证、`diff_docs` 函数名与 `DiffResult` 的 `a/b`·`summary: str` 三处不符使 AC-58 按字面必 500、`capabilities.engine` 不存在且 model/provider 三重副本、`identifier` 分类缺 token 层机制会让日期污染 fact 分母、14 行分类表漏 `doc.keyMetrics[]` 使 `ungroundedCount` 与 `factMissing` 必然不等、`j/k` 已被 `nextSymbol/prevSymbol` 占用、`can_start` 插位会翻转 409/402 并留孤儿工作区、`run_in_progress` 实为 `run_conflict` 且 202 体无 `streamUrl`），并补 **AC-60~AC-66** 与 10 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-13~C-18） |
+| v7 | 2026-02（Iteration 4） | Subtask #0 方案设计 | **增量设计，不重写 v1–v19**。需求："继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健"。做法：把"稳健"拆成 8 条可测性质（P-1~P-8），逐条拿本机实测反驳（13 条证据 E-39~E-51：4 组真实 `aragon exec` 探针、5 类历史失败现象、schema 预算 11/12、成本恒未知、retry 事件被忽略、runs 无 model 列）。新增 **§20**：H1 确定性 spawn 契约（lean 体位省 2551 tokens/轮、`--retry-max 6`、`--max-tokens 40000`）、H2 schema/资料三道前置闸门（`schema_over_budget` / `schema_drift` / `prompt_over_budget`，全部在 spawn 之前）、H3 失败分类学（15 码表 + 逐码 hint + `run.retry` 事件 + 失败指纹）、H4 成本三态（`reported/estimated/unknown`，账本分列，`usd IS NULL` 语义一字不改）、H5 提示词提交纪律（自检 6 条 + 读取预算）、H6 能力与健康（`capabilities.engine` 扩展、doctor/models 只 warn）、H7 前端可见性。新增 **AC-67~AC-84**、**R-31~R-40**、里程碑 **M19–M24**、oracle **O-11~O-16**、裁决 **H-1~H-16**、迁移 **0004**。**本轮只写 `spec.md`，未改任何源码** | 待下游实现验证（本轮只出设计）→ 经 v8 评审为 **有条件通过** |
+| v8 | 2026-02（Iteration 4） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v7**。把 §20 的每条"现状/既有/本机能跑"断言拿本机实测复核（13 条新证据 E-52~E-64：6 次真实 `aragon exec` 探针 + 34 份历史 schema 的字节比对 + 真实 SQLite 的成本分布 + 依赖方向/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`assert_schema_identity` 被指定定义在 `services/snapshot.py` 却在 `agent/aragon_runner.py` 调用 —— `test_boundaries` 必红，且"两处各写一份"正是本轮要消灭的双源；迁移 `0004` 的 `down_revision="0003"` 与真实 revision id `"0003_cost_ledger"` 不符，`alembic upgrade head` 第一步即失败）与 **P1×7**（分类第 2a 条写在拿不到 `result` 的 `_classify_exit` 里、`capabilities.engine` 重新塞入 `provider/model` 推翻 V6-P1-3、`sse.ts` 只加类型联合收不到 `run.retry`、`ask_service` 的账本 `source` 被默认值错标成 unknown、202 体写成 `{runId, streamUrl}`、价格表静默改既有 `deepseek-chat` 价、`models/cost.py` 加 ORM CHECK 与"Alembic 是唯一 schema 真源"冲突），并补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、纪律第 5 条与 11 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-19~C-24） |
 
 > **v3 与 v2 的关系一句话**：v2 回答"怎么把它做出来并且做对"，v3 回答"做对之后，为什么它还不够像一个顶级产品"。两者不冲突——v3 的每一条新能力都建立 v2 的既有不变式之上（成本模型、单 worker、接地校验、依赖方向），并且**不豁免任何一条既有 AC**。
 >
 > **v5 与 v3 的关系一句话**：v3 回答"做对之后为什么还不够像顶级产品"，v5 回答"像顶级产品之后，凭什么让人敢拿它做判断"。v5 的三条主线（可回溯、单一投影真源、降级永不上抛）全部是 v2/v3 既有不变式的**加固与兑现**，没有一条引入新的架构层、新的第三方依赖或第二个并发真源。
 
+
+## 评审记录（Review Notes · Iteration 4）
+
+> **评审对象**：`spec.md` **v7**（Iteration 4 增量设计：§20 Agent 与生成链路的稳健可用，H1–H7）。
+> **结论先行**：§20 的**八条性质（P-1~P-8）全部指向真问题**，且 v7 的实测温度很高——13 条证据里有 5 条是我
+> 用同样的凭证重放后**逐字复现**的（lean 体位省 ~2600 tokens/轮、`cost.known=false` 恒真、
+> `retry` 事件被忽略、schema 深度余量极窄、exit 1 = 结构化未满足）。三条主线（进门前闸门 / 途中分类 / 出门后成本）
+> 与 v6 的既有不变式（单 worker、结构化文档、只标不改数、`NULL ≠ 0`、账本只追加、降级永不上抛）**一条不冲突**。
+>
+> §20 的问题**不在"想错了"，而在"三处按字面施工会卡住，两处会在最需要的时刻失效"**：
+> ①`assert_schema_identity` 被要求定义在 `services/snapshot.py` 却在 `agent/aragon_runner.py` 里调用——
+> 这条 import 恰好被 `test_boundaries.py::test_agent_never_imports_services` 拦下，而"两处各写一份"正是本轮要消灭的双源；
+> ②迁移 `0004` 的 `down_revision = "0003"` 与真实 revision id `"0003_cost_ledger"` 不符，`alembic upgrade head` 第一步就失败；
+> ③失败分类的第 2a 条（CLI 的 `error.code` 优先）被写在 `_classify_exit(exit_code, stderr_path)` 里，
+> 而这个函数**只在没有 result 行时才会被调用**，拿不到 `result.error.code`——按字面写，"有 result 行的网络错误"
+> 仍会被报成"模型不肯提交"，AC-73 ② 与 P-4 一起落空。
+>
+> 另外两处"最需要的时刻失效"：④`schema_drift` 断言只在 spawn 前比一次，而真正会丢报告的时间窗是
+> **生成过程中的两分钟**（`report_validator.load_schema()` 还有进程级缓存）；⑤`web/lib/sse.ts` 的订阅清单是
+> 硬编码的 7 个事件名，只往类型联合里加 `run.retry` 的话，前端**永远收不到**这条事件，H7 的重试徽标静默不亮。
+>
+> 本轮方法不变：**凡"既有字段/既有行为/本机能跑"的句子，先引一次源码行号，再跑一次最小实验。**
+
+### 评审方法（读源码 + 本机实测：13 条新证据 E-52~E-64）
+
+1. §20 全文（4947 行文档中的 3923–4947）逐节通读，标出每一条"现状 / 既有 / 实测"断言。
+2. **存在性实测**：对每条断言用 grep + 读源文件核对精确行号与签名。重点对象：
+   `build_argv`、`_finalize`、`_classify_exit`、`_finalize_failure`、`_forward_agent_event`、`_record`、
+   `write_schema_files`/`write_schema_copy`、`load_schema`、`cost_service.record/summary/can_start/estimate`、
+   `PRICES`、`EngineCapabilityOut`、`RunStreamEventType` + `wire([...])`、`0003_cost_ledger`、`schemas/report.py`。
+3. **可行性实测**：跑了 6 次真实 `aragon exec`（1 次真实 schema 过闸门、4 次人工加深的合成 schema、1 次 lean 体位
+   的完整结构化提交），外加 3 个纯本地探针（schema 深度双口径、34 份历史 workspace 的字节比对、真实 SQLite 的成本分布）。
+   探针脚本留在 `.agentmesh/repro/`（`probe_schema_depth.py` / `probe_lean_structured.py` / `measure_schema2.py` /
+   `schema_drift_scan.py` / `db_cost_check.py` / `run_shapes.py`），不入库、不参与构建。
+4. **四维打分**：可行性 / 完整性 / 一致性 / 右则化。每条问题都标注**"若不修，哪条 AC 或哪条既有守卫变红"**——
+   "必过 AC 恒假"与"改完 CI 红"是本项目已经踩过三次的两个坑（V4-P1-7、I-16、V6-P0-3）。
+
+### 实测证据（v7 断言 vs 本机事实）
+
+环境：Windows 10.0.26200 / Python 3.11 / `aragon` CLI **0.6.68**（core 0.2.80，node v22.18.0）/ provider `openai` /
+model `deepseek-flash` / `hasApiKey=true`；工作区 `api/` + `web/`（Iteration 3 提交 `4b434b8` 之后）。
+
+| # | v7 的断言（原文位置） | 本机实测（命令 / 源码） | 判定 |
+| --- | --- | --- | --- |
+| E-52 | §20.3.3「CLI 硬上限 `schemaDepth 12`；当前 depth 11；**余量只有 1 层**」（E-39/E-46） | 用合成 schema 直接压 CLI 的闸门（`probe_schema_depth.py`）：容器层数 12 → `result_schema_too_deep: schema_d12.json nests 13 levels deep; the limit is 12.`（exit 2、3.8 s，**未产生任何模型调用**）；容器层数 11 → 过闸门。13/14/15/16 层一律报 `nests 14`（越界后 walker 早停，报 `limit+2`）。⇒ CLI 的 `nests` = **容器层数 + 1**（把标量叶子也算一层），且判据是 `nests > 12` 才拒绝（12 恰好放行） | **口径正确但未写死** → **V8-P2-11** |
+| E-53 | §20.0.1 P-5「当前 schema 在预算内，只是没有任何东西守住它」 | 把**真实** `report_doc.schema.json` 交给 CLI：`exit 1`、有 `result` 行、`structured:null`、`usage 9046/256` ⇒ **深度闸门放行了它**，模型也真的被调用了。与 E-52 合起来：真源 = 容器 10 层 = `nests 11` ≤ 12 ✔ | **成立**（P-5 的前提正确） |
+| E-54 | §20.3.2「lean 体位 + `--retry-max 6` + `--result-repair-turns 2` 全部被接受，且**不破坏**结构化提交」 | 重放探针（`probe_lean_structured.py`）：6 个 `--no-*` + `--retry-max 6` + `--result-repair-turns 2` + `--on-result-unsatisfied error` → **exit 0**、`structured.value = {"ok": true}`、`attempts 1`、`usage 3252/41`、**stderr 为空**、`cost {amount:0, known:false}` | **成立**（且顺带二次确认 H4 的前提：连 3.3k tokens 的调用也是 `known:false`） |
+| E-55 | §20.3.3「E-47：34 份历史 `workspace/schema.json` 中**最近 3 份与真源逐条相同**，更早 2 份缺 `polarity`（18241 B）」 | `schema_drift_scan.py` 逐字节比对现存 **34** 份：与真源（18392 B / sha1 `7a93509…`）**0 份相同**；历史副本来自 **5 个不同版本**：12505 ×2 / 18241 ×6 / 19136 ×4 / 19295 ×18 / 19781 ×4 | **证据不成立**（结论"要加守卫"仍成立）→ **V8-P2-2** |
+| E-56 | §20.3.4「exit 1 在 `_classify_exit` 里没有分支，于是落 `agent_error`，**用户看到"引擎异常退出（exit 1）"**」（E-50） | `aragon_runner._finalize:501-513`：`if structured.value is dict → doc`；**`elif result_payload: → result_schema_unsatisfied`**；`else: _classify_exit(...)`。⇒ 只要有 result 行，`_classify_exit` **根本不会被调用**，E-53 那次 exit 1 现在就已经落成 `result_schema_unsatisfied` | **归因不准**（真正的缺口是 2a 与 3a）→ **V8-P2-3**；但**引出** V8-P1-1 |
+| E-57 | §20.3.4「`_forward_agent_event` 加一个分支写 `run_events` 的 `run.retry`；`_record(..., touch_run=False)`」 | `run_manager._record:106-137` 的签名与 `touch_run` 关键字一致 ✔；`_forward_agent_event:512-540` 是 `if/return` 链，加分支可行 ✔；`run_events.type` 为 `String(24)`，`run.retry` 放得下 ✔；`retryable` 内联元组确在 `:602-603` ✔ | **成立**（可行性无问题） |
+| E-58 | §20.4「前端：`run.retry` 加入 `RunStreamEventType`」 | `web/lib/sse.ts`：类型联合 7 个名字，**订阅用的是同一份硬编码数组** `(['run.stage',…,'run.error'] as RunStreamEventType[]).forEach(wire)`；`useGenerationStream.ts` 的 reducer 也是 `switch (event.type)` 显式 case。只改类型联合 ⇒ 事件永不进入 `onEvent` | **机制缺失**（H7 静默不亮）→ **V8-P1-3** |
+| E-59 | §20.4「修改 12 个源文件：… `report_service.py`（账本写 `usd_est/source`）」 | `cost_service.record()` 有**两个**调用点：`services/report_service.py:177`（`kind="run"`）与 `services/ask_service.py:724`（`kind="ask_deep"`，传 `usd=ask.cost_usd, known=bool(ask.cost_known)`）。`ask_service.py` 不在 v7 的变更表里 | **漏一处调用方** → **V8-P1-4** |
+| E-60 | §20.0.1 P-3 / E-44「全库 10 次 succeeded、5 次真实生成，**0 次有成本**」；§20.3.5「`cost_ledger` 仅 1 行 `known=0`」；E-48「`pragma table_info(runs)` **19 列**无 provider/model」 | `db_cost_check.py`（只读连接 `api/data/app.db`）：`runs` **21** 列，无 `provider`/`model` ✔；17 次 run（succeeded 10 / failed 7）；`cost_known=1` 的行 **0**；`cost_usd IS NOT NULL` **0**；`cost_ledger` 恰 **1** 行（`kind=run, known=0, usd IS NULL`）；失败码分布 `internal 2 / interrupted 2 / result_schema_unsatisfied 2 / usage_error 1` | **结论成立**，列数应改 21 → **V8-P2-4** |
+| E-61 | §20.6.1 纪律 2「布尔列一律 `Integer` + `server_default`（I-55 的教训）」；纪律 3「`source IN (…)` 这条约束**只写在 `models/cost.py` 的 `CheckConstraint`**（建表时生效，测试库走 `create_all` 也会生效）」 | `models/cost.py::__table_args__` 现有 4 个 `Index`，**没有任何 `CheckConstraint`**；`0003_cost_ledger.py` 建表也没有 CHECK；`test_boundaries.py::test_app_never_calls_create_all` 明令 `api/app` 不得出现 `create_all`（只有 `tests/conftest.py` 可以）⇒ 加 ORM CHECK 会让"测试库有约束、生产库没有"成为事实 | **与既有约定冲突** → **V8-P1-7** |
+| E-62 | §20.3.7 的 `capabilities.engine` 样例含 `"provider"` / `"model"` | `schemas/capabilities.py::EngineCapabilityOut` **只有 4 个字段**（`fingerprint / drift / schemaBytes / allowTools`），类注释写着"`model` / `provider` 不在其中"；`agent/fingerprint.py::as_capability()` 同样只返回 4 个键，模块注释点名 **V6-P1-3** | **推翻既有裁决**（同一事实的第三份副本）→ **V8-P1-2** |
+| E-63 | §20.6.1 迁移样例 `revision = "0004"` / `down_revision = "0003"` | `0003_cost_ledger.py`：`revision: str = "0003_cost_ledger"`、`down_revision: str｜None = "0002_ask_search_schedule"`（0001/0002 同形：`"0001_init"` / `"0002_ask_search_schedule"`） | **链路写错**（`alembic upgrade head` 找不到 `0003`）→ **V8-P0-2** |
+| E-64 | §20.3.8 序列图「`└ 202 {runId, streamUrl}`」；「`cost_service.can_start` 在 router 里先跑」 | `routers/reports.py:114-119` 返回 `{runId, status:"queued", instrumentId, estimateUsd}`，**没有 `streamUrl`**，且源码注释就写着"★V6-P1-8：没有 streamUrl"；`can_start` 在 `run_manager.start():190` 内部（`active_run_for → count_active_runs → can_start → mkdir`） | **描述与既有契约相反** → **V8-P1-5**（`can_start` 位置 → **V8-P2-6b**） |
+
+**顺带确认的既有事实**（v7 引用无误、构成 v8 修订的安全边界）：
+`build_argv` 全局段 8 个 flag + `exec` 段 12 个 flag、`--max-tokens auto`（`:91`）、`--result-repair-turns 2` 硬编码（`:118`）、
+`--no-color` / `--no-save-session` 已在位；`AgentError(code, message)` 的位置参数签名支持
+`raise AgentError("schema_over_budget", …)`；`AgentEventType` 恰好 5 个成员；`AgentResult` 无 `engine_info/retries/structured_attempts`；
+`AgentUsage` 有 `input_tokens/output_tokens`；`preflight.capability.result = info["result"]`（`schemaBytes/schemaDepth/validationNodes/maxRepairTurns` 全在）；
+`pricing.cost_for_tokens(model, in, out)` 签名匹配、`model_family("deepseek-flash") == "deepseek-flash"`（不串 `deepseek-chat`）；
+`cost_service.can_start(session, kind, *, estimate_usd)` **已经**接受预估参数、`estimate(session, symbol, kind)` 已返回 `priceVersion`；
+`cost_ledger_keep_days = 730`；`runs.error_code` 是 `String(48)`（26 字符的新码放得下）；
+`run_manager._drive_agent:503-505` 确实把 `AgentError` 收敛成 `_finalize_failure(code=exc.code)`；
+`_finalize_failure:588` 的三态映射、`:655-678` 的遗留 `running` 收编、`:268-270` 的 `internal` 兜底行号全对；
+`system` 事件确实带 `model{provider,id,baseUrl}`（真实值 `https://api.deepseek.com`）；
+`schema.required` 恰好 11 个字段、`sections` 允许 1–8 个而 `research_task.md.j2:25` 与 `ensure_sections()` 都把五个 id 钉死；
+`R-39` 的"24KB"与实测 23.9KB（2430+2185+19295）一致。
+
+### 问题清单（V8-P0 ×2、V8-P1 ×7、V8-P2 ×11）
+
+| ID | 级别 | 位置（v7） | 问题 | 若不修的后果 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| **V8-P0-1** | **P0** | §20.3.3「新增一条断言函数 `# services/snapshot.py`（写完之后）与 `agent/aragon_runner.py`（`build_argv` 里，**双保险**）」 | 函数被指定定义在 `services/snapshot.py`，调用点在 `agent/aragon_runner.py`——而 `api/tests/test_boundaries.py::test_agent_never_imports_services` 会**同时**用 AST 与字面量扫描拦下 `agent/ → services/` 的 import（含 `"app.services…"` 字符串）。照字面施工只有两条路：①`from ..services.snapshot import assert_schema_identity` ⇒ **CI 立刻红**；②两处各写一份 ⇒ 正是本轮要消灭的"双源"，而且两份会在第一次热改时漂移 | 施工第一步就撞红测试（或自己发明一种写法）。更坏的是第 ② 条：`schema_drift` 从此有两个判定函数，各自比较不同的文件对，出问题时无法判断信谁 | **已修**：唯一实现放 **`agent/schema_budget.py`**（纯 stdlib，`hashlib`）；`services/snapshot.write_schema_copy()` 写完后**调用它**（services → agent 方向合法，与 `fingerprint.py` 的 `schema_bytes` 入参同源）；`build_argv()` 内再调用一次（agent 内部）。返回值改为 **sha1 字符串**，一份用于 `schema_budget.json`，一份用于 `quality.engine` |
+| **V8-P0-2** | **P0** | §20.6.1 `revision = "0004"` / `down_revision = "0003"` | 真实 revision id 是 `"0003_cost_ledger"`（0002 是 `"0002_ask_search_schedule"`，0001 是 `"0001_init"`），而样例把 `down_revision` 写成了 **`"0003"`**，自己的 `revision` 也省成了 `"0004"` | `python -m alembic upgrade head` 在 `0004` 处报 `Can't locate revision identified by '0003'`；M21 的所有迁移用例（upgrade/downgrade 往返、老行 `source='unknown'`）与 `npm run setup` 全部卡死在这一步 | **已修**：`revision = "0004_agent_diagnostics"`、`down_revision = "0003_cost_ledger"`，并补 `branch_labels`/`depends_on`（与 0003 同形）；AC-87 断言链路口径 |
+| **V8-P1-1** | P1 | §20.3.4「`_classify_exit(exit_code, stderr_path)` 重写为表驱动」+「精化顺序 2a：**先看 `result.error.code`**」 | 第 2a 条要求读 `observed["result"]`，但 `_classify_exit` 的入参只有 `(exit_code, stderr_path)`，而且它**只在没有 result 行时才被调用**（`_finalize:509-513`）⇒ 按字面把 `CLI_ERROR_CODE_MAP` 写进 `_classify_exit`，"有 result 行 + `error.code=network_error` + `retries=0"` 这种情形**完全碰不到**它，仍会落 `result_schema_unsatisfied` | AC-73 ② 与 P-4 一起落空；更糟的是它看起来"已经实现了"——`CLI_ERROR_CODE_MAP` 写着、测试也绿（因为它测的是无 result 行那条路），真到 `--retry-max 0` + 坏 base URL 时才现形 | **已修**：分类入口改为 `_classify_failure(observed, exit_code, stderr_path)`（放在 `aragon_runner`，`agent/failure.py` 只放表与纯函数），由 `_finalize` 在 `structured` 判定之后调用；`EXIT_MAP` 降级为"无 result 行且无 `error.code` 时"的兜底。顺序写成 4 条可断言的规则，AC-73 按同一顺序逐条判 |
+| **V8-P1-2** | P1 | §20.3.7 `capabilities.engine` 样例含 `provider` / `model`；§20.5.1 又没写这两项 | `EngineCapabilityOut` 现在只有 4 个字段，且类注释与 `fingerprint.as_capability()` 都明确写了"`model`/`provider` **不在其中**（V6-P1-3）"。v7 把它们塞回 `engine`，等于**推翻上一轮的 P1 修复**，让"这个模型是谁"出现第三份副本（`aragon.*` / `reports.model` / `engine.model`）；同时 §20.3.7 与 §20.5.1 自相矛盾 | 三份副本必然漂移（本项目已为双源付过两次代价：I-20 / V4-P1-10）；前端会在 `engine.model` 为 `null` 时显示"未知模型"，而同一响应的 `aragon.model` 明明有值 | **已修**：`engine` 只新增 `posture / schema{} / limits{} / priceVersion / lastFailure`；`provider`/`model`/`baseUrl` 一律**不进 `engine`**，`baseUrl` 作为 `aragon` 子对象的新字段（它是"引擎是谁"，不是"指纹与预算"）。§20.3.7 与 §20.5.1 统一为同一份清单 |
+| **V8-P1-3** | P1 | §20.4「`web/lib/sse.ts`：`run.retry` 加入 `RunStreamEventType`」 | `sse.ts` 的订阅是**另一份硬编码数组**（`['run.stage',…,'run.error'].forEach(wire)`），与类型联合各写一遍；`useGenerationStream` 的 reducer 也是显式 `switch` 分支 ⇒ 只改类型联合，`run.retry` 连 `onEvent` 都到不了 | H7 的重试徽标与"第 3/6 次重试"日志**永远不出现**，而 AC-75 却绿（它只断言后端 SSE 与 `run_events` 的载荷逐字段相等）——典型"必过 AC 掩盖功能缺失" | **已修**：文件表写明**三处**（类型联合 / `wire([...])` 数组 / reducer case）；新增 **AC-85** 用假 `EventSource` 断言 `run.retry` 真的进了 state 的 `retryCount` |
+| **V8-P1-4** | P1 | §20.4「修改 12 个源文件」——账本相关只列了 `report_service.py` / `cost_service.py` | `cost_service.record()` 有**两个**调用点：`report_service.py:177`（run）与 **`ask_service.py:724`**（`kind="ask_deep"`）。`cost_ledger.source` 是 `NOT NULL DEFAULT 'unknown'` ⇒ 深答的行即使 `usd` 已知，也会被默认值标成 **`source='unknown'`**，`/cost/summary` 的 `reportedRuns` 与 `spentIncludingEstimatedUsd` 从此算错 | 本轮的核心承诺"每一次付费调用都能回答花了多少"在最贵的那条路（深答）上不成立；而且不会报错，只会少算 | **已修**：变更表补 `api/app/services/ask_service.py`；`record()` 的 `source` 改为**必填关键字参数**（无默认），签名层面的强制约束；新增 **AC-86** 断言"每个账本行 `source='unknown'` ⇔ `usd IS NULL AND usd_est IS NULL`" |
+| **V8-P1-5** | P1 | §20.3.8 序列图 `└ 202 {runId, streamUrl}` | v6 的 P1-8 已经把这件事钉死：真实 202 体是 `{runId, status:"queued", instrumentId, estimateUsd}`，**没有 `streamUrl`**（SSE 地址由前端自己拼），源码注释也写着这一条 | 按字面"补上 streamUrl" ⇒ 后端多一个自相矛盾的字段、前端多一条永远读 `undefined` 的路；这正是 v6 花了 3 条 P1 才收掉的那类错误 | **已修**：序列图按真实响应体重写，并注明"这两个字段/这个码是既有，不得改名" |
+| **V8-P1-6** | P1 | §20.3.5 价格表样例「既有 6 条保留（历史报告要用旧价解释）」下的 `"deepseek-chat": 0.00027 / 0.00110` | `PRICES` 里 `deepseek-chat` **已存在**且是 `0.0003 / 0.0012`。样例把它当成"新增"再写一遍 = **静默改价**，与同一段自己写的"历史报告要用旧价解释"直接矛盾 | 一次粘贴就把所有历史 `estimated` 成本改写约 −10%，且没有任何地方能看出价格变过；`PRICE_VERSION` 还停在 `2026-03`，追溯失去意义 | **已修**：只**新增** `deepseek-reasoner` / `deepseek-flash` 两条，`deepseek-chat` 一字不动；新增 **AC-89** "既有 6 条价格与 `2026-02` 版逐值相等"（改价必须换 `PRICE_VERSION` 并在注释写生效日期） |
+| **V8-P1-7** | P1 | §20.6.1 纪律 3「`source IN (…)` 只写在 `models/cost.py` 的 `CheckConstraint`（建表时生效，测试库走 `create_all` 也会生效）」 | `models/cost.py` 现有 `__table_args__` 只有 4 个 `Index`，没有 `CheckConstraint`；生产库由 `0003` 建表、**没有** CHECK；而 `test_boundaries` 明令 `api/app` 不得出现 `create_all`（测试库的建表在 `tests/conftest.py`）⇒ 这条约束只会存在于"测试库 + ORM 建表"的路径上 | 生产库里没有任何东西拦非法 `source`（应用层漏一处就进脏数据）；更坏的是测试"证明了"约束存在，而线上根本不存在——把"schema 单一真源 = Alembic"这条 README 铁律悄悄破掉 | **已修**：**不**在 ORM 里加 CHECK；`COST_SOURCES` 白名单在 `cost_service.record()` 写入前判定，非法值记 warning + `ledgerGap`（与"账本失败不抛给调用方"同一条纪律），理由写进迁移注释；AC-86 覆盖 |
+| V8-P2-1 | P2 | §20.3.7 样例 `"drift": null` | 既有类型是 `EngineCapabilityOut.drift: bool = False`（pydantic）与 `web/lib/types.ts::EngineCapability.drift: boolean` | 实现者会去把 `bool` 改成 `bool｜None`（`tsc` 与 pydantic 双改），或写 `None` 直接 500 | 已改为 `"drift": false` 并注明"三态由 `comparability.same` 表达，`drift` 只表示版本超出支持区间" |
+| V8-P2-2 | P2 | §20.3.3 / E-47「34 份中最近 3 份与真源逐条相同」 | 实测 **0/34** 相同（5 个历史版本；见 E-55） | 证据被引用者一眼推翻，削弱整节可信度；且会让人误以为"漂移只发生在很久以前" | 已按实测重写（"0 份相同，来自 5 个历史版本"），结论与修法不变 |
+| V8-P2-3 | P2 | §20.0.1 P-1 证据栏与 §20.3.4 表首行「exit 1 → `agent_error` → 用户看到"引擎异常退出（exit 1）"」 | 有 result 行时 `_finalize:509-511` 已经给 `result_schema_unsatisfied`（E-56）；真正没被识别的是 ①CLI `error.code` ②无 result 行 + retry | 归因错了会让人以为"加个 exit 1 分支"就修好了，而 AC-73 ② 仍然红 | 已改写为准确表述，并把"分类第一真源是 CLI 的 `error.code`"提到 §20.3.4 开头 |
+| V8-P2-4 | P2 | E-48「`pragma table_info(runs)` 19 列」 | 实测 21 列（含 `cancel_requested` / `reason`），无 `provider`/`model` 的结论不变 | 数字对不上，复核者要重新数一遍 | 已改 21 |
+| V8-P2-5 | P2 | §20.3.3「同时 `build_argv` 之后把这棵树写进 workspace：`(request.workspace / "schema_budget.json").write_text(...)`」 | `build_argv` 是纯函数（只返回 argv），在里面写盘破坏了它的可测性（黄金 argv 测试会留下文件）；更要紧的是：闸门**失败**时函数抛异常，`schema_budget.json` 恰恰**不会**被写——而"失败那次用了多深的 schema"才是审计最想知道的一条 | 失败现场没有任何 schema 度量，AC-71 的排查只能靠人复算 | 已改为在 `stream()` 里紧跟 `argv.json` 之后写（成功/失败都要写：闸门失败时先写度量再抛） |
+| V8-P2-6 | P2 | §20.3.8「`cost_service.estimate(symbol)`」；`cost_service.estimate` 的注释"`runs` 表没有 model 列"；序列图里 `can_start` 排在 router | 真实签名 `estimate(session, symbol, kind="run")`；`can_start` 在 `run_manager.start():190`（`start()` 内、mkdir 之前）；本轮新增 `runs.agent_model` 之后"没有 model 列"的注释会变成假话 | 调用写法错、注释过期 | 已改签名与位置；并注明 `estimate()` 的模型优先取 `runs.agent_model`，缺失才回退 `reports.model` |
+| V8-P2-7 | P2 | §20.4 修改表 | 漏了响应模型层：`api/app/schemas/run.py::RunOut`（`to_run_out` 里传新字段会 `TypeError`）、`api/app/schemas/cost.py`（`CostSummary`/`CostEntry`）、`web/lib/types.ts::CostEntry` | 字段在 ORM 里有、在 API 上没有（pydantic 静默丢弃），前端永远读 `undefined` | 已补进表，并写明"响应模型是第二道门，漏了就等于没实现" |
+| V8-P2-8 | P2 | §20.3.5「`can_start()` 的判定基数从 `spentUsd` 改为 `spentIncludingEstimatedUsd`」 | 没写 SQL 口径。`can_start` 现在是内联 `SUM(CostLedger.usd)`；直接把 `usd + usd_est` 相加会对 reported 行重复计（`usd_est` 为 NULL 但 `usd` 也算了），改用 `SUM(usd_est)` 又漏掉全部 reported 行 | 预算闸门在某些行上多拦/少拦，且症状随历史数据分布变化，很难复现 | 已写死 `SUM(COALESCE(usd, usd_est))`，并注明 `reported` 行的 `usd_est` 必须为 NULL（AC-78 断言） |
+| V8-P2-9 | P2 | §20.3.7「由 `run_manager` 在成功/失败时写进 `runs.agent_provider / runs.agent_model`（新列）」 | 没说清与既有 `run_manager.py:358-359` 的 `run.provider = result.provider` / `run.model = result.model` 的关系——那两行现在是**静默丢弃**（列不存在），加了新列之后如果不替换，仍然丢弃 | 加了列却仍然一直是 NULL，"哪个模型生成的这一版"继续查不到（E-48 的原意没实现） | 已写明"**替换** 358-359 两行"，并加一条集成断言（AC-78 附） |
+| V8-P2-10 | P2 | §20.4 新增文件 `api/app/services/run_diagnostics.py` | 全文只在文件表里出现一次，正文没有任何接口；而失败指纹 `failure_fingerprint()` 又被安排在 `agent/failure.py`，两个新模块的职责边界空着 | 实现者自由发挥：要么把纯函数写进 services（破依赖方向），要么在 agent 里做 DB 写入（做不到，agent 不碰 session） | 已写明分工：`agent/failure.py` = 表 + 纯函数（分类、hint、指纹）；`services/run_diagnostics.py` = 只做"从 `AgentResult`/`run` 提炼落库字段 + 同指纹计数查询"，不产生判定 |
+| V8-P2-11 | P2 | §20.3.3 `measure()`「一次 DFS 同时算 `depth` 与 `nodes`」 | 没写 `depth` 的**口径**。CLI 的 `nests` 实测 = 容器层数 **+1**（把标量叶子算一层，E-52），naive 的"只数容器"DFS 会得到 10，比 CLI 少一层 ⇒ 闸门放行一个 CLI 必定拒绝的 schema | AC-70 会因为数字对不上变红（好消息），但实现者会以为是 AC 写错了而去改 AC | 已写死口径：`depth` 从根记为 1、**物化标量与空容器各算一层**；并写死判据 `depth > max_depth` 才拒绝（等于放行，实测 CLI 同） |
+
+> **处理口径**：P0 与 P1 共 9 条**全部已在正文就地修复**（每处在原位置带 `v8 修订（V8-Pxx）` 标记，照读即可施工）；
+> P2 共 11 条**全部已顺手改掉**。本轮同样不保留"文档内待议"项——§20.2 的 I 层纪律在文档上的应用。
+
+---
 
 ## 评审记录（Review Notes · Iteration 3）
 
@@ -3916,3 +4022,1509 @@ I-40 把徽标分支②放宽成 `ratio >= 0.9`，所以 `48/51`（3 个数字�
 `iter_block_hits` 不再因为锚点缺失而整体跳过。补用例
 `test_absolute_dates_still_match_when_as_of_is_missing`（`近一年` + `None` → `[]`；
 `2025Q3` + `None` → 季度区间；端到端 `iter_block_hits` 命中 `news#0`）。
+
+---
+
+## 20. Iteration 4 增量设计：Agent 与生成链路的稳健可用
+
+> **本轮需求（原文）**：「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健。」
+> 并给了可用的真实凭证：`https://api.deepseek.com` / `deepseek-flash`（Key 只在环境变量里，
+> **不写进仓库任何文件**，见 §20.1 末段）。
+>
+> **本节的写法**：不重写 §1–§19。v6 的一切不变式（单 worker、结构化文档而非 HTML、
+> 只标不改数、`NULL ≠ 0`、账本只追加、降级永不上抛、单一投影真源）**一条不改**。
+> 本节只回答一个问题：**在真实模型（deepseek-flash）+ 真实 CLI（aragon 0.6.68）上，
+> 这条生成链路还有哪些"会失败却说不清、能失败却拦不住、失败了还白花钱"的地方，怎么修。**
+
+### 20.0 本轮的定位、硬约束与 oracle 断言
+
+#### 20.0.1 「可用稳健」在这一轮的可测定义（P-1 ~ P-8）
+
+形容词没有验收，性质有。本轮把"稳健"拆成八条可被机器判定的性质，每条都对应 §20.7 的 AC：
+
+| 编号 | 性质 | 当前是否成立 | 证据 |
+| --- | --- | --- | --- |
+| **P-1** | 一次失败必须落到 15 个分类码之一，不得用 `agent_error` 兜底一切 | ✗ | E-50 / E-56：**有** `result` 行时 `_finalize:509-511` 已经给 `result_schema_unsatisfied`（所以"exit 1"本身并不落 `agent_error`）；真正没有分支的是 ①CLI 自己在 `result.error.code` 里给的码（`network_error` / `rate_limited` / `auth_error` 全部被抹成"模型没提交"）②没有 `result` 行但有 `retry` 事件 ③`exit 2 + result_schema_too_deep`（落 `usage_error`）。`_classify_exit` 只有 6 个分支、且**只在无 result 行时被调用**（★v8 修订 V8-P2-3） |
+| **P-2** | 每个失败码必须带一句可执行的下一步建议（hint），且 hint 与码一一对应 | ✗ | 现在只有 `error_message` 的原始英文/引擎日志 |
+| **P-3** | 每次生成的花费必须能回答，至少是"按 token × 单价估算" | ✗ | E-44：全库 10 次 `succeeded`（其中 5 次为真实模型生成）**0 次**有成本；E-49：`cost_for_tokens()` 全仓无调用者，且价格表没有 deepseek |
+| **P-4** | 引擎抖动（429/5xx/网络）必须可见，且不被误报成"引擎异常退出" | ✗ | E-45：8 条 `retry` 事件被 `_handle_line` 完全忽略，最终没有 `result` 行 |
+| **P-5** | schema 超预算必须**在 spawn 之前**失败 | ✗ | E-46：当前深度 11/上限 12（余量 1 层）；历史 run 06456fcb 烧到 exit 2 才知道 |
+| **P-6** | schema / 提示词漂移必须在**生成前**失败 | ✗ | E-47：过去确实漂移过（18241 vs 18392 B），现在只因"复制同一个文件"而偶然成立 |
+| **P-7** | spawn 参数必须确定，不受本机 skills/gene/记忆/todo/自动更新影响 | ✗ | E-43：默认姿势比精简姿势多 **2551 input tokens（= 3352 的 +76%，占 5903 的 43%）**，且 stderr 被 skills 告警污染 |
+| **P-8** | 以上每条都有测试守卫，且 fake CLI 的剧本与**实测** exit code 一致 | ✗ | `fake_aragon.py` 的 `unsatisfied` 用 exit 3，真实 CLI 用 exit 1（E-42） |
+
+#### 20.0.2 硬约束（写成代码前的红线）
+
+1. **只改 `api/` 与 `web/`，不新增第三方依赖**：新模块只用 stdlib（`hashlib` / `json` / `pathlib`）+ 既有 SQLAlchemy。
+2. **不引入第二个生成入口**：`POST /api/v1/runs` 仍然不存在（405）。本轮所有 spawn 加固都在既有唯一入口上生效。
+3. **不引入第二个并发真源**：仍必须 `--workers 1`；`retry` 是 CLI 进程内的行为，api 层**不做整跑重试**（见 §20.3.4 裁决 H-3）。
+4. **两个既有错误码一个字不改**：`budget_exceeded`(409, turns/duration)、`monthly_budget_exceeded`(402, 月预算)。
+5. **账本只追加**：`cost_ledger` 的新增列可空、有默认值、不 UPDATE 旧行。
+6. **降级永不上抛**：能力探测新增的 `doctor` / `models` 检查**只 warn 不降级**（实测 deepseek-flash 不在 CLI 内置模型表里也能跑通，据名单降级就是误杀）。
+7. **密钥零落盘**：凭证只从 `.env` / 进程环境读取；`argv.json`、`run_events`、`capabilities`、导出物一律不得出现 Key。新增一条测试 `test_no_secret_in_run_artifacts`。
+
+#### 20.0.3 Oracle 断言（写完先自检，结果记入 §20.10）
+
+- **O-11** `build_argv()` 在 `ARAGON_AGENT_POSTURE=lean` 下必须同时输出 6 个 `--no-*`；生成与 deep ask 共用它（`ask_runner.build_ask_argv` 只是转发）。
+- **O-12** `schema_budget.measure()` 对当前 `report_doc.schema.json` 返回 `{bytes: 18392, depth: 11, nodes: 658, ok: True}`；把深度人为 +2 后 `ok=False`，且 `spawn` 未被调用。
+  - ★v8 修订（V8-P2-11）：**`depth` 的口径必须写死**——根记为 1，**对象/数组与它们的标量叶子各算一层**（`{"type":"string"}` 这样的叶子值算一层）。理由是实测：CLI 的 `nests` 就是按这个口径数的（容器层数 12 → `nests 13`；容器 11 → `nests 12` 放行；见 E-52），naive 的"只数容器"DFS 得 10，比 CLI 少一层，闸门就会放行一个 CLI 必拒的 schema。判据是 **`depth > max_depth` 才拒绝**（等于放行），与实测的 `nests > 12` 一致。
+- **O-13** 成本的 `reported / estimated / unknown` 只有一个判定函数（`resolve_cost()`），`runs` / `reports` / `cost_ledger` 三处都由它派生，禁止各算一遍。
+- **O-14** ★v8 修订（V8-P1-1）：失败分类的入口是 **`_classify_failure(observed, exit_code, stderr_path)`**（能看见 `result.error.code` 与 `retry` 观测），`_classify_exit` 降级为它的内部步骤之一；断言 `_classify_failure` 对"有 result 行 + `error.code=network_error` + `retries=0"` 返回 `provider_unavailable`，对"有 result 行 + `error.code=result_schema_unsatisfied`"返回同名码，对"无 result 行 + `retries>=1`"返回 `provider_unavailable`。
+- **O-15** `run.retry` 在 SSE 与 `run_events` 里同名同形；断线重连按 `after=` 重放后计数不丢。
+- **O-16** `fake_aragon.py` 每个 mode 的 exit code 与 §20.5.4 的分类表逐行一致（表驱动测试）。
+
+### 20.1 概述
+
+这一轮补的不是功能，而是**证据链**。v6 让读者能问"这个数字从哪来""这份报告在说什么""我这一年花了多少钱"，
+但只要点一次「生成最新版本」，用户面对的仍是一个**黑盒**：它可能在 40 秒后成功，也可能在 3 分钟后失败，
+而失败时给出的是 `引擎异常退出（exit 1）：` 加一段只含 `[skills] warn` 的 stderr。本轮的工作是把这个黑盒
+拆成一条**每一步都可解释**的流水线——先天的失败（schema 太深、prompt 太大）在 spawn 之前就拦下；
+后天的失败（模型服务抖动、模型没提交结构化结果）在事件流里被点名；花掉的钱即使引擎不报也留下可审计的估算。
+
+第二条主线是**成本的真实性**。G3 建立的账本有一个诚实的 `NULL ≠ 0`，但实测发现它诚实到了没用的地步：
+deepseek-flash 的每次真实生成，CLI 都返回 `cost: {amount: 0, known: false}`，于是 14 天后的账本里
+**每一次真实生成都是"成本未知"**，"本月花了多少"这个问题永远只有一个问号。而与此同时，我们**手上有
+55.3 万 input token / 13.5 万 output token 的精确计数**，以及一份公开的单价比。不知道价格与装作不知道是两件事：
+前者用一个可替换的数据表就能解决，后者是设计上的放弃。所以本轮引入第三种成本来源 `estimated`——
+它与 `reported` **永不同义**、在账本里占不同列、在界面上用不同措辞，但足以支撑预算闸门与月度总额。
+
+第三条主线是**确定性**。同一个生成任务，今天和明天应该用同一个命令、同一份 schema、同一套提示词、
+同样多的上下文预算跑完。实测显示这三个"应该"目前都不成立：本机装了 skills / gene / 记忆 / todo，
+默认姿势会给**每一次**模型请求多加约 2551 个 input token 的开销（相对 3352 是 +76%，占 5903 的 43%），
+并且往 stderr 打一条与生成无关的告警；`--no-update` 没传，生成期间 CLI 还会做一次版本检查；
+schema 是不是还在 CLI 的深度预算内，只能靠"上次没炸"来判断。这些都写进 §20.3.2 / §20.3.3，
+落到一条可断言的 argv 与一个前置闸门上。
+
+> **凭证处理**：本轮需求给出的 `sk-…` 只作为**运行时环境变量**使用（`OPENAI_API_KEY` 或
+> `DEEPSEEK_API_KEY`，二者都在 `aragon_runner.ENV_ALLOWLIST` 白名单里，见 `aragon_runner.py:42-60`），
+> 不写进 `.env.example`、不写进 `.env`、不写进本节、不写进 `argv.json`。§20.7 的 AC-84 用一条测试守住这一点。
+
+### 20.2 范围分层：H 层（本轮必做）/ I 层（明确不做）
+
+**H 层（七块，全部可测，不打折）**
+
+| 编号 | 名称 | 一句话 | 里程碑 |
+| --- | --- | --- | --- |
+| **H1** | 确定性 spawn 契约 | 一个体位（lean）、一条 argv、两个入口共用 | M19 |
+| **H2** | schema / 资料预算闸门 | 深度 11/12 的余量必须被算出来并守住，漂移必须生成前失败 | M19 |
+| **H3** | 失败分类学与诊断 | 15 个码 + 逐码 hint + `retry` 事件 + 失败指纹 | M20 |
+| **H4** | 成本三态 | `reported / estimated / unknown`，账本分列，预算闸门可用 | M21 |
+| **H5** | 提示词与提交纪律 | 提交前自检 6 条、读取顺序与读取预算、提示词版本 + sha1 | M22 |
+| **H6** | 能力与健康 | `capabilities.engine` 深化、只 warn 的 doctor/models、失败缓存 10s | M22 |
+| **H7** | 前端可见性 | 重试徽标、成本三态标签、失败卡片 hint、成本面板双数 | M23 |
+
+**I 层（明确不做，避免范围漂移）**
+
+| 编号 | 不做的事 | 理由 |
+| --- | --- | --- |
+| I-1 | api 层自动整跑重试（失败后自动再 spawn 一次） | 一次真实生成已达 18 万 input tokens；自动重试把最坏成本翻倍，且掩盖系统性失败。用户手点一次的成本远低于静默烧钱（裁决 H-3） |
+| I-2 | 多模型路由 / 自动降级到更便宜的模型 | 需要一个评测集才能说"哪个更好"，没有就别猜；`ARAGON_MODEL` 已可配，够用 |
+| I-3 | 自己解析模型输出（放弃 `--result-schema`，改由 Python 解析 Markdown/JSON 文本） | 这正是 §5.2 否掉的路：结构无法保证、修复不可控、白丢 ajv 校验 |
+| I-4 | 向量检索 / 长上下文压缩 / 分段生成 | 报告约 35KB JSON、72–181k input tokens，远未触及 deepseek 的上下文上限；压缩会引入"摘要即改写"的新幻觉面 |
+| I-5 | 把 `aragon` 换成 HTTP 直连模型 | CLI 承担了工具注册、权限、结构化校验、修复轮、重试退避这五件事，直连要重写五件，收益只是少一个进程 |
+| I-6 | 真实 token 计费对账（与官方账单比对） | 需要账单接口/人工核对，本机做不到；换算表标注 `PRICE_VERSION`，错了改数据不改代码（§20.3.5） |
+| I-7 | PDF / 多用户 / i18n | 沿用 v3–v6 的 C/E 层结论，一条不改 |
+
+### 20.3 技术设计
+
+#### 20.3.1 分层、不变式与新增依赖方向
+
+本轮**不新增层**，只在既有四层里加边：
+
+```
+routers/            （不动）
+      │
+services/run_manager ──► agent/schema_budget   ← 新增：纯函数，无 IO 之外的状态
+      │                    agent/cost_model      ← 新增：token→USD 的唯一换算入口
+      │                    services/cost_service（扩展：三态）
+      │
+agent/aragon_runner  ──► agent/preflight（扩展：doctor/models 只 warn）
+      │                    agent/pricing（补数据，不改函数签名）
+      │
+agent/prompts/*.md   （内容升级 + 版本标记）
+```
+
+依赖方向的两条铁律（与 `test_boundaries` 保持一致）：
+
+1. **`agent/` 不得 import `services/`**。因此"成本换算"必须放在 `agent/cost_model.py`（只依赖 `agent/pricing.py`），
+   `services/cost_service.py` 反过来 import 它。这一点与 G4 的 `engine` 参数同理（`report_validator.validate_doc`
+   的 `engine` 是入参而非内部计算，注释在 `report_validator.py:320-323`）。
+2. **schema 预算闸门的唯一调用点在 `build_argv()`**。生成与 deep ask 都经过它（`ask_runner.build_ask_argv`
+   只是转发，见 `ask_runner.py:47`），所以闸门天然覆盖两条路径，不需要第二份判断。
+
+#### 20.3.2 关键代码路径 1：确定性 spawn 契约（H1）
+
+**现状（实测）**：`build_argv()` 输出 8 个全局 flag + 12 个 `exec` flag（`aragon_runner.py:78-124`）。
+没有任何 `--no-*`，因此子进程继承了本机的完整姿势：
+
+| 本机姿势项 | 实测代价 | 副作用 |
+| --- | --- | --- |
+| skills 目录（3 个 skill 的 SKILL.md 已变更） | 参与 system prompt 构造 | stderr 每次打印 `[skills] warn: SKILL.md changed since install…`，被 `_read_stderr` 变成逐条 SSE warn（`aragon_runner.py:387-403`） |
+| gene / memory / todo / team | 合计约 2551 input tokens（5903 vs 3352，+76%） | 模型被无关指令分散；`todo_write` 在没有 todo 的任务上就是浪费轮次 |
+| 自动更新检查（未传 `--no-update`） | 生成期间一次网络往返 | 无网环境会静默拖慢首轮 |
+
+**设计**：新增配置项 `ARAGON_AGENT_POSTURE`（`lean` | `full`，默认 `lean`），在 `build_argv()` 里注入：
+
+```python
+# agent/aragon_runner.py
+LEAN_FLAGS = ("--no-update", "--no-skills", "--no-gene", "--no-memory", "--no-todo", "--no-team")
+
+if settings.aragon_agent_posture == "lean":
+    argv += list(LEAN_FLAGS)          # 全局 flag 段，必须在 `exec` 之前
+```
+
+> **顺序约束（★沿用 P2-04）**：全局 flag 一律在 `exec` 之前，子命令 flag 之后。`--no-skills` 属于全局段，
+> 放在 `exec` 之后是 `error: unknown option`（exit 2），必须由测试守住。
+
+同一处把三个"隐式依赖"变成显式：
+
+```python
+argv += ["--max-tokens", str(settings.aragon_max_output_tokens)]   # 默认 40000，替换写死的 "auto"
+argv += ["--retry-max", str(settings.aragon_retry_max)]            # 默认 6，CLI 默认 10 会吃满 4 分钟
+argv += ["--result-repair-turns", str(settings.aragon_repair_turns)]  # 默认 2（= CLI max，不越界）
+```
+
+三条都有实测依据：
+
+* `--max-tokens auto` 现在的含义是"用模型上限"（`aragon --help` 的默认值是 64000，`auto` 表示不额外限制）。
+  本库 5 次真实成功生成的 output tokens 分布是
+  20576 / 20676 / 24955 / 28706 / 30549 / 34586，最大 34586。给 40000 的意义不是省钱，而是**让 CLI 的
+  截断行为可预测**：真到上限时我们会看到 `stopReason`，而不是"模型自己写完了"。
+* `--retry-max` 的 CLI 默认是 **10**（实测 `retry` 事件里 `maxRetries: 10`），每次退避上限 30s。
+  实测一次抖动风暴里 6 次重试已吃掉约 44s（delays 568/1753/977/1998/3743/6030/15208/15925 ms）。
+  10 次的最坏情况会撞上我们自己的 `ARAGON_MAX_DURATION_MS=900000`，表现为 `budget_exceeded`——
+  一个"其实是网络问题"的失败被记成"模型太慢"。设 6 让两者可区分。
+* `--result-repair-turns 2` 现在是硬编码，CLI 的 `maxRepairTurns` 也是 2（`info.result.maxRepairTurns`）。
+  改成配置但默认不变，并把 `capability.result.maxRepairTurns` 作为硬上限夹取（`min(config, cli_max)`），
+  否则将来 CLI 收紧上限，我们又拿到一个 exit 2。
+
+**为什么不做"api 层整跑重试"**（裁决 H-3）：CLI 已经在 429 / 5xx / 网络错误上做了带抖动的指数退避
+（实测 `errorType: network_error`，tier 1/2）。api 层再包一层，等于把 `10 × 内部重试` 变成
+`n × 10 × 内部重试`，而"网络确实断了"这类失败的第二次尝试成功率极低。本轮只做**分类 + 提示**，
+把决定权还给用户（界面上就是「再次生成」按钮，一次点击一次花费，账本如实记录）。
+
+#### 20.3.3 关键代码路径 2：schema / 资料预算闸门（H2）
+
+**问题**：`report_doc.schema.json` 当前 18392 B / **depth 11** / nodes 658，而 CLI 的硬上限是
+`schemaDepth 12` / `schemaBytes 65536` / `validationNodes 5000`（E-39、E-46）。**深度余量只有 1 层**：
+任何一次"给块再加一层嵌套"的重构（比如把 `chart.series[].points[]` 再包一层）都会让**每一次生成**在
+20 秒后以 exit 2 `result_schema_too_deep` 结束——而且这条消息现在会被分类成 `usage_error`，
+提示"引擎配置或参数错误"，对实现者几乎没有任何指向性。历史上真的发生过一次（run `06456fcb`）。
+
+**新增模块** `api/app/agent/schema_budget.py`（纯函数，无副作用）：
+
+```python
+@dataclass(frozen=True, slots=True)
+class SchemaBudget:
+    path: str
+    bytes: int
+    depth: int
+    nodes: int
+    max_bytes: int
+    max_depth: int
+    max_nodes: int
+
+    @property
+    def ok(self) -> bool: ...
+    def reason(self) -> str | None: ...      # "深度 13 > 上限 12" 这样的中文短句
+    def as_payload(self) -> dict[str, Any]: ...  # {"bytes":…,"depth":…,"nodes":…,"headroom":…}
+
+def measure(path: Path, limits: dict[str, int] | None = None) -> SchemaBudget: ...
+def limits_from_capability(capability: AragonCapability) -> dict[str, int]: ...
+```
+
+* `measure()`：`json.loads` 后一次 DFS 同时算 `depth` 与 `nodes`（**不要**递归求 max 两次，schema 904 行，两次也快，
+  但一次序遍历才能保证 depth 与 nodes 用的是同一棵树）；`limits=None` 时用 fallback
+  `{"schemaBytes": 65536, "schemaDepth": 12, "validationNodes": 5000}`。
+* ★v8 修订（V8-P2-11）**`depth` 的口径写死，否则闸门差一层**：根记为 1，**dict / list 与它们的标量叶子各算一层**
+  （`"type": "string"` 这个值本身算一层）。实测（E-52）：合成 schema 容器层数 12 → CLI 报 `nests 13 levels deep; the limit is 12`
+  并 exit 2（**在调用模型之前**，3.8 s 就返回）；容器层数 11 → 放行。也就是说 CLI 的 `nests` = 容器层数 **+ 1**，
+  与"把标量叶子算一层"完全吻合；真源 `report_doc.schema.json` 按此口径 = 11（CLI 也为它放行，E-53），naive 的
+  "只数容器"DFS 得 **10** —— 少一层就意味闸门会放行一个 CLI 必拒的 schema。判据同样是 **`depth > max_depth` 才拒绝**
+  （等于放行），与实测的 `nests > 12` 一致，AC-70 的 `headroom=1` 因此有据可循而不是抄来的。
+* `limits_from_capability()`：优先读 `capability.result`（preflight 已把 `info.result` 原样存下，
+  `preflight.py:186-188`），任何一项缺失就回退 fallback 并记一条 `logger.warning`——**不回退成"不限"**。
+
+**挂钩点**（唯一）：
+
+```python
+# build_argv()，在 --result-schema 之前
+budget = schema_budget.measure(request.schema_path, schema_budget.limits_from_capability(capability))
+if not budget.ok:
+    raise AgentError("schema_over_budget", f"报告 Schema 超出引擎预算：{budget.reason()}")
+```
+
+`AgentError` 在 `run_manager._drive_agent` 里被捕获成 `_finalize_failure(code=exc.code)`（`run_manager.py:503-505`），
+因此会落成一个**带具体数值**的失败码，而不是 `usage_error`。
+
+> ★v8 修订（V8-P2-5）**度量要写到 `stream()` 里，不要写在 `build_argv()` 里**：
+> `(request.workspace / "schema_budget.json").write_text(...)` 必须紧跟 `argv.json`（`aragon_runner.py:244-245`）之后，
+> 且**在 `build_argv` 抛异常之前**先落盘（`try:` 里先写度量、再调 `build_argv`）。两个理由：①`build_argv` 是纯函数
+> （`test_agent_posture` 的黄金 argv 断言会因为它偷偷写文件而受干扰）；②闸门**失败**的那一次，恰恰是最想知道
+> "当时的 schema 有多深"的一次——把写盘放在函数尾部就等于在最需要审计材料的时候不写。
+
+**单一真源断言**（P-6）。`snapshot_service.write_snapshot_files()` 把 `schemas_dir/report_doc.schema.json`
+复制成 `workspace/schema.json` 交给 CLI（`run_manager.py:336` 的 `schema_path`），而
+`report_validator.validate_doc()` 又用 `load_schema()` 从 `schemas_dir` 读一遍校验。**两份文件、两次读取、
+零个断言**——E-47 证明它们历史上真的不同过（18241 vs 18392 B，缺 `$defs/metric/properties/polarity/enum`）。
+若两者再次不同，会出现最坏的一种失败：**CLI 接受了报告（收了你 18 万 tokens 的钱），Python 侧拒绝并丢掉它**。
+
+新增一条断言函数（★v8 修订 V8-P0-1：**唯一实现放 `agent/schema_budget.py`**）：
+
+```python
+# agent/schema_budget.py —— agent/ 只依赖 stdlib 与 agent/ 内部，符合 test_boundaries 规则 4
+def assert_schema_identity(workspace_schema: Path, source_schema: Path) -> str:
+    """两份 schema 必须字节一致，否则 generation 会在 validate 阶段丢掉一份已付费的报告。
+
+    返回真源的 sha1（12 位），供 `schema_budget.json` 与 `quality.engine` 记账。
+    """
+    source_bytes = source_schema.read_bytes()
+    if hashlib.sha1(workspace_schema.read_bytes()).digest() != hashlib.sha1(source_bytes).digest():
+        raise AgentError("schema_drift", "workspace/schema.json 与 schemas/report_doc.schema.json 字节不一致")
+    return hashlib.sha1(source_bytes).hexdigest()[:12]
+```
+
+**两个调用点，一份实现**：
+
+1. `services/snapshot.write_schema_copy()` 写完副本后立刻调用（`services → agent` 方向合法，与
+   `agent/fingerprint.py` 把 `schema_bytes` 作为入参拿到手是同一个模式）；
+2. `agent/aragon_runner.build_argv()` 里再调用一次（agent 内部调用，spawn 前最后一道）。
+
+> ⚠️ **v7 原样会撞红既有守卫**：`api/tests/test_boundaries.py::test_agent_never_imports_services` 会同时用
+> AST 与字面量扫描拦下 `agent/ → services/` 的 import。v7 把函数"定义在 `services/snapshot.py`、在
+> `agent/aragon_runner.py`（`build_argv` 里）调用"，按字面施工只能二选一：import（CI 红）或两处各写一份（双源，
+> 与本轮"单一真源"主线正面冲突）。**唯一实现 + 两个调用点**才是这一条要表达的东西。
+
+**但断言还不够：真正会丢报告的时间窗是"生成过程中的两分钟"。** v7 的断言只在 spawn 前比一次，而
+`report_validator.load_schema()` 读的是 `settings.schemas_dir` 并且**有进程级缓存**（`_schema_cache`）。
+于是一个 90 s 的生成期间只要有人改了 schema（或一次部署换了文件），就会出现"CLI 收下的那份"与
+"Python 校验的那份"不同——正是本轮要消灭的最坏失败。因此：
+
+* `run_manager` 在第 5 阶段（validate）把**当次实际交给 CLI 的那份**传下去：
+  `report_validator.validate_doc(..., schema_path=request.schema_path)`（默认仍回退 `load_schema()`，向后兼容）；
+* `quality.engine` 记 `schemaSha1`（上面那个返回值），**事后**任何一次"CLI 接受、Python 拒绝"都能对上号；
+* 断言本身保留（它是快速失败的护栏），但**不再是唯一保障**——这是"构造性正确"与"运行期比对"的区别。
+
+★v8 修订（V8-P2-2）**E-47 的证据按实测改正**：本机现存 **34** 份 `api/workspace/runs/*/schema.json` 与当前真源
+（18392 B / sha1 `7a93509…`）逐字节比较，**0 份相同**；这些副本来自 **5 个历史版本**（12505 ×2 / 18241 ×6 /
+19136 ×4 / 19295 ×18 / 19781 ×4）。所以"最近 3 份与真源逐条相同"不成立——真实的结论更强也更简单：
+**每一次 schema 改动都会让所有历史工作区变成"另一份 schema"，而当时没有任何一处断言在看着这件事**。
+修法不变（断言 + 校验用当次的字节），但证据必须写成实测的样子，否则下一个人复算时第一眼就不信这一节。
+
+**资料预算**。`prompt.md`（2.5KB）+ `system.md`（2.2KB）+ `schema.json`（19KB）三者相加恒小于 32KB，
+但没有任何东西阻止它们长大（往提示词里贴一张 30 行的表就会翻倍）。加一条硬闸门：
+
+```python
+def assert_prompt_budget(request: AgentRequest, max_bytes: int) -> None:
+    total = sum(p.stat().st_size for p in (request.prompt_path, request.system_prompt_path, request.schema_path))
+    if total > max_bytes:
+        raise AgentError("prompt_over_budget", f"提示词与 schema 合计 {total}B 超出上限 {max_bytes}B")
+```
+
+默认 `ARAGON_MAX_PROMPT_BYTES=32768`。这条闸门真正拦住的是"以后有人往 prompt 里贴 200 行 bars"：
+把 47.6KB 的 `bars.csv` 内联进 prompt 是很容易顺手做的一件事，而它是本项目最贵的一个动作（§20.3.6）。
+
+#### 20.3.4 关键代码路径 3：失败分类学与诊断（H3）
+
+**现状**：`_finalize_failure` 把一切非 `cancelled` / 非 `budget_exceeded` 的失败写成 `status="failed"`
+（`run_manager.py:588`），真正的分类只发生在两处：`aragon_runner._finalize` 的 `structured` 判定
+（`:501-513`）与 `_classify_exit` 的 exit code 查表（`:549-569`）。后者只有 6 个分支，缺三个实测存在的分支：
+
+| 实测事实 | 现有分支 | 后果 |
+| --- | --- | --- |
+| exit **1** = 结构化未提交（E-42，`stopReason: error`, `error.code: result_schema_unsatisfied`） | 走不到（见下条），且 `EXIT_MAP` 里也没有 1 | 若**没有** result 行 ⇒ `exit 1 → agent_error`（"引擎异常退出"）；**有** result 行时 `:509-511` 已给 `result_schema_unsatisfied`，但**同一句里 CLI 自己说的 `error.code` 被丢掉了** |
+| 无 `result` 行 + 有 `retry` 事件（E-45） | 无 → `agent_error` | 网络问题被记成引擎 bug；重试过程完全不可见 |
+| exit 2 且 stderr 含 `result_schema_too_deep`（历史 run `06456fcb`） | `usage_error` | 提示"参数错误"，而真正原因是 schema 深度 |
+
+> ★v8 修订（V8-P1-1，也是 V8-P2-3 的更正）**分类的入口不是 `_classify_exit`**：
+> `_finalize` 的结构是 `if structured → doc` / **`elif result_payload → result_schema_unsatisfied`** /
+> `else → _classify_exit(exit_code, stderr_path)`（`aragon_runner.py:501-513`）。也就是说 `_classify_exit`
+> **只在"一行 result 都没有"时才被调用**，它既看不到 `result.error.code`，也看不到 `retry` 观测。
+> 因此本轮把入口改成 **`_classify_failure(observed, exit_code, stderr_path) -> tuple[str, str]`**（保留在
+> `aragon_runner`，因为它要看 runner 的 `observed`），`_classify_exit` 退化成它的第 3 步。
+> `agent/failure.py` 只放**表与纯函数**（`RUN_ERROR_CODES` / `EXIT_MAP` / `STDERR_REFINE` /
+> `CLI_ERROR_CODE_MAP` / `failure_fingerprint`），不 import 任何 runner。
+>
+> 为什么必须这么改（本轮最容易写错的一处）：若把 `CLI_ERROR_CODE_MAP` 写进 `_classify_exit`，那么
+> "**有** result 行、`error.code=network_error`、`retries=0"这种情形（`--retry-max 0` + 坏 base URL 就是它）
+> 会在 `elif result_payload:` 处就被判成 `result_schema_unsatisfied`——AC-73 ② 与 P-4 一起落空，而且测试
+> 会因为"它测的是无 result 行那条路"而**全绿**。**分类的第一真源是 CLI 的 `error.code`，不是 exit code。**
+
+**设计：一张表，一个函数，一份 hint**
+
+```python
+# agent/failure.py （新增）
+RUN_ERROR_CODES: dict[str, FailureSpec] = {...}   # 15 条，见 §20.5.4
+
+@dataclass(frozen=True, slots=True)
+class FailureSpec:
+    code: str
+    retryable: bool          # 用户再点一次是否有意义
+    severity: str            # "config" | "transient" | "model" | "user" | "internal"
+    hint: str                # 一句人话：下一步做什么
+    http_status: int | None  # 只有同步路径会用到它，run 级码为 None
+```
+
+`_classify_failure(observed, exit_code, stderr_path)`（★v8 修订 V8-P1-1；内部第 3 步才是 v7 的 `_classify_exit`）**表驱动**：
+
+```python
+EXIT_MAP = {
+    0:   ("result_missing", "引擎正常退出但没有返回 result 事件"),
+    1:   ("result_schema_unsatisfied", "模型多次提交仍未满足 JSON Schema（实测 exit 1）"),
+    2:   ("usage_error", "引擎配置或参数错误"),          # 下面再做 stderr 精化
+    3:   ("budget_exceeded", "生成超出预算（max-turns / max-duration）"),
+    129: ("cancelled", "生成被终止"),
+    130: ("cancelled", "生成被终止"),
+    143: ("cancelled", "生成被终止"),
+}
+STDERR_REFINE = (                     # exit 2 的三种已知精化
+    ("result_schema_too_deep", "schema_over_budget"),
+    ("result_schema_too_large", "schema_over_budget"),
+    ("result_schema_too_many", "schema_over_budget"),
+    ("unknown option", "usage_error"),
+    ("invalid --session-id", "usage_error"),
+)
+AUTH_HINTS = ("401", "403", "invalid api key", "insufficient", "quota", "unauthorized")
+
+# CLI 自己写进 result.error.code 的码 → 我们的 run 级码。
+# 实测：探针 C 的 result 行是 {"isError": true, "stopReason": "error",
+#        "error": {"code": "result_schema_unsatisfied",
+#                  "message": "No result matching schema.json was submitted."}}
+CLI_ERROR_CODE_MAP = {
+    "result_schema_unsatisfied": "result_schema_unsatisfied",
+    "network_error": "provider_unavailable",
+    "upstream_error": "provider_unavailable",
+    "rate_limited": "provider_unavailable",
+    "timeout": "provider_unavailable",
+    "auth_error": "provider_auth",
+    "context_overflow": "usage_error",
+    "invalid_request": "usage_error",
+}
+```
+
+精化顺序（★v8 修订 V8-P1-1：入口是 `_classify_failure(observed, …)`，写在 `_finalize` 里、`structured` 判定之后；四条规则逐条断言）：
+
+1. 有 `result` 行且 `structured.value` 是 dict → 成功（既有 P0-1 判定，不改）。
+2. 有 `result` 行但无 `structured`（这一支**现在就被 `:509-511` 截走**，本轮要把它挪进 `_classify_failure`）：
+   a. **先看 `result.error.code`**：命中 `CLI_ERROR_CODE_MAP` 就用映射结果，message 用 `result.error.message`
+      —— CLI 自己给的码永远优先于我们的 exit code 猜测（它是唯一知道"为什么没提交"的一方）；
+   b. 有 `error.code` 但未命中映射 → `agent_error`，原码与原文放进 message；
+   c. 完全没有 `error` 对象 → `result_schema_unsatisfied`（这是 exit 1 的正常形态，E-42）。
+3. 无 `result` 行：
+   a. 观察到 `retry` 事件（`observed["retries"] > 0`）→ `provider_unavailable`，message 带
+      `lastErrorType / attempts / maxRetries / lastDelayMs`；
+   b. stderr 命中 `AUTH_HINTS` → `provider_auth`；
+   c. 否则按 `EXIT_MAP` + `STDERR_REFINE`。
+4. `isError: true` 且既无 doc 也无 `error.code` → `agent_error`（既有 `:515-517` 的行为保留，但只在上面三条都不成立时生效）。
+
+> **为什么要写第 2a 条**（本轮最容易写错的一处）：若只在"无 `result` 行"的分支里认 `provider_*`，
+> 那么 `--retry-max 0` + 坏 base URL 这种**有 result 行、有 `error.code: network_error`、但没有 retries**
+> 的情形会落到 exit 1 → `result_schema_unsatisfied`，把网络问题报成"模型不肯提交报告"——
+> 而 AC-83 的真实失败探针走的正是这条路径。**分类的第一真源是 CLI 的 `error.code`，不是 exit code。**
+
+**`retry` 事件必须被转发**（P-4）。实测形状（E-45，逐字）：
+
+```json
+{"type":"retry","sessionId":"…","attempt":3,"maxRetries":10,
+ "errorType":"network_error","delayMs":3743,"tier":1,"tierCount":2,"totalAttempts":3}
+```
+
+**注意 `attempt` 会重置**：实测同一进程里出现过 `attempt:1,2` 然后又是 `attempt:1,2,3,4,5,6`
+（两次独立的请求各自从 1 数）。因此**不能用 attempt 当累计计数**，累计用 `totalAttempts` 的最大值，
+或本地自增（本设计用本地自增 + 保留 `attempt/maxRetries` 供显示）。这是本轮第二个容易写错的地方，
+测试用例 `test_retry_counter_does_not_reset_on_new_request` 专门守它。
+
+映射到 `runner_base`：
+
+```python
+class AgentEventType(StrEnum):
+    ...                                   # 既有 5 个
+    retry = "agent.retry"                 # 新增
+```
+
+事件载荷：`{"attempt","maxRetries","errorType","delayMs","tier","tierCount","totalAttempts","retries"}`，
+其中 `retries` 是本地累计。`run_manager._forward_agent_event` 加一个分支，写 `run_events` 的
+**`run.retry`**（注意：SSE 类型名与外层事件名一致，都是 `run.retry`——`agent.*` 是 CLI 的词汇，
+`run.*` 是 run 的词汇，v3 已经这样分过一次，见 `web/lib/sse.ts:12-19`）：
+
+```python
+if event.type == AgentEventType.retry:
+    self._record(session, run, "run.retry", event.payload, touch_run=False)
+    run.retry_count = (run.retry_count or 0) + 1     # 新列，见 §20.6
+    return
+```
+
+**失败指纹**（H3.5）。同一个标的连续三次同一根因，说明是配置问题而不是运气问题：
+
+```python
+def failure_fingerprint(code: str, message: str, exit_code: int | None) -> str:
+    normalized = re.sub(r"\d+", "#", (message or "").lower())[:200]
+    return hashlib.sha1(f"{code}|{normalized}|{exit_code}".encode()).hexdigest()[:12]
+```
+
+写 `runs.failure_fingerprint`。`/capabilities.engine.lastFailure` 暴露最近一次（只读，不据此降级），
+前端只在同一指纹出现 ≥3 次时把失败卡片换成更强的措辞（"这不是偶发失败：最近 3 次生成因同一原因失败"）。
+
+**逐码 hint**（P-2）。15 条码对应 15 句，全部落在 `agent/failure.py` 的**一张表**里，前端直接展示，
+不再由前端拼字符串（`web/lib/copy.ts` 只放"标签"，hint 由服务端下发，因为只有服务端知道 exit code 与 stderr）。
+例：
+
+| code | hint（一句话，中文） | retryable |
+| --- | --- | --- |
+| `provider_unavailable` | 模型服务连续不可用（网络错误）。稍等 1–2 分钟再试；若每次都这样，检查网络/代理与 `ARAGON_BASE_URL` | ✔ |
+| `provider_auth` | 模型凭证被拒绝或额度耗尽。检查 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` 是否有效、余额是否充足 | ✘ |
+| `schema_over_budget` | 报告 Schema 超出引擎上限（深度/体积/节点数），这是代码问题：按提示缩小 Schema 后重试 | ✘ |
+| `result_schema_unsatisfied` | 模型没能提交合规报告。看 `api/workspace/runs/<id>/aragon.ndjson` 里最后一次 `submit_result` 的拒绝原因；或换更强的模型 | ✔ |
+| `budget_exceeded` | 本次生成撞上轮次/时长预算。调大 `ARAGON_MAX_TURNS` / `ARAGON_MAX_DURATION_MS`，或换更快的模型 | ✔ |
+| `usage_error` | 命令行参数或本机配置不被引擎接受。看 `argv.json` 与 `aragon.stderr.log` | ✘ |
+| `result_missing` | 引擎正常退出却没有交付结果（异常路径）。先看 `aragon.ndjson` 尾部 | ✔ |
+
+#### 20.3.5 关键代码路径 4：成本三态（H4）
+
+**问题重述**（E-44 / E-49）：`cost.known=false` 是 deepseek 这条路的**常态**，不是例外。于是：
+
+* `runs.cost_usd` 恒为 NULL，`reports.cost_usd` 恒为 NULL；
+* `cost_ledger` 每行 `usd=NULL, known=0`；
+* `/cost/summary` 的 `spentUsd` 恒为 0，`unknownRuns` 恒等于 run 数；
+* 预算闸门（`cost_service.can_start`）对着一个空账本永远放行——**它不是"没超"，是"永远不知道"**；
+* 而 `pricing.py` 里 `cost_for_tokens()` **全仓无调用者**，价格表里也**没有 deepseek-flash**。
+
+**设计：新增 `agent/cost_model.py`，一个判定函数，三种来源**
+
+```python
+# agent/cost_model.py  （只依赖 agent/pricing.py 与 runner_base，不 import services/）
+COST_SOURCES = ("reported", "estimated", "unknown")
+
+@dataclass(frozen=True, slots=True)
+class CostResolution:
+    source: str                    # reported | estimated | unknown
+    usd: float | None              # reported 或 estimated 的最终值；unknown → None
+    reported_usd: float | None
+    estimated_usd: float | None
+    model: str | None
+    price_version: str | None      # 只有 estimated 才有意义
+
+    def as_payload(self) -> dict[str, Any]: ...
+
+def resolve_cost(result: AgentResult) -> CostResolution:
+    """唯一判定入口（O-13）。
+
+    优先级：CLI 报的 > 自己算的 > 不知道。**绝不把 estimated 说成 reported**。
+    """
+    if result.cost_known and result.cost_usd is not None:
+        return CostResolution("reported", result.cost_usd, result.cost_usd, None, result.model, None)
+    estimated = cost_for_tokens(result.model, result.usage.input_tokens, result.usage.output_tokens)
+    if estimated is not None:
+        return CostResolution("estimated", estimated, None, estimated, result.model, PRICE_VERSION)
+    return CostResolution("unknown", None, None, None, result.model, None)
+```
+
+**价格表补数据**（`agent/pricing.py`，**只加数据、不改既有数据**）：
+
+```python
+PRICE_VERSION = "2026-03"          # 既有常量，值由 "2026-02" 升一版（价格变了就要换版本号）
+PRICES = {
+    ...                                        # ★既有 6 条一字不动（历史报告要用旧价解释）
+    "deepseek-reasoner": ModelPrice(input_per_1k=0.00055, output_per_1k=0.00219),
+    "deepseek-flash":    ModelPrice(input_per_1k=0.00014, output_per_1k=0.00028),
+}
+```
+
+> ★v8 修订（V8-P1-6）**样例里原来那句 `"deepseek-chat": 0.00027 / 0.00110` 必须删掉**：`PRICES` 里
+> `deepseek-chat` **已存在**且是 `0.0003 / 0.0012`。把它当"新增"再写一遍 = 静默改价 ≈ −10%，
+> 与同一段自己写的"既有 6 条保留（历史报告要用旧价解释）"直接矛盾，而且 `PRICE_VERSION` 还停在旧值，
+> 事后完全看不出价格变过。**只新增两条 deepseek 数据**；真要改既有价，那是另一次 PRICE_VERSION 变更 +
+> 注释里写生效日期（AC-89 钉住这条）。
+>
+> **这三行是数据，不是结论。** 实施节点必须做两件事：①按当次查到的公开价目表核对并**在注释里写下来源与日期**；
+> ②保留 `ARAGON_PRICE_OVERRIDE`（JSON：`{"deepseek-flash":{"in":0.00014,"out":0.00028}}`）作为运维出口，
+> 让"价格变了"是一次重启而不是一次发版。价格错了的后果很轻（一个估算偏了），
+> 而"永远不知道"的后果很重（预算闸门形同虚设）——这是本轮选择估算的理由。
+
+`model_family("deepseek-flash")` 现在返回 `"deepseek-flash"`（两段，末段非数字），
+而 `price_for()` 的前缀匹配只对 `lowered.startswith(key)` 生效，所以命不中 `deepseek-chat`——
+**行为是对的**（不会把 flash 当 chat 计价），但需要一个测试钉住它，否则将来给 `deepseek` 加一条前缀价就会悄悄串价。
+
+**数据模型侧的三列分工**（`§20.6`）：
+
+| 落点 | 列 | 语义 |
+| --- | --- | --- |
+| `runs` | `cost_usd` / `cost_known` | **语义不变**：只放 CLI 报的（`cost_known=1` 当且仅当 `source="reported"`） |
+| `runs` | `cost_usd_est` / `cost_source` | 新增：估算值与来源三态 |
+| `reports` | `cost_usd` / `cost_known` | 沿用：**已报告**成本 |
+| `reports` | `quality.cost` | 新增 JSON：`{source, reportedUsd, estimatedUsd, priceVersion}`（`quality` 本来就是自由 JSON，无需迁移） |
+| `cost_ledger` | `usd` / `known` | **语义不变**：`usd IS NULL` ⇔ 未报告（AC-55 一字不改） |
+| `cost_ledger` | `usd_est` / `source` | 新增 |
+
+**汇总与闸门**（`services/cost_service.py`）：
+
+```python
+summary = {
+    "spentUsd": ...,                    # 只含 reported（不变，AC-55）
+    "estimatedUsd": ...,                # 新增：只含 estimated
+    "spentIncludingEstimatedUsd": ...,  # 新增：两者相加，界面上的"含估算"
+    "reportedRuns": ..., "estimatedRuns": ..., "unknownRuns": ...,   # 新增前两个
+    "priceVersion": PRICE_VERSION,      # 新增
+}
+```
+
+`can_start()` 的判定基数从 `spentUsd` 改为 `spentIncludingEstimatedUsd`，并在 402 detail 里增加
+`estimatedShareUsd` 与一句 `note`（"其中 $x 为按 token × 单价估算，不是引擎回执"）。
+**这是本轮唯一一处会让"以前放行、现在拦下"的行为变化**，因此：①只有真的设了月度预算才可能触发（默认 0 = 不设限）；
+②拦截文案必须说清是估算；③覆盖按钮与留痕（`runs.reason`）沿用 v6，不加新机制。
+
+> ★v8 修订（V8-P2-8）**SQL 口径写死，否则闸门会随历史数据分布漂移**：`can_start` 现在是内联
+> `SUM(CostLedger.usd) WHERE usd IS NOT NULL`（`cost_service.py:292-300`）。新基数必须写成
+> **`SUM(COALESCE(usd, usd_est))`**，并保持"三态互斥"这条不变式：
+> `reported` → `usd` 有值且 **`usd_est` 必须 NULL**；`estimated` → `usd` NULL 且 `usd_est` 有值；
+> `unknown` → 两者都 NULL（计次，不进金额）。理由：写成 `usd + usd_est` 会对 reported 行重复计
+> （`COALESCE` 与 `+` 的区别），只写 `SUM(usd_est)` 又会把全部 reported 行漏掉——两种错都只在
+> 某些数据分布下显形，AC-78/AC-80 因此要同时断言"reported 行 `usd_est` 为 NULL"。
+
+`MAX_REPORT_COST_USD` 的告警（`run_manager._check_cost`，`:608-623`）分两档：`reported` 超限 → `warn`；
+`estimated` 超限 → `info`（估算不该吓人，但也不该静默）。
+
+> ★v8 修订（V8-P2-6）：`cost_service.estimate()` 的真实签名是 **`estimate(session, symbol, kind="run")`**
+> （不是 `estimate(symbol)`），`runs` 侧现在用"该标的最近一版报告的 `model`"来取价，注释写着"`runs` 表没有 model 列"。
+> 本轮**新增了** `runs.agent_model`，因此那条注释必须改，且取值顺序改为 **`runs.agent_model` → `reports.model` →
+> `settings.aragon_model`**（近因优先：一次失败但已付费的 run 现在也有模型名可查）。
+
+#### 20.3.6 关键代码路径 5：提示词与提交纪律（H5）
+
+实测给了两个反直觉的结论，本节据此改提示词。
+
+**结论一：格式难度不是主要成本。** 探针 B（要求 40 字以上中文说明 + 枚举 + 0–1 浮点）与探针 A（三个平凡字段）
+的 input tokens 是 3375 vs 3352，轮次都是 1。所以**不该**为了"少失败"去把 schema 削薄——真正的成本在资料读取。
+
+**结论二：CLI 的 repair 轮对"取值矛盾"无效。** 探针 C 的两次修复请求原文完全一样：
+
+```text
+Your answer was not submitted as a structured result.
+Attempts so far: 0.
+The last rejection named these fields:
+result: required (nothing was submitted)
+```
+
+而真正的拒绝原因分别是 `must be <= 0` 与 `must be >= 10`。也就是说：**修复轮只擅长"少字段"**，
+对"字段值自相矛盾"它只会复述同一句话，`attempts` 甚至一直是 0。这不是 CLI 的 bug（它的 schema 是任意 JSON Schema，
+它没法知道矛盾在哪），而是**我们的提示词必须让模型在提交之前自己发现矛盾**。
+
+**因此 `research_system.md` 增加两节（v7 内容，逐字可落地）：**
+
+```markdown
+## 提交前自检（submit 之前逐条过一遍，任一条不过就先改再提交）
+1. 顶层 11 个必填字段是否都在：schema / instrument / asOf / headline / rating / summary
+   / keyMetrics / sections / risks / sources / disclaimer（缺一个就等于没提交）。
+2. sections 是否恰好 5 个，id 是否为 thesis / fundamentals / valuation / risks / catalysts。
+3. 每个段落是否有实质内容：不要留占位、不要写"待补充"、不要用同一句话填充两段。
+4. 每个数字是否都能在当前目录的资料文件里找到；找不到就删掉这句话，不要换个说法绕过去。
+5. 结论句是否带 [S1] 形式的来源；纯推断是否以"推断"二字开头。
+6. 每段 ≤ 400 字、每张表 ≤ 20 行、comparables 的同业 ≤ 8 家——写超了模型自己截断，不要指望下游修。
+
+## 资料读取顺序与读取预算（这是最容易花光预算的地方）
+1. 先读 snapshot.json（事实底座，8KB）。
+2. 再读 fundamentals.md 与 sources.md（各 <1.5KB）。
+3. bars.csv 有 248 行、表头是 date,open,high,low,close,volume：
+   **技术面结论只需要最后 60 个交易日**，不要整份读进来复述。
+4. 全部资料读完仍不足以支撑某段结论，就少写那段，并在 summary 里说明数据不足。
+```
+
+第 3 条来自实测：一次真实生成用了 7 次工具调用、72,810 input tokens，其中 `bars.csv` 是 47.6KB
+（`api/workspace/runs/e4edf912…/bars.csv`）。把"只看最后 60 行"写成硬指令，是这条链路上最省的一刀。
+
+**提示词版本与指纹的关系（一条重要的裁决 H-5）**：给提示词加 `<!-- version: 7 -->` 与 sha1，
+写进 `quality.prompt{version, sha1, bytes}`，但**不**把它塞进 G4 的引擎指纹。
+理由：指纹是可比性的输入，`quality.engine` 一旦多一个输入项，**所有历史报告都会变成"引擎不同"**，
+于是版本比较永远带一条琥珀横幅——这恰好违反 G4 的初衷（只提示真正的差异）。
+`quality.prompt` 只做展示与追溯；将来若要纳入，必须连同指纹算法一起升到 `fingerprint_v2` 并写迁移说明。
+
+#### 20.3.7 关键代码路径 6：能力与健康（H6）
+
+`/capabilities` 是前端一切开关的真源（v6 起 5 个布尔）。本轮扩展 `engine`（**不改既有字段的语义**，
+★v8 修订 V8-P1-2：**`model`/`provider` 不进 `engine`**——`EngineCapabilityOut` 的类注释与
+`fingerprint.as_capability()` 都写着"V6-P1-3：那两个字段在 `aragon` 子对象与 `reports.model` 里"，
+本轮不许把它们搬回来变成第三份副本）：
+
+```jsonc
+"aragon": {                       // 既有子对象：引擎"是谁"的唯一真源
+  "model": "deepseek-flash", "provider": "openai",
+  "baseUrl": "https://api.deepseek.com"   // 新增（唯一一处）：取自子进程 system 事件 model.baseUrl
+},
+"engine": {                       // 既有子对象：指纹与预算（"凭什么可比、还剩多少余量"）
+  "fingerprint": "…", "drift": false,              // 既有；drift 是 bool（三态在 comparability.same）
+  "schemaBytes": 18392,                            // 既有
+  "allowTools": ["read_file", "…"],                // 既有
+  "posture": "lean",                               // 新增
+  "schemaSha1": "7a93509904b4",                    // 新增：当次交给 CLI 的那份（见 §20.3.3）
+  "schema": {"bytes": 18392, "depth": 11, "nodes": 658, "maxDepth": 12, "headroom": 1},  // 新增
+  "limits": {"retryMax": 6, "repairTurns": 2, "maxOutputTokens": 40000,
+             "valueBytes": 262144, "schemaBytes": 65536},                                  // 新增
+  "priceVersion": "2026-03",                       // 新增
+  "lastFailure": {"code": "provider_unavailable", "hint": "…", "at": "…", "count": 3}       // 新增，可为 null
+}
+```
+
+> ★v8 修订（V8-P1-2 / V8-P2-1）：①`engine.model` / `engine.provider` **删掉**（会推翻 V6-P1-3）；
+> `baseUrl` 放到 `aragon` 子对象，因为它是"引擎是谁"，不是"指纹与预算"。②`drift` 保持 **`bool`**
+> （`schemas/capabilities.py` 与 `web/lib/types.ts` 都是 `boolean`），v7 样例里的 `"drift": null` 会让实现者
+> 去改两个类型定义、或直接 500；"指纹缺失/两侧不可比"这件事由 `comparability.same` 表达，不是 `drift`。
+
+`baseUrl` 的来源要说清：它**不在** `aragon info --json` 里（E-39 的 `info` 没有 baseUrl），
+只出现在 `exec` 的 `system` 事件 `model.baseUrl` 字段里（实测首行：
+`{"type":"system","subtype":"init",…,"model":{"provider":"openai","id":"deepseek-flash","baseUrl":"https://api.deepseek.com"},…}`）。
+因此 runner 需要把 system 事件里的 model 三元组回填到 `AgentResult.engine_info`（新增可选字段），
+由 `run_manager` 在成功/失败时写进 `runs.agent_provider / runs.agent_model`（新列）与 `quality.engine`。
+**没有 system 事件时留空，不猜。**
+
+> ★v8 修订（V8-P2-9）：`run_manager.py:358-359` 现在写着 `run.provider = result.provider` /
+> `run.model = result.model`，而 `runs` 表**没有**这两列（E-48）⇒ 这两行是**静默丢弃的 Python 属性赋值**。
+> 本轮加了 `agent_provider` / `agent_model` 之后，必须**替换**这两行（不是并排保留），
+> 否则"哪个模型生成的这一版"继续永远是 NULL，E-48 的修法等于没做。
+
+**preflight 的两项新检查，只 warn 不降级**（红线 6）：
+
+| 检查 | 命令 | 判据 | 不通过时 |
+| --- | --- | --- | --- |
+| CLI 自检 | `aragon doctor` | exit 0 = 全绿 | **warn**，把首行摘要放进 `capability.errors`；**不降级** |
+| 模型是否在名单 | `aragon models` | 目标 model 是否出现 | **warn**（`model_unknown`），**不降级** |
+
+为什么只 warn：实测 `deepseek-flash` 不在 CLI 的内置模型表里（`pricing` 与 `models` 都不认识它），
+但它确实跑通了本库那 5 次真实生成；`doctor` 也常因与本项目无关的项（例如 skills 目录的 SKILL.md 变更）非 0。
+把它当降级条件，等于"本机装了个 skill 就不许生成"——那是把误杀当稳健。
+
+**缓存策略微调**：现在失败结果也缓存 60s（`preflight.py:152-162`）。一次 `aragon info` 最坏 30s，
+用户点生成时若正好落在失败缓存的窗口里，会看到一个"引擎不可用"的假象。改为：
+**成功缓存 60s / 失败缓存 10s**（`_cache` 里多存一个 `ok` 布尔即可，不引入新机制）。
+
+#### 20.3.8 序列图：一次真实生成的完整路径（含 retry 与 estimated 成本）
+
+```
+POST /instruments/{id}/reports            ← ★v8 修订（V8-P1-5）：202 体是
+  ├─ manager.start()                         {runId, status:"queued", instrumentId, estimateUsd}
+  │    ├─ active_run_for()      → 409 run_conflict        **没有 streamUrl**（SSE 由前端自己拼
+  │    ├─ count_active_runs()   → 429 too_many_runs        /runs/{id}/events，v6 P1-8 已钉死）
+  │    ├─ cost_service.estimate(session, symbol, "run")   → 历史中位数 × price_for(model)
+  │    ├─ cost_service.can_start(estimate_usd=…)          → 超限且无 override：402 monthly_budget_exceeded
+  │    │                                                     （含 estimateUsd + estimatedShareUsd + note）
+  │    └─ workspace.mkdir() → 建 runs 行（★V6-P1-7 插位：两个冲突检查之后、mkdir 之前）
+  └─ manager.schedule(run.id)   → 后台六阶段
+run_manager._pipeline（六阶段不变）
+  ├─ 1 resolve
+  ├─ 2 snapshot        → 失败 → data_provider_unavailable（既有）
+  ├─ 3 prepare         → write_snapshot_files + assert_schema_identity + assert_prompt_budget
+  │                       ↳ schema_drift / prompt_over_budget（本轮新增，spawn 之前）
+  ├─ 4 research
+  │    build_runner → preflight（成功缓存 60s / 失败 10s）
+  │    schema_budget.measure → 写 workspace/schema_budget.json（成败都写，V8-P2-5）
+  │    build_argv  → schema_budget（ok? 否则 schema_over_budget，不 spawn）
+  │                → lean posture（--no-update/--no-skills/--no-gene/--no-memory/--no-todo/--no-team）
+  │                → --retry-max 6 / --max-tokens 40000 / --result-repair-turns min(config, cli_max=2)
+  │    spawn aragon exec --output-format stream-json
+  │      event: system            → engine_info{provider,model,baseUrl}
+  │      event: retry       ×n    → run.retry{attempt,maxRetries,errorType,delayMs,tier,retries}
+  │      event: tool_call/result  → run_events（既有）
+  │      event: text_delta        → agent.text（既有）
+  │      event: result            → _classify_failure(observed, exit, stderr)
+  │                                  ①structured.value ? doc
+  │                                  ②result.error.code ? CLI_ERROR_CODE_MAP
+  │                                  ③无 result 行 ? retries>0 → provider_unavailable : EXIT_MAP+STDERR_REFINE
+  │      无 result 行              → provider_unavailable（本轮新增判定）
+  ├─ 5 validate        → 既有：结构修补 + json/pydantic 双校验 + 接地报告
+  │                       ↳ 用**当次** schema 校验（schema_path=request.schema_path，V8-P0-1）
+  │                       ↳ 失败 → result_schema_unsatisfied（既有），本轮附 hint 与 attempts
+  ├─ 6 persist         → create_version(status, quality{…, cost{source,…}, engine{…, schemaSha1}, prompt{…}})
+  │                    → cost_service.record(usd=reported|null, usd_est=estimated, source=…)  ← run 与 ask_deep 两条路
+  └─ run.done {…, costUsd, costSource, costUsdEst, retryCount, structuredAttempts}
+```
+
+### 20.4 文件 / 模块变更计划
+
+**新增（8 个源文件 + 8 个测试文件）**
+
+| 文件 | 意图（一句话） | 归属 |
+| --- | --- | --- |
+| `api/app/agent/schema_budget.py` | schema 深度/体积/节点测量（含写死的 `depth` 口径）+ 上限比较 + **`assert_schema_identity()`**（唯一实现，V8-P0-1） | H2 |
+| `api/app/agent/failure.py` | 15 条 run 级错误码的 FailureSpec 表 + `EXIT_MAP` / `STDERR_REFINE` / `CLI_ERROR_CODE_MAP` + `failure_fingerprint()`——**纯表与纯函数，不 import runner** | H3 |
+| `api/app/agent/cost_model.py` | `resolve_cost()` 三态成本判定的唯一入口 + 价格覆盖 | H4 |
+| `api/app/services/run_diagnostics.py` | ★v8（V8-P2-10）**只做落库与聚合**：从 `AgentResult`/`Run` 提炼 `retry_count / structured_attempts / agent_provider / agent_model / failure_fingerprint`，以及"同标的最近 N 次同指纹"的查询。**不产生任何判定**（判定与指纹公式在 `agent/failure.py`，V8-P2-10） | H3 |
+| `api/tests/test_schema_budget.py` | 深度/体积/节点三档边界 + 当前 schema 的实测值（O-12） | H2 |
+| `api/tests/test_failure_taxonomy.py` | exit code 表驱动 + retry 观测 + 指纹稳定性（O-14/O-16） | H3 |
+| `api/tests/test_cost_model.py` | reported/estimated/unknown 三态优先级、串价守卫 | H4 |
+| `api/tests/test_agent_posture.py` | lean/full 两种 argv、`--no-*` 位置、预算 flag 夹取（O-11） | H1 |
+| `api/tests/test_retry_events.py` | attempt 重置、累计计数、SSE 与 run_events 同名同形（O-15） | H3 |
+| `web/tests/cost-source-label.test.ts` | 成本三态在界面上的三种措辞与"含估算"双数 | H7 |
+| `web/tests/retry-event.test.ts` | ★v8（V8-P1-3）：用假 `EventSource` 断言 `run.retry` 真进了 `useGenerationStream` 的 state（只改类型联合时此用例必红） | H7 |
+| `api/tests/test_migration_0004.py` | ★v8（V8-P0-2）：`upgrade head` 链路可达（`down_revision` 指向真实 revision id）+ downgrade 往返 + 老行 `source='unknown'` | H3/H4 |
+
+**修改（16 个源文件）**
+
+| 文件 | 改动 | 归属 |
+| --- | --- | --- |
+| `api/app/config.py` | 新增 `aragon_agent_posture / aragon_retry_max / aragon_max_output_tokens / aragon_repair_turns / aragon_max_prompt_bytes / price_override`；`price_override` 解析成 dict | H1/H2/H4 |
+| `api/app/agent/aragon_runner.py` | lean 位注入、三个显式预算 flag、`schema_budget` + `schema_drift` + `prompt_budget` 三道闸门（度量写进 `stream()`，V8-P2-5）、`retry` 事件转发、**`_classify_failure(observed, …)`**（V8-P1-1，`_classify_exit` 降为第 3 步）、`engine_info` 回填 | H1/H2/H3 |
+| `api/app/agent/pricing.py` | `PRICE_VERSION=2026-03` + **两条** deepseek 数据（既有 6 条一字不动，V8-P1-6）+ `ARAGON_PRICE_OVERRIDE` 读取 | H4 |
+| `api/app/agent/preflight.py` | `doctor` / `models` 两项 warn 检查、失败缓存 10s（`_cache` 增 ok 位） | H6 |
+| `api/app/agent/runner_base.py` | `AgentEventType.retry`、`AgentResult.engine_info / retries / structured_attempts` | H3 |
+| `api/app/agent/prompts/research_system.md` | 追加"提交前自检 6 条"与"资料读取顺序与预算"两节 + 版本标记 | H5 |
+| `api/app/agent/prompts/ask_system.md` | 追加版本标记（内容不变，但指纹要能区分两版提示词） | H5 |
+| `api/app/services/run_manager.py` | `run.retry` 转发、`_check_cost` 两档、`resolve_cost` 结果落三处、失败指纹与 hint 进 `run.error`、**替换** `:358-359` 的 `run.provider/model` 为 `agent_provider/agent_model`（V8-P2-9）、把 `request.schema_path` 传给 `validate_doc`（V8-P0-1） | H3/H4 |
+| `api/app/services/report_validator.py` | `validate_doc(..., schema_path=None)`（默认回退 `load_schema()`，**有缓存的那份不再被当成唯一真源**）、`quality` 增加 `cost` / `prompt` 两个子对象（`quality.engine` 只加 `schemaSha1`，不放 model/provider） | H4/H5 |
+| `api/app/services/report_service.py` | `create_version(..., cost_source=, cost_usd_est=)` → 账本写 `usd_est/source` | H4 |
+| `api/app/services/cost_service.py` | `summary()` 三新增字段、`record()` 强制 `source`（白名单，非法值记 `ledgerGap`，V8-P1-7）、`can_start()` 换基数（`SUM(COALESCE(usd, usd_est))`，V8-P2-8）、`estimate()` 优先取 `runs.agent_model` | H4 |
+| **`api/app/services/ask_service.py`** | ★v8 新增（V8-P1-4）：`:724` 的 `record()` 传 `usd_est` / `source`，否则深答的行被默认值标成 `unknown` | H4 |
+| `api/app/routers/capabilities.py` | `engine` 扩展 7 项（**不含 model/provider**，V8-P1-2）+ `limits` 3 项；`aragon` 子对象增 `baseUrl` | H6 |
+| **`api/app/schemas/run.py` / `api/app/schemas/cost.py`** | ★v8 新增（V8-P2-7）：`RunOut` 增 8 个字段、`CostSummary`/`CostEntry` 增三态字段——**响应模型是第二道门，漏了等于没实现**（`to_run_out` 会 `TypeError`，pydantic 会静默丢弃） | H4/H6 |
+| `api/app/routers/runs.py` / `routers/cost.py` | run 详情返回新列；成本面板返回新字段 | H4/H6 |
+| `web/lib/types.ts` | `EngineCapability` 增 5 项（**不加 model/provider**）、`CostSummary` / **`CostEntry`**（V8-P2-7）类型镜像、`RunStreamEventType` 增 `run.retry` | H7 |
+| **`web/lib/sse.ts`** | ★v8（V8-P1-3）：`run.retry` 必须同时进**类型联合**与 `wire([...])` 订阅数组——只改前者，事件永远到不了 `onEvent` | H7 |
+| `web/components/generation/useGenerationStream.ts` | reducer 加 `case 'run.retry'`：`retryCount` 进 state，落成一条 warn 日志 + 徽标 | H7 |
+| `web/components/generation/*Panel*.tsx` | 重试徽标、成本三态标签、失败卡片 hint | H7 |
+| `web/lib/copy.ts` | 8 条新文案（重试中 / 已确认成本 / 估算成本 / 成本未知 / 含估算 / 同一原因失败三次 / 生成已中止 / 参数不被接受） | H7 |
+| `api/app/db/migrations/versions/0004_agent_diagnostics.py` | 9 个新列 + 1 个索引（见 §20.6）；`revision="0004_agent_diagnostics"` / `down_revision="0003_cost_ledger"` | H3/H4 |
+| `api/app/models/run.py` / `models/cost.py` | 镜像新列；`cost_ledger.source` **不加** ORM `CheckConstraint`（V8-P1-7） | H3/H4 |
+| `api/tests/fixtures/fake_aragon.py` | 新增 5 个 mode（`retry_storm` / `exit1_unsatisfied` / `schema_too_deep` / `no_result_line` / `attempts_two_then_ok`），并把 `unsatisfied` 的 exit 改成**实测的 1** | P-8 |
+| `.env.example` | 新增 6 个变量的注释块 | H1/H2/H4 |
+| `README.md` | 新增「AI 引擎稳健性（v7）」一节：三组实测探针 + 五类失败 + 成本三态 | 全部 |
+
+> **与 §19.4 的写法一致**：本表只列**改什么**，不重复列"为什么"。每个"为什么"在上文对应小节，
+> 下游按表施工即可；表里出现而正文没解释的项，视为方案缺陷，实现节点应立即报告而不是自行发挥。
+
+### 20.5 接口设计
+
+#### 20.5.1 REST 增量（不新增端点，只加字段）
+
+| 方法 | 路径 | 变更 | 兼容性 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/capabilities` | ★v8（V8-P1-2）：`engine` 增 `posture / schemaSha1 / schema{bytes,depth,nodes,maxDepth,headroom} / limits{retryMax,repairTurns,maxOutputTokens,valueBytes,schemaBytes} / priceVersion / lastFailure`（**不含 model/provider**）；`aragon` 子对象增 `baseUrl`；顶层 `limits` 增 `maxPromptBytes` | 只增不改；老前端忽略新字段 |
+| GET | `/api/v1/cost/summary` | 增 `estimatedUsd / spentIncludingEstimatedUsd / reportedRuns / estimatedRuns / priceVersion` | 只增不改；`spentUsd` 语义不变 |
+| GET | `/api/v1/cost/entries` | 每行增 `usdEst / source` | 只增不改 |
+| POST | `/api/v1/cost/budget` | 402 detail 增 `estimatedShareUsd / note` | 只增不改 |
+| GET | `/api/v1/runs/{id}` | 增 `retryCount / structuredAttempts / agentProvider / agentModel / costSource / costUsdEst / failureFingerprint / hint` | 只增不改 |
+| GET | `/api/v1/reports/{id}` | `quality` 内增 `cost{source,reportedUsd,estimatedUsd,priceVersion}` 与 `prompt{version,sha1,bytes}` | `quality` 本就是自由 JSON（§19.6 的"版本演进不回填"） |
+| POST | `/api/v1/instruments/{id}/reports` | 无变更（**仍无 `POST /runs`**） | 不变 |
+
+#### 20.5.2 SSE 增量
+
+```text
+event: run.retry
+data: {"seq":42,"type":"run.retry","at":1794841300000,
+       "payload":{"attempt":3,"maxRetries":6,"errorType":"network_error",
+                  "delayMs":3743,"tier":1,"tierCount":2,"totalAttempts":7,"retries":7}}
+```
+
+`run.error` 的 payload 扩展（**既有字段一个不动**）：
+
+```jsonc
+{"code":"provider_unavailable", "message":"…", "exitCode":1,
+ "retryable":true,                                  // 既有
+ "hint":"模型服务连续不可用（网络错误）…",             // 新增
+ "retryCount":7, "structuredAttempts":0,            // 新增
+ "failureFingerprint":"a1b2c3d4e5f6",               // 新增
+ "tokensIn":72810, "tokensOut":24955,               // 新增（失败也把花费说清楚）
+ "costSource":"estimated","costUsdEst":0.0123}      // 新增（失败也是一次付费调用）
+```
+
+> **这一点很重要**：失败也要报花费。实测探针 C 一次失败花了 18930 tokens；
+> 现在这条成本信息在失败路径上被完全丢弃（`_finalize_failure` 只写 `result.cost_usd`，而它恒为 NULL）。
+
+#### 20.5.3 CLI 契约（argv 差异表，逐行可施工）
+
+| 段 | 现状（v6） | 本轮（v7） | 依据 |
+| --- | --- | --- | --- |
+| 全局 | `--provider` / `--model`（可空） | 不变 | — |
+| 全局 | `--cwd` / `--tool-timeout` / `--idle-timeout` | 不变；新增断言 `idle >= tool + 30000` | CLI 文档自己会抬，我们显式保证 |
+| 全局 | `--max-tokens auto` | `--max-tokens <ARAGON_MAX_OUTPUT_TOKENS=40000>` | 实测最大输出 34586 |
+| 全局 | （缺） | `--no-update --no-skills --no-gene --no-memory --no-todo --no-team`（lean） | E-43：省 2551 tokens/轮（+76%）+ 消 stderr 污染 |
+| 全局 | `--no-color` | 不变 | — |
+| exec | `--output-format stream-json --partial-messages --no-save-session` | 不变 | 解析器依赖 `text_delta` |
+| exec | `--permission-mode strict` + `--allow-tool` + `--deny-tool` | 不变（`submit_result` 必须在 allow 里，P0-1） | — |
+| exec | `--append-system-prompt-file` | 不变 | ★P1-11 |
+| exec | `--result-schema` | 不变；**前置** `schema_budget.measure` + `assert_schema_identity` | E-46 / E-47 |
+| exec | `--result-repair-turns 2`（硬编码） | `min(ARAGON_REPAIR_TURNS=2, info.result.maxRepairTurns)` | E-39 |
+| exec | （未设，CLI 默认 10） | `--retry-max <ARAGON_RETRY_MAX=6>` | E-45：6 次已吃 44s |
+| exec | `--on-result-unsatisfied error` | 不变 | 我们要拿到 exit 1 而不是空报告 |
+| exec | `--max-turns` / `--max-duration` / `--prompt-file` | 不变 | — |
+
+`aragon doctor` 与 `aragon models` **只出现在 preflight**，不进入生成 argv（生成路径上多一个进程就是多一个失败点）。
+
+> **本表每一行都是本机实跑验证过的，不是从 `--help` 抄的结论**（可反驳性纪律，见 §20.0 开篇）：
+> 探针 A/B/C 覆盖 `--no-*` 的全局位置、`--max-tokens auto`、`--result-repair-turns 2`、
+> `--on-result-unsatisfied error`；探针 D（E-51）专门补测最没把握的那一个——
+> `--retry-max 6` 放在全局段（`exec` 之前）被 CLI 接受，exit 0、`structured.attempts=1`，
+> 且 **stderr 完全为空**（对比 E-43 那条 skills 告警，`--no-skills` 的收益是双份的：省 token + 不再污染日志）。
+> 实现节点仍保留 `test_agent_posture.py` 的 argv 冒烟：CLI 升级到 0.6.7x 之后这些位置**可能**变，
+> 那条测试就是警报器。
+
+#### 20.5.4 run 级错误码的完整分类表（本轮重写，15 条，其中 4 条新增）
+
+> 这张表是**运行态**的码表（写在 `runs.error_code` 与 `run.error` 事件里），与 §7.3 的 **HTTP** 码表是两套词汇。
+> 二者的关系只有一处：`AGENT_MODE=real` 且能力不足时，`build_runner` 抛的 `AgentError.code` 会以
+> 503 的 HTTP 码返回（`aragon_unavailable` / `structured_result_unsupported`），其余全部是 run 级。
+> **既有 HTTP 码一个字不改**（红线 4）。
+
+| # | code | HTTP（同步路径） | retryable | severity | 触发点（file:line 现状） | 本轮 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `aragon_unavailable` | 503 | ✘ | config | `aragon_runner.py:229,264-265`；`preflight.degradedReason` | 不变 |
+| 2 | `structured_result_unsupported` | 503 | ✘ | config | `aragon_runner.py:230-236`；`build_argv:106-111` | 不变 |
+| 3 | **`schema_over_budget`** | — | ✘ | config | 新增：`schema_budget.measure()` 不通过（spawn 前）；或 exit 2 + `result_schema_too_deep` | **新增** |
+| 4 | **`schema_drift`** | — | ✘ | config | 新增：workspace schema 与真源 sha1 不一致 | **新增** |
+| 5 | **`prompt_over_budget`** | — | ✘ | config | 新增：prompt+system+schema > `ARAGON_MAX_PROMPT_BYTES` | **新增** |
+| 6 | `result_missing` | — | ✔ | engine | `_classify_exit(0)`（`aragon_runner.py:557-558`） | 不变 |
+| 7 | `result_schema_unsatisfied` | 500（仅同步） | ✔ | model | `_finalize:507-513`、`_classify_exit` 新增 exit 1、`validate_doc` errors | 扩展（exit 1） |
+| 8 | **`provider_unavailable`** | — | ✔ | transient | 新增：无 `result` 行 + `retries > 0`（E-45） | **新增** |
+| 9 | **`provider_auth`** | — | ✘ | config | 新增：stderr 命中 401/403/quota 类特征 | **新增** |
+| 10 | `budget_exceeded` | —（409 是另一个码） | ✔ | engine | `_classify_exit(3)` | 不变 |
+| 11 | `cancelled` | — | ✘ | user | `_finalize:523-524`、`_classify_exit(130/143/129)` | 不变 |
+| 12 | `usage_error` | — | ✘ | config | `_classify_exit(2)`、`unknown option` | 精化（分出 #3） |
+| 13 | `agent_error` | — | ✔ | engine | `_classify_exit` 兜底、`isError` 且无 doc | 不变（但不再是 exit 1 的去处） |
+| 14 | `internal` | 500 | ✔ | internal | `_run` 兜底（`run_manager.py:268-270`） | 不变 |
+| 15 | `interrupted` | — | ✔ | internal | 启动时遗留 `running` 收编（`run_manager.py:655-678`） | 不变 |
+
+非 agent 的 run 级码保持原样：`instrument_not_found`、`data_provider_unavailable`。
+`_finalize_failure` 的状态映射保持不变：`cancelled → cancelled`、`budget_exceeded → budget_exceeded`、**其余 → failed**。
+
+`retryable` 白名单从 `run_manager.py:602-603` 的**内联元组**搬到 `failure.RUN_ERROR_CODES`，
+消灭"这张表在两个地方各写一份"的漂移面（这是 v6 I-33 的同型问题）。
+
+### 20.6 数据模型
+
+#### 20.6.1 迁移 `0004_agent_diagnostics`（SQLite / PostgreSQL 双兼容）
+
+```python
+# api/app/db/migrations/versions/0004_agent_diagnostics.py
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+
+# ★v8 修订（V8-P0-2）：revision id 必须与既有文件同形，`down_revision` 必须指向**真实的** revision id。
+# 0003 里写的是 `revision: str = "0003_cost_ledger"` / `down_revision: str | None = "0002_ask_search_schedule"`；
+# 写成 `"0003"` 会让 `alembic upgrade head` 直接报 `Can't locate revision identified by '0003'`。
+revision: str = "0004_agent_diagnostics"
+down_revision: str | None = "0003_cost_ledger"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+def upgrade() -> None:
+    # runs：诊断与成本三态。全部可空或有默认值 —— 老行不需要回填（不回填是纪律，不是偷懒）
+    with op.batch_alter_table("runs") as batch:
+        batch.add_column(sa.Column("retry_count", sa.Integer(), nullable=False, server_default="0"))
+        batch.add_column(sa.Column("structured_attempts", sa.Integer(), nullable=True))
+        batch.add_column(sa.Column("agent_provider", sa.String(32), nullable=True))
+        batch.add_column(sa.Column("agent_model", sa.String(64), nullable=True))
+        batch.add_column(sa.Column("failure_fingerprint", sa.String(12), nullable=True))
+        batch.add_column(sa.Column("cost_usd_est", sa.Float(), nullable=True))
+        batch.add_column(sa.Column("cost_source", sa.String(12), nullable=True))
+    # cost_ledger：估算值与来源。usd / known 语义不变（AC-55）
+    with op.batch_alter_table("cost_ledger") as batch:
+        batch.add_column(sa.Column("usd_est", sa.Float(), nullable=True))
+        batch.add_column(sa.Column("source", sa.String(12), nullable=False, server_default="unknown"))
+    op.create_index("ix_cost_ledger_source", "cost_ledger", ["source", "created_at"])
+
+def downgrade() -> None:
+    op.drop_index("ix_cost_ledger_source", table_name="cost_ledger")
+    with op.batch_alter_table("cost_ledger") as batch:
+        batch.drop_column("source")
+        batch.drop_column("usd_est")
+    with op.batch_alter_table("runs") as batch:
+        for column in ("cost_source", "cost_usd_est", "failure_fingerprint",
+                       "agent_model", "agent_provider", "structured_attempts", "retry_count"):
+            batch.drop_column(column)
+```
+
+四条与 0003 同源的纪律（**照抄，别自己发明**）：
+
+1. **`batch_alter_table`**：SQLite 的 `ADD COLUMN` 只能一次一列且不能改约束，`batch` 让它与 PG 走同一条路径。
+2. **布尔列一律 `Integer` + `server_default="0"`**：`Boolean` + `DEFAULT 1` 在 PG 上是硬 DDL 错误（I-55 的教训）。
+   本轮**不新增布尔列**，`cost_source` 用字符串三态，正是为了避开这个坑。
+3. **不在 `ALTER` 里加 CHECK 约束**：SQLite 不支持给已有表加 CHECK。★v8 修订（V8-P1-7）：
+   **也不要把这条约束写进 `models/cost.py` 的 `CheckConstraint`**——v7 原文说"建表时生效，测试库走 `create_all` 也会生效"，
+   但本项目 **`api/app` 里禁止 `create_all`**（`test_boundaries.py::test_app_never_calls_create_all`），生产表由
+   `0003` 建、**没有** CHECK ⇒ 那样写的结果是"测试库里约束存在、生产库里不存在"，正好把 README 的
+   "schema 只有一个真源：Alembic" 反过来用。做法改为：`COST_SOURCES` 白名单在 `cost_service.record()` 写入前判定，
+   非法值记 `warning` 并计入 `ledgerGap`（与"账本失败绝不抛给调用方"同一条纪律），AC-86 覆盖。
+   这条理由必须写进迁移文件的注释，否则下一个人会"顺手补上"然后在 PG 上炸。
+4. **`server_default` 必须给**：`cost_ledger.source` 非空，老行靠默认值 `'unknown'` 落地——
+   **老行的 `source='unknown'` 是正确事实**（当时确实不知道），不是占位符。
+
+`test_cost_ledger_migration.py` 的既有断言（0003 的列）全部保留，新增 4 条：①新列存在且类型正确；
+②老行迁移后 `source='unknown'`、`usd` 仍为 NULL；③`ux_cost_ledger_ref` 唯一键未被破坏；④downgrade 可往返。
+
+#### 20.6.2 内存形状（服务层契约）
+
+```python
+# agent/cost_model.py
+@dataclass(frozen=True, slots=True)
+class CostResolution:
+    source: Literal["reported", "estimated", "unknown"]
+    usd: float | None
+    reported_usd: float | None
+    estimated_usd: float | None
+    model: str | None
+    price_version: str | None
+
+# agent/failure.py
+@dataclass(frozen=True, slots=True)
+class FailureSpec:
+    code: str
+    retryable: bool
+    severity: Literal["config", "transient", "model", "user", "internal"]
+    hint: str
+    http_status: int | None = None
+
+# agent/schema_budget.py
+@dataclass(frozen=True, slots=True)
+class SchemaBudget:
+    path: str
+    bytes: int
+    depth: int
+    nodes: int
+    max_bytes: int
+    max_depth: int
+    max_nodes: int
+    @property
+    def ok(self) -> bool: ...
+    @property
+    def headroom(self) -> int: ...          # max_depth - depth，当前 = 1
+```
+
+`quality` 的最终形状（`report_validator.ValidationOutcome.quality`，**只增不改**）：
+
+```jsonc
+{
+  "groundedRatio": 0.94, "missingSections": [], "prunedBlocks": 0, "ungroundedCount": 3,
+  "source": "aragon",
+  "grounding": { /* v6 G1，不变 */ },
+  "engine": { /* v6 G4，不变；不塞 prompt，见裁决 H-5 */ },
+  "cost":   {"source": "estimated", "reportedUsd": null, "estimatedUsd": 0.0123, "priceVersion": "2026-03"},
+  "prompt": {"version": 7, "sha1": "…", "bytes": 2163}
+}
+```
+
+老报告没有 `cost` / `prompt` 键 → 界面按缺失渲染（"早期版本"），**不回填**（§19.6.3 的纪律一条不改）。
+
+#### 20.6.3 容量与索引假设
+
+* `runs.retry_count` 每行自增，一次抖动风暴实测 8 次，上限由 `ARAGON_RETRY_MAX` 决定（≤20），`Integer` 足够。
+* `ix_cost_ledger_source` 让"估算占比"这类查询不必全表扫；账本 730 天保留，按每天 20 次生成估算 ≈ 1.5 万行，
+  索引代价可忽略。
+* `failure_fingerprint` 是 12 位十六进制字符串，不做索引：查询形态是"最近 N 条同标的的 run"（已有
+  `ix_runs_instrument_started`），不是"按指纹查"。**不要**为一个不存在的查询建索引。
+
+### 20.7 测试与验收标准
+
+#### 20.7.1 分层（延续 §12.1 / §18.7.1）
+
+| 层 | 工具 | 本轮新增内容 |
+| --- | --- | --- |
+| 单元 | pytest | `schema_budget` 三档边界、`_classify_exit` 表驱动、`resolve_cost` 优先级、`failure_fingerprint` 稳定性、`model_family` 不串价 |
+| 契约 | pytest + `fake_aragon.py` | argv 的 lean/full 两份黄金串、5 个新 model 剧本、`run.retry` 同名同形 |
+| 集成 | pytest + TestClient | `run_manager` 全链路：抖动风暴 → `provider_unavailable` + hint + retryCount；估算成本进账本；预算闸门用估算基数 |
+| 迁移 | pytest | 0004 双分支（SQLite 实跑；PG 由 `TEST_POSTGRES_URL` 缺失则 skip，与既有约定一致） |
+| 前端 | vitest | 成本三态标签、retry 计数进 state、失败卡片 hint 渲染 |
+| 真实 | 手工 + 留档 | 用本轮凭证跑 1 次真实生成 + 1 次真实失败（见 AC-83） |
+
+#### 20.7.2 验收标准（AC-67 ~ AC-84）
+
+| 编号 | 断言（可机器判定） | 判据 |
+| --- | --- | --- |
+| **AC-67** | lean 体位下 `build_argv()` 同时含 6 个 `--no-*`，且全部在 `exec` 之前 | `test_agent_posture.py::test_lean_flags_precede_exec`（断言索引关系，不是集合包含） |
+| **AC-68** | `ARAGON_AGENT_POSTURE=full` 时 6 个 flag 一个不出现（可回退） | 同上文件 `test_full_posture_keeps_default_flags` |
+| **AC-69** | `build_argv()` 输出 `--retry-max` 与 `--max-tokens <数字>`，且 `--result-repair-turns` 被 `info.result.maxRepairTurns` 夹取 | `test_agent_posture.py::test_budget_flags_are_explicit` + `test_repair_turns_clamped_by_cli` |
+| **AC-70** | `schema_budget.measure()` 对当前 schema 返回 `bytes=18392, depth=11, nodes=658, ok=True, headroom=1` | `test_schema_budget.py::test_current_schema_budget`（数字与 E-46 一致） |
+| **AC-71** | 深度 13 的 schema 让 `build_argv()` 抛 `schema_over_budget`，且 `create_subprocess_exec` **未被调用** | `test_schema_budget.py::test_over_deep_schema_never_spawns`（monkeypatch 断言零调用） |
+| **AC-72** | workspace schema 被改一个字节 → `schema_drift`，且在 spawn 之前 | `test_schema_budget.py::test_schema_drift_blocks_before_spawn` |
+| **AC-73** | 分类优先级逐条可判（★v8：入口是 `_classify_failure(observed, …)`，V8-P1-1）：①`result.error.code=result_schema_unsatisfied` → 同名码；②`error.code=network_error` 但 `retries=0` → `provider_unavailable`（**不许**落 exit 1 / `result_schema_unsatisfied` 的分支，§20.3.4 头号守卫）；③exit 2 + `result_schema_too_deep` → `schema_over_budget`；④exit 0 + result 无 structured 且无 error → `result_schema_unsatisfied`；⑤exit 3 → `budget_exceeded` | `test_failure_taxonomy.py`（表驱动：一个参数一张表，含②这条回归） |
+| **AC-74** | 无 `result` 行 + ≥1 条 `retry` → `provider_unavailable`，且 message 含 `lastErrorType`、`maxRetries`、`attempts` | `test_failure_taxonomy.py::test_retry_storm_is_provider_unavailable` |
+| **AC-75** | `retry` 事件在第二次请求里 `attempt` 重置时，累计 `retries` **不重置**；SSE `run.retry` 与 `run_events.type='run.retry'` 载荷逐字段相等 | `test_retry_events.py::test_retry_counter_does_not_reset_on_new_request` + `test_retry_event_shape_parity` |
+| **AC-76** | 每个 run 级码都有非空 `hint`，且 hint 不含英文原始报错（无 `exit code` / `stderr` 字样） | `test_failure_taxonomy.py::test_every_code_has_a_human_hint`（遍历 15 条） |
+| **AC-77** | `resolve_cost()`：reported 优先、estimated 次之、都没有 → unknown；estimated **绝不**写成 reported | `test_cost_model.py`（三态 + 交叉用例） |
+| **AC-78** | 一次真实 deepseek-flash 生成（`cost.known=false`）后：`runs.cost_source='estimated'`、`runs.cost_usd` 仍为 NULL、`cost_ledger.source='estimated'`、`usd=NULL`、`usd_est>0` | `test_cost_model.py::test_estimated_run_keeps_reported_columns_null` + AC-83 的真实留档 |
+| **AC-79** | `/cost/summary` 同时返回 `spentUsd`（只含 reported）与 `spentIncludingEstimatedUsd`，且两者在不含估算时相等 | `test_cost_service.py`（扩展既有汇总测试） |
+| **AC-80** | 设了月度预算且 `spent + estimate > budget` 时 402，detail 含 `estimatedShareUsd` 与 `note`；`override=1` 仍能生成且留痕 | `test_cost_service.py::test_budget_gate_counts_estimates` |
+| **AC-81** | `research_system.md` 含"提交前自检"6 条编号与"资料读取顺序"4 条，且 `quality.prompt.sha1` 与实际文件 sha1 相等 | `test_prompt_discipline.py`（读文件断言 + 生成后校验 quality） |
+| **AC-82** | `fake_aragon.py` 每个 mode 的 exit code 与 §20.5.4 / `EXIT_MAP` 一致（表驱动，`unsatisfied` 必须是 1） | `test_failure_taxonomy.py::test_fake_cli_exit_codes_match_measured_contract` |
+| **AC-83** | 用本轮凭证完成 **1 次真实成功生成**（`quality.source='aragon'`，`ndjson` 非空，`quality.cost.source` 非 unknown）与 **1 次真实失败**（人为把 `--retry-max 0` + 一个无效 base URL，落 `provider_unavailable` 且带 hint），审计材料留档在 `api/workspace/runs/<id>/` | 人工执行 + 把两个 runId 写进本节末尾的"实测留档" |
+| **AC-84** | 生成的任何审计材料（`argv.json` / `run_events` / `result.json` / 报告 JSON / `/capabilities`）都不含 `sk-` 前缀的字符串 | `test_no_secret_in_run_artifacts.py`（扫 workspace + capabilities 响应体） |
+| **AC-85** | ★v8（V8-P1-3）：`run.retry` 真的到达前端 state——假 `EventSource` 派发一条 `run.retry` 后 `state.retryCount === 1` 且日志里有一条 warn；删掉 `sse.ts` 的 `wire([...])` 里那一项时该用例**必红** | `web/tests/retry-event.test.ts`（先写反例，再写正例） |
+| **AC-86** | ★v8（V8-P1-4 / V8-P1-7）：账本三态互斥——每一行都满足 `source='reported' ⇔ usd IS NOT NULL AND usd_est IS NULL`、`source='estimated' ⇔ usd IS NULL AND usd_est IS NOT NULL`、`source='unknown' ⇔ 两者皆 NULL`；**run 与 ask_deep 两条路都覆盖**（`report_service` + `ask_service`）；非法 `source` 由 `record()` 记 `ledgerGap` 而非写入 | `test_cost_service.py::test_ledger_source_tristate_is_exclusive`（含一条 ask_deep 用例） |
+| **AC-87** | ★v8（V8-P0-2）：迁移链路可达——`down_revision` 指向真实 revision id，`alembic upgrade head` 从空库一次跑到 head，`downgrade -1` 再 `upgrade head` 往返成功 | `api/tests/test_migration_0004.py`（SQLite 实跑；PG 缺 `TEST_POSTGRES_URL` 则 skip，与既有约定一致） |
+| **AC-88** | ★v8（V8-P0-1）：`assert_schema_identity` 只有**一处定义**（`agent/schema_budget.py`），`test_boundaries` 全绿；且 `validate_doc(schema_path=…)` 用的是**当次**交给 CLI 的那份——把 `schemas_dir` 里的文件在校验前改一个字节，校验仍按 `workspace/schema.json` 通过（构造性证明，不是时间窗口赌博） | `test_schema_budget.py::test_validation_uses_the_shipped_schema` + `test_boundaries.py` |
+| **AC-89** | ★v8（V8-P1-6）：`PRICES` 里既有 6 条与 `2026-02` 版**逐值相等**（改价必须换 `PRICE_VERSION` 并在注释写生效日期）；`price_for("deepseek-flash")` 命中新条目、`price_for("deepseek-chat")` 仍命中旧条目 | `test_cost_model.py::test_existing_prices_are_immutable` |
+
+**回归门（一条不放松）**：`pytest --collect-only` 数量不得低于本轮改动前（v6 基线 621 passed / 2 skipped）；
+`vitest` 不得低于 186；`ruff` / `tsc` / `eslint` / `next build` / `check-bundle`（238.5kB ≤ 240kB）全绿。
+
+#### 20.7.3 反例优先（本轮纪律）
+
+每个新机制**先写它该拦住的反例**，再写正例：
+
+1. 闸门类（AC-71/72）：先写"深度 13 必须被拦"，再写"当前 schema 必须通过"。只写后者等于没测。
+2. 分类类（AC-73/74）：先写"exit 1 不许落 agent_error"，再写"exit 0 + 正常 result 必须成功"。
+3. 成本类（AC-77/78）：先写"reported 存在时不许走估算"，再写"reported 缺失时必须估算"。
+   最容易犯的错是反过来：估算覆盖了引擎回执，账本从此不可信。
+4. 事件类（AC-75）：先写"attempt 重置不许重置累计"，再写"累计正常自增"。
+
+### 20.8 风险与缓解
+
+| 编号 | 风险 | 影响 | 缓解 |
+| --- | --- | --- | --- |
+| **R-31** | 估算价与真实账单偏差（deepseek 调价 / 阶梯价 / 缓存命中折价） | 月度总额偏乐观或偏保守，预算闸门误放/误拦 | ①`PRICE_VERSION` + `ARAGON_PRICE_OVERRIDE` 让价格是一行数据；②界面上永远并排显示"已确认 / 含估算"，不合并成一个数；③估算只影响**闸门**，不影响报告的 `quality.cost.reportedUsd` |
+| **R-32** | lean 体位关掉 skills/gene 后，将来某个提示词真的需要它们 | 生成质量下降且不明显 | `ARAGON_AGENT_POSTURE=full` 一行回退；AC-68 保证回退路径可用；`quality.engine.posture` 记录当次体位，出问题能追到 |
+| **R-33** | `--retry-max 6` 对某些持续 5xx 的供应商仍会拖满 3 分钟 | 用户体感"卡住" | `run.retry` 事件让等待可见（"第 3/6 次重试"）；`--max-duration` 兜底；失败后 hint 明确说"检查网络/代理" |
+| **R-34** | 新增 4 个错误码让前端文案表被拉长 | 漏一个 → 用户看到代码 | AC-76 强制每码有 hint；前端**不再**自己拼文案（hint 由服务端下发），漏文案的风险转移到服务端一处 |
+| **R-35** | `can_start` 换成含估算的基数，可能让"以前能生成"的用户被拦 | 体验回退 | 默认预算 `0`（不设限）时行为完全不变；AC-80 断言覆盖路径仍可生成且留痕；402 detail 里写明是估算 |
+| **R-36** | 迁移 0004 在 SQLite 上给已有表加非空列 | 老库升级失败 | `server_default` 必给；`batch_alter_table`；`test_cost_ledger_migration.py` 覆盖 upgrade/downgrade 往返 |
+| **R-37** | `assert_schema_identity` 太严：有人只想热改一次 schema 试试 | 生成被硬拦 | 这条**故意**是硬失败：白烧一轮 18 万 tokens 比"多改一次文件"贵得多。错误消息直接写出两份文件的路径与 sha1 |
+| **R-38** | 失败指纹把"同因不同表现"算成不同指纹（消息里含可变数字/路径） | 三次告警不触发 | 归一化规则：小写 + 数字→`#` + 截断 200 字符 + 去掉绝对路径；AC-75 的同类测试扩展到指纹稳定性 |
+| **R-39** | 提示词加长后 `prompt_over_budget` 被触发 | 生成直接失败 | 默认 32KB 对当前 24KB（2.5+2.2+19）留有 33% 余量；超出是被**有意**拦下的（提示词膨胀 = 每轮都多花钱） |
+| **R-40** | 与 v6 的 G4 指纹发生语义混淆（有人把 prompt sha1 塞进指纹） | 所有历史报告变成"引擎不同"，琥珀横幅常驻 | 裁决 H-5 写明"不进指纹"；`test_engine_fingerprint.py` 加一条"指纹输入项固定为 5 项"的断言 |
+| **R-41** | ★v8：`schema_drift` 只在 spawn 前比一次，生成那两分钟里 schema 被换掉 | CLI 接受、Python 拒绝 ⇒ 白烧一次完整生成（本库历史上最贵的一次是 181k input tokens） | 见 §20.3.3 的构造性修法：`validate_doc(schema_path=request.schema_path)` + `quality.engine.schemaSha1`；AC-88 用"校验前改真源一个字节"来证明它不再依赖时间窗口 |
+| **R-42** | ★v8：`cost_ledger.source` 的 `NOT NULL DEFAULT 'unknown'` 让"漏传 source"变成静默错标，而不是报错 | 已知成本的记账行被算成 unknown，`/cost/summary` 的 reported/estimated 分列失真，且永远不报错 | `record()` 的 `source` 改为**必填关键字参数**（缺参直接 `TypeError`，在测试期就炸）；`COST_SOURCES` 白名单拒绝非法值并记 `ledgerGap`；AC-86 对 run 与 ask_deep 两条路都断言三态互斥 |
+
+### 20.9 实施顺序与里程碑（M19–M24）
+
+| 里程碑 | 内容 | 依赖 | 完成判据 |
+| --- | --- | --- | --- |
+| **M19** | H1 + H2：`config.py` 六个新配置、lean argv、`schema_budget.py`（含 `assert_schema_identity` 唯一实现与 `depth` 口径）、两道 spawn 前闸门、`schema_budget.json` 落盘（成败都写） | 无 | AC-67~AC-72、AC-88 绿 |
+| **M20** | H3：`failure.py` 15 码表、`_classify_failure` 表驱动、`retry` 事件到 `run.retry`、失败指纹、`run_manager` 落库 | M19（`schema_over_budget` 码要先进表） | AC-73~AC-76、AC-82、AC-85 绿 |
+| **M21** | H4：`cost_model.py`、pricing 价格数据（只加两条）、迁移 0004（revision 链 + 无 ORM CHECK）、`cost_service` 三态、预算闸门换基数、**`ask_service` 的账本 source** | M19（失败路径也要报花费） | AC-77~AC-80、AC-86、AC-87、AC-89 绿 |
+| **M22** | H5 + H6：提示词两节 + 版本、`preflight` doctor/models（只 warn）、失败缓存 10s、`capabilities.engine` 扩展 | M20（lastFailure 需要指纹） | AC-81 绿；`/capabilities` 快照对比 |
+| **M23** | H7：`run.retry` 进 SSE 类型**与订阅数组**、`retryCount` 进 state、成本三态标签、失败卡片 hint、`copy.ts` 8 条 | M20~M22 | AC-85 绿 + vitest 全绿 + `check-bundle` ≤240kB |
+| **M24** | 端到端：真实成功 + 真实失败各一次、README 一节、`.env.example` 六条 | M19~M23 | AC-83 留档 + 回归门全绿 |
+
+**为什么 M21（成本）排在 M22（能力）之前**：成本三态要在**失败路径**上也生效（失败的生成同样付费），
+而失败路径的分类是 M20 的产物；把成本放在能力展示之前，才能保证"先算对，再说给人听"。
+
+### 20.10 本轮自检（写完即执行，结果记录在此）
+
+| # | 检查项 | 结果 |
+| --- | --- | --- |
+| 1 | 本节每条"现状"断言都有 file:line 或实测编号（E-39~E-51） | ✔ 逐条核对（★v8 评审又补 E-52~E-64，其中 E-55/E-56/E-60 就地改正了 v7 的三处数字与归因） |
+| 2 | 没有引入 CLI 上不存在的 flag | ✔ 全部来自 `aragon --help` / `aragon exec --help` 实测输出。★v8 逐条复核：`--no-update/--no-skills/--no-gene/--no-memory/--no-todo/--no-team/--retry-max(0-20)/--max-tokens(n\|auto)` 全在**全局段**，`--result-repair-turns(0-2，默认 1，`info` 报 max 2)/--result-schema/--on-result-unsatisfied/--partial-messages/--no-save-session/--prompt-file/--max-turns/--max-duration` 全在 `exec` 段；lean + `--retry-max 6` + `--result-repair-turns 2` 的组合实测 exit 0 且结构化提交成功（E-54） |
+| 3 | 没有把"新端点"当既有端点 | ✔ 本轮零新增端点；`POST /runs` 仍是 405（`routers/runs.py` 里那个显式 405 处理器），202 体按真实字段写（E-64） |
+| 4 | 没有改动既有错误码语义 | ✔ `budget_exceeded`(409) / `monthly_budget_exceeded`(402) / `NULL ≠ 0` 一字未改 |
+| 5 | 新机制都能被反例推翻（AC 里有反例） | ✔ §20.7.3 四条反例优先；AC-85/86/88 各带一条"删掉守卫必红"的反例 |
+| 6 | 迁移可用 SQLite 与 PG 各跑一遍 | ⏳ 由实现节点执行（本节给出双兼容写法、四条纪律与 AC-87 的往返断言） |
+| 7 | 依赖方向不破（`agent/` 不 import `services/`） | ✔ `cost_model` / `schema_budget` / `failure` 三个新模块都只依赖 `agent/` 内部与 stdlib；★v8 修掉 v7 把 `assert_schema_identity` 放在 `services/snapshot.py` 却又在 `agent/` 调用的写法（V8-P0-1） |
+| 8 | 已实测：真实 CLI 的 3 组探针 + 5 类失败现象 | ✔ 见附表 §20.10.1（★v8 追加 6 次真实 `exec` 探针与 3 个本地探针） |
+
+#### 20.10.1 本轮实测记录（证据 E-39 ~ E-51）
+
+| 编号 | 实测内容 | 关键数字 |
+| --- | --- | --- |
+| E-39 | `aragon info --json`（cli 0.6.68 / core 0.2.80 / node v22.18.0 / provider openai / model deepseek-flash / hasApiKey true / 33 tools 含 submit_result） | `result{schemaBytes 65536, schemaDepth 12, validationNodes 5000, maxViolations 12, valueBytes 262144, defaultRepairTurns 1, maxRepairTurns 2, ajv true}` |
+| E-40 | 探针 A（平凡 schema，lean 体位） | exit 0、turns 1、`structured.attempts=1`、usage 3352/74、`cost{amount 0, known false}` |
+| E-41 | 探针 B（含枚举 + ≥40 字中文 + 0–1 浮点） | exit 0、turns 1、usage 3375/125 → **格式难度不改变轮次** |
+| E-42 | 探针 C（不可满足 schema：`minimum 10` 且 `maximum 0`） | exit **1**、`stopReason error`、`error.code result_schema_unsatisfied`、turns 5、3 条 assistant、2 次 `submit_result` 被拒、2 条 `source=result_repair` 的 user 消息且 **`Attempts so far: 0`**、usage 17864/1066、无 structured |
+| E-43 | 默认体位 vs lean 体位（同一平凡任务） | inputTokens **5903 vs 3352**（+2551，+76%）；默认体位 stderr 有 `[skills] warn: SKILL.md changed since install…` |
+| E-44 | 历史真实 run `e4edf912` | turns 4、tool_call 7、usage 72810/24955、`cost{amount 0, known false}`；全库 10 次成功真实生成 **0 次有成本**；`cost_ledger` 仅 1 行 `known=0, usd NULL` |
+| E-45 | 历史真实 run `f0f62c2c`（抖动风暴） | 8 条 `retry` 事件（attempt 序列出现两次 1→6，**会重置**）、`errorType network_error`、delayMs 568/1753/977/1998/3743/6030/15208/15925、**无 result 行** |
+| E-46 | schema 预算实测 | `report_doc.schema.json` 18392 B / **904 行**（v8 更正：v7 写 903，`bytes.count(10)+1` 为 904）/ **depth 11** / nodes 658 → 深度余量 **1**；历史 run `06456fcb` 死于 exit 2 `result_schema_too_deep: nests 13 levels` |
+| E-47 | 单一 schema 真源 | 34 份历史 `workspace/schema.json` 中最近 3 份与真源逐条相同；更早 2 份缺 `$defs/metric/properties/polarity/enum`（18241 B）→ 漂移**曾发生**（★v8 更正 V8-P2-2：逐字节比对现存 **34** 份，与真源相同的是 **0** 份，历史副本来自 5 个版本 12505/18241/19136/19295/19781 B；见 E-55） |
+| E-48 | `runs` 表无 `provider`/`model` 列 | `pragma table_info(runs)` **21** 列（★v8 更正 V8-P2-4：v7 写 19；多出的是 `cancel_requested` / `reason`）无二者；`run_manager.py:358-359` 的赋值被 SQLAlchemy 当普通属性**静默丢弃** |
+| E-49 | 价格表与调用方 | `PRICES` 6 条，无 deepseek-flash；`cost_for_tokens()` 除定义与 `__all__` 外**零调用** |
+| E-50 | `_classify_exit` 分支 | 6 分支（0/2/3/130·143·129/unknown option/session-id），**无 exit 1**、无 retry 观测、无 schema 精化 |
+| E-51 | 探针 D（lean 体位 + `--retry-max 6`，全局段） | exit 0、turns 1、`structured.attempts=1`、usage 3362/59、`cost{known false}`、**stderr 为空**（E-43 的 skills 告警消失）→ 7 个新 flag 位置全部被接受 |
+
+> 探针脚本与原始 NDJSON 留在 `.agentmesh/repro/`（`probe_agent.py` / `probe_agent2.py` / `schema_budget.py`
+> / `schema_drift.py`），不入库、不参与构建，只作为本节数字的复核材料。
+
+#### 20.10.2 评审节点（v8）补测记录（证据 E-52 ~ E-64）
+
+> 下面 13 条由 **v8 评审节点**用同一份凭证重跑得到（脚本见 `## 评审记录（Review Notes · Iteration 4）`），
+> 目的只有一个：v7 的每个数字要么被复现，要么被改正。已改正的三处是 **E-55（schema 漂移证据）**、
+> **E-56（exit 1 的实际落点）**、**E-60（`runs` 列数 19 → 21）**。
+
+| 编号 | 实测内容 | 关键结论 |
+| --- | --- | --- |
+| E-52 | CLI 深度闸门压测（容器层数 11/12/13/14/15/16） | `nests` = 容器层数 **+1**；判据 `nests > 12` 才拒绝；越界后报 `limit+2`（14）且**不产生模型调用** |
+| E-53 | 真实 `report_doc.schema.json` 过闸门 | 放行（exit 1 + result 行 + `structured:null`，usage 9046/256）⇒ P-5 的前提成立 |
+| E-54 | lean 体位 + `--retry-max 6` + `--result-repair-turns 2` | exit 0、`structured.value={"ok":true}`、attempts 1、usage 3252/41、**stderr 为空**、`cost.known=false` |
+| E-55 | 34 份历史 `workspace/schema.json` 逐字节比对 | **0 份**与真源相同；来自 5 个历史版本（12505/18241/19136/19295/19781 B） |
+| E-56 | `_finalize:501-513` 的分支顺序 | **有** result 行即 `result_schema_unsatisfied`；`_classify_exit` 只在无 result 行时调用 |
+| E-57 | `_record(..., touch_run=False)` / `_forward_agent_event` / `run_events.type(VARCHAR 24)` | `run.retry` 落地无障碍；`retryable` 内联元组确在 `:602-603` |
+| E-58 | `web/lib/sse.ts` 的订阅清单 | 硬编码 7 个事件名的 `wire([...])`；只改类型联合收不到事件 |
+| E-59 | `cost_service.record()` 的调用点 | 两个：`report_service:177`（run）与 `ask_service:724`（ask_deep） |
+| E-60 | 真实 SQLite 库 | `runs` **21** 列（无 provider/model）；17 次 run（10 succeeded / 7 failed）；`cost_known=1` **0** 行；`cost_ledger` 1 行 `known=0, usd NULL` |
+| E-61 | `models/cost.py` / `0003` / `test_boundaries` | 现有表**没有**任何 `CheckConstraint`；`api/app` 禁止 `create_all` |
+| E-62 | `EngineCapabilityOut` / `fingerprint.as_capability()` | 各只有 4 个字段，且注释点名 V6-P1-3（model/provider 不进 `engine`） |
+| E-63 | `0001/0002/0003` 的 revision id | `"0001_init"` / `"0002_ask_search_schedule"` / `"0003_cost_ledger"` |
+| E-64 | `routers/reports.py:114-119` 与 `run_manager.start():190` | 202 体 `{runId,status,instrumentId,estimateUsd}`（**无 streamUrl**）；`can_start` 在 `start()` 内 |
+
+### 20.11 本轮的裁决清单（一句话一条，供下游直接引用）
+
+| # | 裁决 | 理由（一句） |
+| --- | --- | --- |
+| H-1 | 默认体位 `lean`，`full` 保留为回退 | 实测省 2551 tokens/轮（+76%），且消除 stderr 污染 |
+| H-2 | schema 闸门放在 `build_argv()` 里 | 生成与 deep ask 共用同一 choke point，天然覆盖两条路 |
+| H-3 | api 层**不做**整跑自动重试 | CLI 已有 10 次带抖动退避；再包一层把最坏成本翻倍并掩盖系统性失败 |
+| H-4 | exit 1 = `result_schema_unsatisfied` | 实测（E-42），不是推测 |
+| H-5 | 提示词 sha1 **不进**引擎指纹 | 进则所有历史报告变"引擎不同"，可比性横幅常驻，违反 G4 初衷 |
+| H-6 | 成本引入 `estimated`，但与 `reported` 分列分措辞 | 不知道价格与装作不知道是两件事；账本 `usd IS NULL` 语义一字不改 |
+| H-7 | 预算闸门用"含估算"的基数 | 否则闸门对着空账本永远放行（当前实际状态） |
+| H-8 | `doctor` / `models` 只 warn 不降级 | 实测名单外模型可用、doctor 也会因无关项非 0；据名单降级就是误杀 |
+| H-9 | 失败也要报花费 | 实测一次失败花 18930 tokens，现在这条信息被丢弃 |
+| H-10 | 新增列一律可空或带 `server_default`，不回填老行 | 与 §19.6.3 一致：回填会伪造事实 |
+| H-11 | `source` 用字符串而非布尔 | 三态（reported/estimated/unknown）无法用布尔表达，且避开 PG 的 `BOOLEAN DEFAULT 1` 坑（I-55） |
+| H-12 | hint 由服务端下发，前端不拼字符串 | 只有服务端知道 exit code / stderr；AC-76 因此可机器判定 |
+| H-13 | `--retry-max 6` 而非沿用 CLI 的 10 | 10 次最坏会撞 `--max-duration`，把网络问题误记成"模型太慢" |
+| H-14 | `--max-tokens 40000` 取代 `auto` | 实测最大输出 34586；数字让截断可预测 |
+| H-15 | 失败指纹只告警、不自动降级、不自动禁用 | 与前两轮的"降级永不上抛"一致：能说清的问题不该用静默的手段处理 |
+| H-16 | 不新增 `POST /runs`、不加 §20.5.1 之外的端点 | 第二个生成入口 = 第二个并发真源（v6 C-13 的结论不变） |
+| H-17 | ★v8：`assert_schema_identity` 的**唯一实现**在 `agent/schema_budget.py`，`services/snapshot.py` 与 `build_argv()` 各调用一次 | `agent/ → services/` 被 `test_boundaries` 拦下（V8-P0-1）；一份实现 + 两个调用点才同时满足"依赖方向"与"单一真源" |
+| H-18 | ★v8：校验用**当次交给 CLI 的那份** schema（`validate_doc(schema_path=…)`），不靠 spawn 前的一次比对 | 真正会丢报告的时间窗是生成中的两分钟，而 `load_schema()` 还有进程级缓存；构造性正确优于时间窗口赌博（R-41） |
+| H-19 | ★v8：`capabilities.engine` 永不出现 `model`/`provider` | v6 V6-P1-3 已定：那两个事实的权威在 `aragon.*` 与 `reports.model`，第三份副本必然漂移（V8-P1-2） |
+| H-20 | ★v8：既有价格数据不可就地改，改价必须换 `PRICE_VERSION` | 否则历史估算被静默改写，`PRICE_VERSION` 失去追溯意义（V8-P1-6 / AC-89） |
+
+### 20.12 与上一轮遗留缺陷的关系
+
+* **I-1（schema 嵌套超限，P0 级）**：本轮把它从"踩过一次的坑"升级为**机制**（§20.3.3）。I-1 修好的是那一份 schema，
+  本轮修的是"下一份不会再无声无息地踩"。AC-70/71 正是 I-1 的永久回归门。
+* **I-42（mock 模式必然没有 `quality.engine`）**：不变。本轮新增的 `quality.cost` 在 mock 下应写
+  `{"source":"unknown"}` 而不是省略——mock 的 token 数是 0，估算会给出 0，而"0 成本"与"未知成本"是两件事（AC-55 的同一条纪律）。
+* **I-43（`budget_override` 只能由端点写）**：不变；本轮的 402 detail 扩展不新增任何可写字段。
+* **I-47~I-57（Iteration 3 最终评审的 11 处）**：一条都不回退。特别是 I-54（预算闸门会永久禁用定时刷新）提醒我们：
+  本轮改 `can_start` 的判定基数时，**必须**同时检查 `scheduler` 的让位逻辑仍然成立（M21 完成判据里加一条：
+  `test_scheduler.py` 全绿，尤其是"预算拒绝不让定时任务永久停摆"的那条）。
+* **v6 遗留的 G4 指纹与 `runs` 表无 model 列（E-48）**：本轮用 `agent_provider/agent_model` 两列补上。
+  在此之前，"哪个模型生成的这一版"只能从 `reports.model` 反查——一次 run 失败（没有 report）就永久失去这条信息。
+
+---
+
+### 20.13 给实现节点的一句话
+
+把这一轮当成**给一条已经在跑的流水线装仪表**：不要动它跑的路线（六阶段、单 worker、结构化文档、只标不改数），
+只在三个位置装表——**进门前**（schema/prompt/身份三道闸门）、**途中**（retry 与失败分类）、**出门后**（成本三态与失败指纹）。
+每装一块表，先写它该报警的那个反例（§20.7.3）。装完之后，任何一次失败都应该能回答三个问题：
+**这是什么失败、我下一步做什么、这次花了多少钱。**
+
+---
+
+## 评审结论（Review Verdict · Iteration 4）
+
+> **评审对象**：`spec.md` **v7**（Iteration 4 增量设计 §20，H1–H7）。
+> **结论**：**有条件通过（approved with conditions）**。条件见 C-19 ~ C-24，全部落在"实现节点必须自己跑一遍"的地方，
+> 不存在需要回到设计阶段重写的东西。
+
+### 判断
+
+1. **方向正确，且是当前最该补的一块。** 需求是"确保 Agent 和解析生成报告的 AI 能力可用稳健"。v7 没有去加功能，
+   而是把"稳健"拆成 8 条可被机器判定的性质（P-1~P-8），逐条用真实 CLI 反驳——这个做法本身是本轮最重要的产出：
+   它把"稳不稳定"从形容词变成了 8 条 AC。三条主线（进门前闸门 / 途中分类 / 出门后成本）彼此正交，
+   且都建立在 v6 既有不变式之上，**没有引入新的架构层、新的第三方依赖、第二个并发真源或第二个生成入口**。
+2. **最贵的两个判断是对的。** ①`schemaDepth 12` 与 `depth 11` 的余量只有一层——我用合成的 12 层 schema 直接把
+   CLI 的闸门压出了原话（`nests 13 levels deep; the limit is 12`，3.8 s、**没花一次模型调用**），并顺手钉住了
+   `nests` 的口径（容器层数 + 1），这条闸门从此可测；②成本恒 `known:false` 不是偶发——我重放的 lean 探针
+   只有 3293 tokens，CLI 照样报 `cost{amount:0, known:false}`。所以 H4 的 `estimated` 不是"锦上添花"，
+   而是把"每月花了多少"从问号变成一个可解释的数。
+3. **八处 P1 里有五处是"会在最需要的时刻失效"**，不是文风问题：分类规则写在看不见 `result` 的函数里、
+   漂移断言只在 spawn 前比一次（真正丢报告的是生成那两分钟）、前端只改类型联合收不到事件、
+   深答的账本行被默认值错标、价格表静默改既有数据。这些的共同特征是**不报错**——
+   它们会让一轮"全绿"的实现上线后，把该说的话吞掉。这正是本项目历来最贵的一类缺陷（I-1 / V4-P1-10 / I-55）。
+4. **右则化：没有过度设计。** 15 个 run 级错误码配 15 句 hint、三道闸门、三个新模块（`schema_budget` /
+   `failure` / `cost_model`）都在既有分层里落位；I 层明确不做整跑自动重试、多模型路由、向量检索、
+   HTTP 直连模型——每一条都给了"为什么不做"，并且代码里不会留悬挂分支。
+
+### 统计
+
+| 项 | 数量 | 状态 |
+| --- | --- | --- |
+| P0 | 2 | **全部已就地修复**（V8-P0-1 依赖方向 / V8-P0-2 迁移链） |
+| P1 | 7 | **全部已就地修复**（V8-P1-1~V8-P1-7） |
+| P2 | 11 | **全部已顺手改掉**（V8-P2-1~V8-P2-11） |
+| 未解决 | 0 | —— |
+| 新增证据 | 13 条（E-52~E-64） | 全部为本机可复现（脚本在 `.agentmesh/repro/`） |
+| 新增 AC / 风险 / 裁决 | AC-85~AC-89 / R-41~R-42 / H-17~H-20 | 均为可机器判定或可引用的一行结论 |
+
+### 已修复（每条都在正文原位置带 `v8 修订（V8-Pxx）` 标记）
+
+* **V8-P0-1**：`assert_schema_identity` 的唯一实现移到 `agent/schema_budget.py`（两个调用点），并把
+  "校验用当次交付的那份 schema"补成构造性修法（§20.3.3，裁决 H-17/H-18，AC-88）。
+* **V8-P0-2**：迁移 0004 的 `revision` / `down_revision` 写成真实 revision id（§20.6.1，AC-87）。
+* **V8-P1-1**：失败分类入口改为 `_classify_failure(observed, exit_code, stderr_path)`（§20.3.4 / O-14 / AC-73）。
+* **V8-P1-2**：`capabilities.engine` 去掉 `model`/`provider`，`baseUrl` 移到 `aragon`（§20.3.7 / §20.5.1 / H-19）。
+* **V8-P1-3**：`run.retry` 同时进类型联合、订阅数组与 reducer（§20.4，AC-85）。
+* **V8-P1-4**：`ask_service` 的账本写入补 `usd_est` / `source`，`record()` 的 `source` 改必填（§20.4 / AC-86 / R-42）。
+* **V8-P1-5**：202 体按真实响应重写（§20.3.8）。
+* **V8-P1-6**：价格表只新增两条，既有 6 条不可变（§20.3.5 / AC-89 / H-20）。
+* **V8-P1-7**：`cost_ledger.source` 不加 ORM CHECK，改由 `record()` 白名单 + `ledgerGap`（§20.6.1 / AC-86）。
+
+### 通过条件（Implementation Conditions，写进 §12.2 的 Definition of Done）
+
+* **C-19**：`assert_schema_identity` 全仓只有一处定义，`api/tests/test_boundaries.py` 全绿；
+  `report_validator.validate_doc(..., schema_path=request.schema_path)` 生效，AC-88 的反例
+  （"校验前把 `schemas_dir` 里的文件改一个字节，校验仍按工作区那份通过"）必须先红后绿。
+* **C-20**：`alembic upgrade head` 从空库一次跑通、`downgrade -1` + `upgrade head` 往返成功（AC-87），
+  且迁移文件里有"为什么不加 CHECK"的注释。
+* **C-21**：AC-73 的 ②（有 result 行 + `error.code=network_error` + `retries=0`）在**两种形状**下都断言过：
+  有 result 行与无 result 行；任何一条落在 `result_schema_unsatisfied` 即视为未完成。
+* **C-22**：`GET /capabilities` 的响应里 `engine` 不含 `model`/`provider`，`aragon.baseUrl` 有值（无 system 事件时为空），
+  `engine.drift` 仍是布尔。
+* **C-23**：账本三态互斥对 **run 与 ask_deep 两条路**都成立（AC-86）；`PRICES` 既有 6 条与 `2026-02` 版逐值相等（AC-89），
+  `/cost/summary` 的 `spentUsd` 语义一字未变。
+* **C-24**：AC-85 绿（`run.retry` 真到达前端 state）；AC-83 的真实成功 + 真实失败各一次留档；
+  回归门全绿：`pytest --collect-only` ≥ 621 + 本轮新增、`vitest` ≥ 186 + 本轮新增、
+  `ruff` / `tsc` / `eslint` / `next build` / `check-bundle`（≤240 kB）零告警。
+
+### 一句话给实现节点
+
+**这一轮的正确顺序是"先证明反例会红，再让它变绿"。** 九个 P0/P1 里有六个的失败形态都是**静默**的——
+测试全绿、界面不报错、账本里少一行、事件少一条。所以每装一块表，先把 §20.7.3 那条反例写出来跑一遍看它红，
+再动手；否则你交付的是一份"看起来装了仪表"的流水线，而出问题的那天它仍然只会说"引擎异常退出"。
+
+---
+
+## 实施过程发现的方案缺陷（Implementation findings · Iteration 4 实现节点）
+
+> **本节由实现节点（M19–M24）追加**，按 §20 的约束“发现方案有错就地记录，然后按修正后的做法施工”。
+> 每条都带：现象 / 证据 / 修正 / 影响面。**没有一条是“顺手重构”**——六条全部是“照 §20 原文写会得到
+> 一个错误的运行时事实”。
+
+### I-58 · `schema.json` 的复制必须按字节，不能按文本
+
+* **现象**：`services/snapshot.write_schema_copy()` 用 `read_text()` + `write_text()` 复制 schema。
+  在 Windows 上这是 `\n` → `\r\n` 的**换行归一化**：18392 B 变成 19295 B（+903 个 `\r`）。
+* **证据**：实现时第一次跑 `test_snapshot_copy_is_asserted_at_write_time` 就红——
+  `18392B / 7a93509904b4 ≠ 19295B / 316a2ef50f5e`。而 E-55 里那 34 份历史副本中恰好有 **18 份是
+  19295 B**（= 18392 + 903），也就是说“历史 schema 漂移”里有相当一部分不是有人改了 schema，
+  而是**复制方式**造成的。§20.3.3 把 E-55 读成“每一次 schema 改动都会让历史工作区变成另一份”，
+  这条读法至少不完整。
+* **修正**：`write_bytes(source.read_bytes())`；`agent/ask_runner.render_ask_prompt()` 里的
+  `ask.schema.json` 同样按字节复制（否则每一次深度追问都会撞 `schema_drift`）。
+* **影响面**：`services/snapshot.py`、`agent/ask_runner.py`；AC-72 / AC-88 的正控因此才有意义。
+
+### I-59 · 方案的两处 severity 取值域不自洽
+
+* **现象**：§20.5.4 的分类表里 `result_missing` / `budget_exceeded` / `agent_error` 三条的
+  severity 写的是 **`engine`**，而 §20.6.2 的 `FailureSpec` 类型只列了
+  `config | transient | model | user | internal` 五项。照 §20.6.2 写 `Literal`，这三条只能在
+  实现时被压成 `internal` 或改表。
+* **证据**：`test_every_code_has_a_human_hint` 遍历 15 条码时直接炸在
+  `assert 'engine' in ('config', ...)`。
+* **修正**：取**信息更多**的那个——`Severity` 增加 `engine`，并在 `failure.py` 里写明为什么
+  （“引擎自己决定停下”与“我们内部炸了”不是一回事）。
+* **影响面**：`agent/failure.py`；不影响任何 DDL / 接口。
+
+### I-60 · `schema_drift` 闸门的“真源”是**入参**，不是硬编码的报告 schema
+
+* **现象**：§20.3.3 把断言写成 `assert_schema_identity(workspace/schema.json,
+  schemas/report_doc.schema.json)`，并明确它是 `build_argv()` 里的一道闸门。但 `build_argv()`
+  是**生成与 deep ask 共用**的 choke point（裁决 H-2），而 deep ask 交给 CLI 的是
+  `ask.schema.json`（943 B）。硬编码报告 schema 的后果是：**每一次深度追问都判成漂移**。
+* **证据**：`test_ask_api::test_deep_ask_runs_end_to_end_and_persists_cost` 在实现后立刻红：
+  `ask.schema.json (943B / 959d66c2cd5e) ≠ report_doc.schema.json (18392B / 7a93509904b4)`。
+* **修正**：`AgentRequest` 增加 `schema_source_path`（真源，可空），`build_argv()` 用
+  `request.schema_source_path` 做断言；`run_manager` 传报告 schema，`ask_runner` 传 ask schema。
+  `services/snapshot.write_schema_copy()` 仍然自己做一次（快速失败），两个调用点共用一份实现。
+* **影响面**：`agent/runner_base.py`、`agent/aragon_runner.py`、`agent/ask_runner.py`、
+  `services/run_manager.py`。AC-72 / AC-88 的断言不变，但它现在对两条路径都成立。
+
+### I-61 · `aragon doctor` + `aragon models` 是 11 秒，不能跟着 60 秒缓存走
+
+* **现象**：§20.3.7 要求 preflight 增加两项 warn-only 检查。照字面实现后，本机实测
+  `info --json` 3.4 s + `doctor` 3.3 s + `models` 7.8 s ≈ **14.5 s**（`models` 要问一次模型列表），
+  而 `check_aragon()` 在启动、`/capabilities`、每次强制探测里都会被调用。
+* **证据**：加上这两项后，`api/tests` 的每个 `client` fixture 的 setup 从 ~0.5 s 变成 ~15 s
+  （`--durations` 显示 `test_ask_api` 的 setup 是 15–16 s），整套测试从 3 分钟变 9 分钟。
+* **修正**：两项自检**独立缓存 10 分钟**（`(binary, model)` 为键），并给
+  `ARAGON_SELF_CHECK` 开关（默认开；测试里关）。能力判定**仍然不降级**——语义一点没变，
+  变的只是“多久问一次”。
+* **影响面**：`agent/preflight.py`、`config.py`、`tests/conftest.py`、`.env.example`。
+
+### I-62 · “为什么没有 CHECK 约束”的注释本身不能写出那个建表助手的名字
+
+* **现象**：§20.6.1 要求迁移文件里写清“为什么不加 CHECK”。而
+  `test_boundaries::test_no_raw_create_all_token_anywhere_in_app` 对 `api/app/**` 做的是
+  **字面扫描**——连注释里的这个词也会被拦（它守的是“这个名字不该出现在应用代码里”，
+  迁移文件也属于应用代码）。
+* **证据**：加完注释后该守卫直接点名 `0004_agent_diagnostics.py` 与 `models/cost.py`。
+* **修正**：注释改述为“禁止在应用层建表（`test_boundaries` 的两条建表守卫）”，理由一字不少，
+  但不出现那个 token；`test_migration_0004` 里改成断言这句中文，并额外断言 token 不出现。
+* **影响面**：`db/migrations/versions/0004_agent_diagnostics.py`、`models/cost.py`、
+  `services/cost_service.py`、`tests/test_migration_0004.py`。
+
+### I-63 · 真实 CLI 的供应商失败码是 `stream_error`，不是 `network_error`
+
+* **现象**：§20.3.4 的 `CLI_ERROR_CODE_MAP` 是从 `retry` 事件的 `errorType`（`network_error`）
+  推出来的。但**两套词表不是同一个**：AC-83 的真实失败探针（坏 base URL + `--retry-max 0`）
+  给出的 result 行是
+
+  ```json
+  {"type":"result","isError":true,"stopReason":"error","exitCode":1,"structured":null,
+   "error":{"code":"stream_error",
+            "message":"Network error reaching the provider. (openai network error: fetch failed (Error: bad port))"}}
+  ```
+
+  外加一行 `{"type":"error","fatal":true,"code":"stream_error",…}`。照原文的 8 条映射，
+  这条失败会落到 `agent_error`（“引擎返回了一个我们没见过的错误形态”），而它其实是一次
+  清清楚楚的网络问题——**AC-83 的失败半边因此不可能通过**。
+* **证据**：`ac83-failure-676793d2`（修正前）落 `agent_error`；`ac83-failure-2e366dd6`（修正后）
+  落 `provider_unavailable` 且带 hint。
+* **修正**：`CLI_ERROR_CODE_MAP` 增补 `stream_error / fetch_error / invalid_api_key`；并在
+  **没有 result 行**时，用 CLI 那行致命 `error.code` 作第一手证据（`observed["fatal_code"]`）。
+* **影响面**：`agent/failure.py`、`agent/aragon_runner.py`、`tests/test_failure_taxonomy.py`
+  （新增两条表驱动用例）。
+
+### AC-83 实测留档（真实凭证 / 真实 CLI 0.6.68 / lean 体位）
+
+| 用途 | runId | 结果 | 关键材料 |
+| --- | --- | --- | --- |
+| **真实成功** | `ac83-success-60f83a76` | exit 0、`structured.attempts=1`、doc 合法、usage 48126/12541、`cost_source=estimated`、`cost_usd` 仍为 NULL、`estimatedUsd=0.0102`（`priceVersion=2026-03`）、`engine.baseUrl=https://api.deepseek.com` | `argv.json`（6 个 `--no-*` 全在 `exec` 之前）/ `schema_budget.json`（18392 B / depth 11 / nodes 658 / headroom 1）/ `ac83-summary.json` |
+| **真实失败** | `ac83-failure-2e366dd6` | exit 1、`provider_unavailable`、`retryCount=0`、hint 与指纹 `b4c292bc4ae8` 均在，`retryMax=0` | `aragon.ndjson`（`error.code=stream_error` 的 result 行）/ `argv.json`（含 `--base-url` 坏地址）/ `ac83-summary.json` |
+
+两个工作区都在 `api/workspace/runs/` 下，`RUN_RETENTION_DAYS=14` 之后会被常规清理
+——这也是“留档”这件事必须写在文档里的原因：**数字会过期，判据不会**。
+
+> **一条纪律**：凭证只作为**运行时环境变量**使用（`OPENAI_API_KEY` / `DEEPSEEK_API_KEY`），
+> 没有写进 `.env`、`.env.example`、`argv.json`、`run_events`、报告 JSON 或本节。
+> `tests/test_no_secret_in_run_artifacts.py` 扫工作区与 `/capabilities` 响应体，断言 `sk-`
+> 一次都不出现（AC-84）。
+
+## 评审节点发现的缺陷（Iteration 4 · 最终评审 · 就地修复）
+
+本节记录**评审节点**逐条比对 §20 设计与实际代码时发现的 13 处缺陷（I-65~I-77）。它们的共同特征
+比上一轮更隐蔽：**代码写得像对的、测试也绿，但那条断言测的是同一个东西的两份拷贝**。每一条都
+**已就地修复**，并补了一条能挡住它的回归用例；编号接续 §20 的 I-58~I-64。
+
+评审方式：4 个并行审阅（runner/gates、failure taxonomy、cost layer、web+capabilities）逐条读
+源文件与 `git diff`，对每个"现状断言"做一次可反驳的实测（探针脚本留在 `.agentmesh/repro/`）。
+最先红的三条不是"少写了一个字段"，而是**两道闸门在最需要它的那一刻恰好放行**。
+
+### I-65 · `--idle-timeout` 只有两个数字，没有那条断言（后端 · H1）
+
+§20.5.3 的 argv 差异表写着"新增断言 `idle >= tool + 30000`"，代码只是把两个配置值原样拼进
+argv。默认值（180000 ≥ 60000+30000）让这件事永远不会显形，但 `ARAGON_TOOL_TIMEOUT_MS=170000`
+就会让一次慢工具被当成"空闲"掐断——而它表现为一条无法归因的 `cancelled`。
+
+**修复**：`build_argv()` 显式抬高到 `max(idle, tool + IDLE_TOOL_MARGIN_MS)`，配置写窄时留一条
+warn（不静默、也不拒绝启动）。`test_agent_posture.py::test_idle_timeout_is_at_least_tool_timeout_plus_30s`
+同时断言"够宽时不改动用户配置"。
+
+### I-66 · 精化后的码配着未精化的句子（后端 · H3）
+
+`_classify_exit()` 用 `STDERR_REFINE` 把 exit 2 的 `result_schema_too_deep` 改写成
+`schema_over_budget`，但 `message` 仍然取自 `EXIT_MAP[2]` 的"引擎配置或参数错误"。于是界面
+上一行说"Schema 太深"、下一行说"参数错误"，而 CLI 的原文（`nests 13 levels deep; the limit is 12`）
+被整条丢弃——**正是 §20.3.4 开头要消灭的那种自相矛盾**。
+
+**修复**：命中精化即返回 `(refined_code, hint_for(refined) + "｜引擎原文：" + stderr[:300])`。
+`test_failure_taxonomy.py::test_refined_code_comes_with_its_own_sentence` 三条一起断言（码/句子/原文）。
+
+### I-67 · `STDERR_REFINE` 对**所有**退出码生效（后端 · H3）
+
+那张表的语义是"exit 2 的已知精化"，代码却在任意退出码上都跑：exit 0 的 `result_missing`、
+exit 143 的 `cancelled`，只要 stderr 里出现过 `unknown option` 就会被改写成 `usage_error`。
+
+**修复**：循环外包一层 `if exit_code == 2:`。回归用例
+`test_stderr_refine_only_applies_to_exit_2`。
+
+### I-68 · 一个裸 `401` 子串可以推翻一个已知结论（后端 · H3）
+
+`AUTH_HINTS` 里是 `401` / `403` / `quota` 这类**子串**，而它在 `EXIT_MAP` 之前被扫描。本机一个
+上游端口是 `4013`、或供应商 stderr 里一句 `quota will reset at …`，就足以把一次用户取消
+（130/143）报成"模型凭证被拒绝"。用户会去查一个不存在的 Key 问题。
+
+**修复**：`_EXIT_CODES_WITH_CERTAINTY = {3,129,130,143}`——这几个退出码本身是结论（引擎的预算判定、
+用户的取消），不再被 stderr 改写。用例 `test_a_bare_401_substring_never_overrides_a_certain_exit_code`
+同时保留反向断言（无结论时它仍要能认出 `provider_auth`）。
+
+### I-69 · `quality.prompt.sha1` 与仓库里的提示词**永远**不相等（后端 · H5 / AC-81）
+
+`snapshot.render_prompt()` 用 `write_text(read_text(...))` 复制 `research_system.md`，在 Windows 上
+把 LF 变成 CRLF：3822 B → 3864 B。于是 `quality.prompt.sha1` 记的是**副本**的指纹，与仓库文件
+对不上；而 AC-81 要求两者相等，`test_prompt_discipline.py` 只比对了源文件，所以它一直是绿的
+（与 I-58 在 schema 上是同一个 bug，当时只修了 schema）。
+
+**修复**：`system_path.write_bytes(system_source.read_bytes())`；`ask_runner` 的 `ask_system.md`
+同一修法。`test_workspace_records_the_prompt_budget_measurement` 顺带钉住"落盘的是实测值"。
+
+### I-70 · 文档里的 `ARAGON_PRICE_OVERRIDE` 是个死开关（后端 · H4）
+
+字段叫 `price_override`，pydantic-settings 于是认 `PRICE_OVERRIDE`；而 `.env.example`、`pricing.py`
+注释与 §20.3.5 全写 `ARAGON_PRICE_OVERRIDE`，`extra="ignore"` 把未知键吞掉。运维照文档改价、
+重启，估算继续用旧价**且不报任何错**——R-31 的第一条缓解措施形同不存在。
+
+**修复**：`Field(validation_alias=AliasChoices("ARAGON_PRICE_OVERRIDE", "PRICE_OVERRIDE", "price_override"))`
+（两个名字都收，既有部署不受影响）。用例 `test_price_override_reads_the_documented_env_var`
+从**环境变量**出发而不是 monkeypatch 字段——过去正是后者让这个缺陷隐形。
+
+### I-71 · 失败码表与 §20.5.4 有三处不一致（后端 · H3 / AC-76）
+
+①`result_schema_unsatisfied` 缺 `http_status=500`（文档写明"500（仅同步）"）；
+②`data_provider_unavailable` 的 `retryable` 被翻成 `True`，而 v6 的内联元组里它**不在**，文档要求
+"保持原样"——多出来的重试按钮只会再失败一次；
+③`mock_runner` 会抛 `snapshot_missing`，它经 `_finalize_failure(exc.code)` 成为一条**真实**的 run 级码，
+却没有表项 ⇒ 用户看到通用兜底句、`retryable` 被判成 False。AC-76 的"每个码都有 hint"因此只对
+17 条成立。
+
+**修复**：三处逐一改正，并把 `snapshot_missing` 归为 `internal`（我们的快照没组装好，不是模型的问题）。
+
+### I-72 · `create_version(cost_source=…)` 的默认值是 R-42 的第二个入口（后端 · H4）
+
+`record()` 的 `source` 已经是必填关键字，但 `create_version()` 给它留了默认值 `"unknown"`。于是
+"传了 `cost_usd` 却忘了 `cost_source`"的结果是：`record()` 为维持三态互斥把 `usd` 丢弃，账本
+**静默**多出一行"未知成本"。R-42 说的正是这件事，只是搬到了上一层。
+
+**修复**：默认值改 `None` 并由金额推导（`reported` / `estimated` / `unknown`），三态白名单仍只在
+`COST_SOURCES` 一处。用例 `test_create_version_never_silently_marks_a_known_cost_as_unknown`。
+
+### I-73 · preflight "失败缓存 10s" 在最坏的路径上退化成"每次都重探 30s"（后端 · H6）
+
+`checkedAt` 在探测**开始**时就盖，而 `_run_info` 的超时是 30s。一旦 `aragon info` 卡到超时，
+缓存对象落地就已"30 秒老"，`< FAILURE_CACHE_TTL_SEC` 永远为假——每一次请求都再起一个 30 秒
+子进程，把一次供应商抖动放大成一台被自己拖垮的机器。
+
+**修复**：新增 `_remember()`，在结论产生**之后**才盖时间戳并落缓存（三个出口统一走它）。
+
+### I-74 · 深答路径在事件循环里跑阻塞子进程（后端 · H6）
+
+生成路径早已用 `asyncio.to_thread(build_runner, …)` 避开这个坑（§5.4），而深答路径的两个入口
+（`POST /reports/{id}/ask` → `create_deep_ask` → `check_aragon`，以及 `run_deep` 里的 `make_runner()`）
+都在 `async def` 里直接调用，最坏阻塞 30+15+30 秒——单 worker 下会连带卡住所有 SSE 心跳与取消。
+
+**修复**：两处都改 `await asyncio.to_thread(...)`。
+
+### I-75 · `baseUrl` 永不回填：文档说会填，代码从不填（后端 · H6）
+
+§20.3.7 写"由 `run_manager` 在生成时写回本进程的能力快照"，实际只有 `AgentResult.engine_info`
+记了它，`/capabilities.aragon.baseUrl` 永远是 `null`。"文档说会填、代码从不填"比没有这个字段更糟：
+排查"打的是哪个 endpoint"时会把它当成真的空。
+
+**修复**：`preflight.note_base_url()`（只写不降级），`run_manager` 在拿到 `result` 后调用一次。
+
+### I-76 · 四条文案没人用，一条数据通路从未接通（前端 · H7）
+
+§20.4 要求 8 条新文案，文案表里确实有 8 条，但 `retryBadge` / `sameCauseThrice` / `aborted` /
+`usageRejected` 在 `web/` 里**零引用**；`state.error.repeatCount` 从未被赋值——于是 H3.5 的
+"同一原因失败三次"没有数据来源，也就是永远不显示。同一类问题还有两处：`quality.cost` /
+`quality.prompt` 与 `CostEntry.source` 没有消费者，`AragonCapability` 的 TS 镜像缺 `baseUrl` /
+`doctor` / `modelKnown`。
+
+**修复**：`run.error` 下发 `repeatCount`（`run_diagnostics` 聚合）+ `/capabilities` 的 `lastFailure.alert`
+由服务端判定阈值；失败卡片渲染 hint 与重复告警、`usage_error` 加人话标签、取消标题改用"生成已中止"；
+`costLabel()` 接受 `quality.cost` 并由此驱动报告版本行的三态（`ReportPanel` / `VersionSwitcher`）；
+TS 镜像补齐三个字段；删掉真正无人使用的 `retryBadge` 与 `generation.cancelled`（后者被 `aborted` 取代）。
+
+### I-77 · 两条用例测的是"同一个东西的两份拷贝"（测试 · AC-75 / AC-78）
+
+①`test_retry_events.py::test_retry_event_shape_parity` 拿 `manager.replay()` 的信封与
+`json.loads(row.payload_json)` 相比——**两边是同一列**，删掉整条 SSE 路径它照样绿。
+②`run_manager` 里 `hint` / `retryCount` / `structuredAttempts` / `failureFingerprint` 与
+`record_failure()` 的调用**没有任何测试覆盖**，删掉那四行全套用例依然全绿——"失败也能回答三个
+问题"当时只写在文档里。
+
+**修复**：①改为从 `subscribe()` 的**真实订阅队列**取帧（`_record → _publish → queue` 正是
+`stream_events` 读到的东西），并断言重放与实时是同一个信封；②新增
+`test_retry_storm_reaches_the_api_with_hint_count_and_fingerprint`：`FAKE_ARAGON_MODE=retry_storm`
+走完整个 `run_manager`，断言 `/runs/{id}` 上的 `errorCode` / `hint` / `retryCount==8` / 12 位指纹，
+以及 `run_events` 里 8 条 `run.retry` 的累计计数与 `run.error` 的五个新键。
+另补 `run_diagnostics.apply_cost` 的三态互斥、`cost_source` 推导、`cost_ledger` 无
+`CheckConstraint`、`/cost/summary` 与 `/cost/entries` 的字段出得去、`limits.maxPromptBytes`
+五项——它们此前都只有"服务层有实现"而没有"接口上真的出得去"。
+
+### 修复后回归门（本节点实测）
+
+`pytest` 789 → **802 passed / 3 skipped**（+13 条回归用例）；`vitest` 225 → **232 passed / 1 skipped**（+7）；
+`ruff` / `tsc --noEmit` / `next lint --max-warnings=0` 全清；`next build` 成功，
+`check-bundle` **239.8 kB ≤ 240 kB**（8 个面板仍不在首屏 chunk 里）。

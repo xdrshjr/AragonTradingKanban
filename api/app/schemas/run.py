@@ -70,6 +70,23 @@ class RunOut(BaseModel):
     costUsd: float | None = None
     costKnown: bool = False
     usage: RunUsage = Field(default_factory=RunUsage)
+    # ── ★v7（§20.5.1，8 个新字段）。响应模型是**第二道门**：漏了等于没实现
+    #    （`to_run_out` 会 `TypeError`，pydantic 会静默丢弃）。
+    #: 本次 run 观察到多少次 CLI 重试（`run.retry` 的本地累计）。
+    retryCount: int = 0
+    #: `result.structured.attempts`——CLI 侧已用掉的修复轮。
+    structuredAttempts: int | None = None
+    #: 真正干活的 provider/model（来自 `system` 事件；没有就空）。
+    agentProvider: str | None = None
+    agentModel: str | None = None
+    #: `reported | estimated | unknown`——成本三态。
+    costSource: str | None = None
+    #: 估算金额（`costSource === 'estimated'` 时才有值）。
+    costUsdEst: float | None = None
+    #: 同一根因的指纹（12 位）；`>= 3` 次时可换成更强措辞。
+    failureFingerprint: str | None = None
+    #: 服务端下发的一句"下一步做什么"（前端不拼文案，H-12）。
+    hint: str | None = None
 
 
 class RunEventOut(BaseModel):

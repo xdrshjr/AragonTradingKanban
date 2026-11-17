@@ -3,6 +3,8 @@
  * colour alone (WCAG 1.4.1), and `Intl` for anything locale-dependent.
  */
 
+import { costSourceLabel } from './copy';
+
 const CN = 'zh-CN';
 
 export function num(value: number | null | undefined, digits = 2): string {
@@ -37,9 +39,26 @@ export function money(value: number | null | undefined, currency = 'CNY', digits
   return `${moneySymbols[currency] ?? ''}${num(value, digits)}`;
 }
 
-/** Cost line for run badges: unknown cost must read as unknown, never `$0.00`. */
-export function costLabel(costUsd: number | null | undefined, costKnown: boolean): string {
-  if (!costKnown || costUsd === null || costUsd === undefined) return '成本未知';
+/**
+ * Cost line for run badges: unknown cost must read as unknown, never `$0.00`.
+ *
+ * ★v8 评审（H-6 的落地点）：报告的版本行也走这三态。`quality.cost` 缺席是**早期报告**
+ * 的合法状态（§19.6.3 不回填），那时退回 `costUsd/costKnown` 两态；一旦有
+ * `quality.cost`，就以它为准——否则一份 `estimated` 的报告会在界面上被读成回执。
+ */
+export function costLabel(
+  costUsd: number | null | undefined,
+  costKnown: boolean,
+  cost?: { source?: string | null; reportedUsd?: number | null; estimatedUsd?: number | null } | null,
+): string {
+  if (cost?.source === 'reported' && cost.reportedUsd !== null && cost.reportedUsd !== undefined) {
+    return `${costSourceLabel('reported')} $${cost.reportedUsd.toFixed(2)}`;
+  }
+  if (cost?.source === 'estimated' && cost.estimatedUsd !== null && cost.estimatedUsd !== undefined) {
+    return `${costSourceLabel('estimated')} $${cost.estimatedUsd.toFixed(2)}`;
+  }
+  if (cost?.source === 'unknown') return costSourceLabel('unknown');
+  if (!costKnown || costUsd === null || costUsd === undefined) return costSourceLabel('unknown');
   return `$${costUsd.toFixed(2)}`;
 }
 

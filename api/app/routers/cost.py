@@ -60,6 +60,9 @@ def cost_entries(
             model=row.model,
             usd=row.usd,
             known=bool(row.known),
+            # ★v7（H-4）：估算值与来源三态，只增不改。
+            usdEst=row.usd_est,
+            source=row.source or "unknown",
             createdAt=row.created_at,
         )
         for row in rows

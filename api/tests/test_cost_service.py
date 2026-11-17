@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import func, select
 
+from app.agent.pricing import PRICE_VERSION
 from app.config import get_settings
 from app.errors import MonthlyBudgetExceeded
 from app.models import CostLedger, Report, Run
@@ -37,7 +38,9 @@ def _reset_gap_counter():
 
 
 def test_unknown_cost_is_stored_as_null_and_known_zero(session) -> None:
-    assert cost_service.record(session, kind="run", ref_id="run-unknown", usd=0.0, known=False) is True
+    assert cost_service.record(
+        session, kind="run", ref_id="run-unknown", usd=0.0, known=False, source="unknown"
+    ) is True
     session.commit()
 
     row = session.execute(select(CostLedger).where(CostLedger.ref_id == "run-unknown")).scalar_one()
@@ -48,9 +51,11 @@ def test_unknown_cost_is_stored_as_null_and_known_zero(session) -> None:
 def test_summary_counts_unknown_runs_separately(session) -> None:
     """AC-55：4 次未知 + 2 次已知 → `unknownRuns == 4`，`spentUsd` 只累计已知。"""
     for index in range(4):
-        assert cost_service.record(session, kind="run", ref_id=f"run-unknown-{index}", usd=0.0, known=False)
-    assert cost_service.record(session, kind="run", ref_id="run-known-1", usd=1.0, known=True)
-    assert cost_service.record(session, kind="run", ref_id="run-known-2", usd=0.25, known=True)
+        assert cost_service.record(
+            session, kind="run", ref_id=f"run-unknown-{index}", usd=0.0, known=False, source="unknown"
+        )
+    assert cost_service.record(session, kind="run", ref_id="run-known-1", usd=1.0, known=True, source="reported")
+    assert cost_service.record(session, kind="run", ref_id="run-known-2", usd=0.25, known=True, source="reported")
     session.commit()
 
     unknowns = session.execute(select(CostLedger).where(CostLedger.usd.is_(None))).scalars().all()
@@ -64,8 +69,12 @@ def test_summary_counts_unknown_runs_separately(session) -> None:
 
 
 def test_summary_groups_by_kind_and_by_model(session) -> None:
-    cost_service.record(session, kind="run", ref_id="run-1", usd=1.5, known=True, model=PRICED_MODEL)
-    cost_service.record(session, kind="ask_deep", ref_id="ask-1", usd=0.5, known=True, model="gpt-4o")
+    cost_service.record(
+        session, kind="run", ref_id="run-1", usd=1.5, known=True, source="reported", model=PRICED_MODEL
+    )
+    cost_service.record(
+        session, kind="ask_deep", ref_id="ask-1", usd=0.5, known=True, source="reported", model="gpt-4o"
+    )
     session.commit()
 
     payload = cost_service.summary(session)
@@ -90,7 +99,7 @@ def test_summary_groups_by_kind_and_by_model(session) -> None:
 )
 def test_budget_state_for_a_finite_budget(session, budget, spend, state, remaining) -> None:
     cost_service.set_budget(session, budget)
-    cost_service.record(session, kind="run", ref_id="run-spend", usd=spend, known=True)
+    cost_service.record(session, kind="run", ref_id="run-spend", usd=spend, known=True, source="reported")
     session.commit()
 
     block = cost_service.summary(session)["budget"]
@@ -103,7 +112,7 @@ def test_budget_state_for_a_finite_budget(session, budget, spend, state, remaini
 def test_zero_budget_is_unlimited_without_a_fake_remaining(session) -> None:
     """`monthlyUsd = 0` 是**第四态**：`remainingUsd` / `resetAt` 都是 None，不是 0 或 ∞。"""
     cost_service.set_budget(session, 0)
-    cost_service.record(session, kind="run", ref_id="run-spend", usd=99.0, known=True)
+    cost_service.record(session, kind="run", ref_id="run-spend", usd=99.0, known=True, source="reported")
     session.commit()
 
     block = cost_service.summary(session)["budget"]
@@ -137,7 +146,7 @@ def test_can_start_without_a_budget_allows_and_does_not_touch_the_ledger() -> No
 
 def test_can_start_allows_when_spend_plus_estimate_fits(session) -> None:
     cost_service.set_budget(session, 25.0)
-    cost_service.record(session, kind="run", ref_id="run-spend", usd=24.0, known=True)
+    cost_service.record(session, kind="run", ref_id="run-spend", usd=24.0, known=True, source="reported")
     session.commit()
 
     decision = cost_service.can_start(session, "run", estimate_usd=0.5)
@@ -148,8 +157,8 @@ def test_can_start_allows_when_spend_plus_estimate_fits(session) -> None:
 def test_can_start_rejects_with_the_402_detail(session) -> None:
     """超限时 `detail` 直接就是 402 的响应体：含 `override: true`（用户可以覆盖）。"""
     cost_service.set_budget(session, 25.0)
-    cost_service.record(session, kind="run", ref_id="run-spend", usd=24.9, known=True)
-    cost_service.record(session, kind="run", ref_id="run-unknown", usd=0.0, known=False)
+    cost_service.record(session, kind="run", ref_id="run-spend", usd=24.9, known=True, source="reported")
+    cost_service.record(session, kind="run", ref_id="run-unknown", usd=0.0, known=False, source="unknown")
     session.commit()
 
     decision = cost_service.can_start(session, "run", estimate_usd=0.2)
@@ -171,11 +180,11 @@ def test_can_start_rejects_with_the_402_detail(session) -> None:
 
 
 def test_record_failure_never_raises_and_counts_a_gap(session) -> None:
-    assert cost_service.record(session, kind="run", ref_id="run-dup", usd=0.4, known=True) is True
+    assert cost_service.record(session, kind="run", ref_id="run-dup", usd=0.4, known=True, source="reported") is True
     session.commit()
 
     # 同一 `(kind, ref_id)` 再来一次：唯一键拒绝，但调用方不该看到异常
-    assert cost_service.record(session, kind="run", ref_id="run-dup", usd=0.9, known=True) is False
+    assert cost_service.record(session, kind="run", ref_id="run-dup", usd=0.9, known=True, source="reported") is False
     assert cost_service.ledger_gaps() == 1
 
     rows = session.execute(select(CostLedger).where(CostLedger.ref_id == "run-dup")).scalars().all()
@@ -200,7 +209,9 @@ def test_ledger_failure_does_not_rollback_the_report(session, instrument, sample
         )
     )
     session.commit()
-    assert cost_service.record(session, kind="run", ref_id="run-collide", usd=0.4, known=True) is True
+    assert cost_service.record(
+        session, kind="run", ref_id="run-collide", usd=0.4, known=True, source="reported"
+    ) is True
     session.commit()
 
     report = report_service.create_version(
@@ -260,7 +271,7 @@ def brim_spent(session, instrument, sample_report) -> dict:
     )
     cost_service.set_budget(session, 25.0)
     assert cost_service.record(
-        session, kind="run", ref_id="run-spend", usd=24.9, known=True, symbol=instrument.symbol
+        session, kind="run", ref_id="run-spend", usd=24.9, known=True, source="reported", symbol=instrument.symbol
     )
     session.commit()
 
@@ -423,3 +434,95 @@ def test_post_runs_root_is_405(client) -> None:
     assert body["error"]["code"] == "method_not_allowed"
     # 错误信息必须告知该去哪里，否则下一个人还是会自己造一个。
     assert "instruments" in body["error"]["message"]
+# ── ★v7（H4）：汇总双数与含估算的闸门（AC-79 / AC-80） ─────────────────────
+
+
+def test_summary_returns_both_numbers_and_they_agree_without_estimates(session) -> None:
+    """AC-79：`spentUsd`（只含 reported）与 `spentIncludingEstimatedUsd` 并排。"""
+    cost_service.record(session, kind="run", ref_id="r1", usd=1.0, known=True, source="reported")
+    session.commit()
+    payload = cost_service.summary(session)
+    assert payload["spentUsd"] == 1.0
+    assert payload["estimatedUsd"] == 0.0
+    assert payload["spentIncludingEstimatedUsd"] == 1.0, "不含估算时两个数必须相等"
+    assert payload["reportedRuns"] == 1
+    assert payload["estimatedRuns"] == 0
+    assert payload["priceVersion"] == PRICE_VERSION
+
+    cost_service.record(session, kind="run", ref_id="r2", usd=None, known=False, source="estimated", usd_est=0.25)
+    session.commit()
+    payload = cost_service.summary(session)
+    assert payload["spentUsd"] == 1.0, "估算绝不并进 spentUsd（AC-55 的语义）"
+    assert payload["estimatedUsd"] == 0.25
+    assert payload["spentIncludingEstimatedUsd"] == 1.25
+    assert (payload["reportedRuns"], payload["estimatedRuns"], payload["unknownRuns"]) == (1, 1, 0)
+
+
+def test_budget_gate_counts_estimates(session) -> None:
+    """AC-80：闸门用**含估算**的基数；402 detail 说清哪部分是估算，覆盖路径仍可用。"""
+    cost_service.set_budget(session, 0.2)
+    cost_service.record(session, kind="run", ref_id="r-est", usd=None, known=False, source="estimated", usd_est=0.15)
+    session.commit()
+
+    # 只算 reported 时这里是 0.05 的余量 → 会放行。含估算才会拦。
+    decision = cost_service.can_start(session, "run", estimate_usd=0.10)
+    assert decision.allowed is False
+    detail = decision.detail
+    assert detail["estimatedShareUsd"] == pytest.approx(0.15)
+    assert detail["spentReportedUsd"] == 0.0
+    assert detail["spentUsd"] == pytest.approx(0.15)
+    assert "估算" in detail["note"] and "引擎回执" in detail["note"]
+    assert detail["override"] is True
+
+    cost_service.set_budget(session, 5.0)
+    assert cost_service.can_start(session, "run", estimate_usd=0.10).allowed is True
+
+
+def test_budget_state_uses_the_same_base_as_the_gate(session) -> None:
+    """面板说的"剩余"与闸门用的是同一个基数——否则"为什么我被拦了"永远答不上来。"""
+    cost_service.set_budget(session, 1.0)
+    cost_service.record(session, kind="run", ref_id="r-est", usd=None, known=False, source="estimated", usd_est=0.9)
+    session.commit()
+    block = cost_service.summary(session)["budget"]
+    assert block["state"] == "near", "0.9 / 1.0 = 90% ≥ 80%：算 near 的前提是基数含估算"
+    assert block["remainingUsd"] == pytest.approx(0.1)
+
+def test_cost_endpoints_expose_the_three_state_fields(client, session, instrument) -> None:
+    """`/cost/summary` 与 `/cost/entries` 的三态字段必须真的出得去（§20.5.1）。
+
+    ★v8 评审：这两个端点此前**一次都没有**被 `client` 调过，于是"响应模型漏字段
+    （pydantic 会静默丢弃）"这类缺陷不可能被发现。这里既断言键存在，也断言两个金额
+    不互相冒充（`spentUsd` 只含 reported）。
+    """
+    cost_service.record(
+        session,
+        kind="run",
+        ref_id="run-api-1",
+        usd=None,
+        known=False,
+        source="estimated",
+        usd_est=0.0123,
+        symbol=instrument.symbol,
+        model="deepseek-flash",
+    )
+
+    summary = client.get("/api/v1/cost/summary").json()
+    for key in (
+        "estimatedUsd",
+        "spentIncludingEstimatedUsd",
+        "reportedRuns",
+        "estimatedRuns",
+        "priceVersion",
+    ):
+        assert key in summary, f"/cost/summary 缺少 {key}"
+    assert summary["spentUsd"] == 0.0, "spentUsd 只含引擎回执（AC-55 一字不改）"
+    assert summary["estimatedUsd"] > 0
+    assert summary["spentIncludingEstimatedUsd"] >= summary["estimatedUsd"]
+    assert summary["estimatedRuns"] == 1
+
+    entries = client.get("/api/v1/cost/entries").json()
+    rows = entries["items"] if isinstance(entries, dict) else entries
+    row = next(item for item in rows if item["refId"] == "run-api-1")
+    assert row["source"] == "estimated"
+    assert row["usd"] is None and row["usdEst"] == 0.0123
+

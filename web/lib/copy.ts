@@ -117,7 +117,6 @@ export const copy = {
     idle: '准备中',
     cancel: '取消',
     cancelling: '正在取消…',
-    cancelled: '已取消',
     retry: '重试',
     close: '收起',
     stages: {
@@ -131,6 +130,13 @@ export const copy = {
     doneTitle: '生成完成',
     doneBody: '已切换到最新版本',
     failedTitle: '生成失败',
+    /** ★v7（H7）：引擎在重试时的可见文案——"第 3/6 次重试"比一个转圈更能解释等待。 */
+    retrying: '重试中',
+    retryNotice: '引擎遇到 {errorType}，正在第 {attempt}/{max} 次重试',
+    /** ★v7：被用户中止（与"失败"分开说，避免把主动行为说成故障）。 */
+    aborted: '生成已中止',
+    /** ★v7：失败卡片上那句"下一步做什么"的标签（内容由服务端下发，H-12）。 */
+    hintLabel: '下一步',
     provisionalTitle: '已保存一版临时报告',
     provisionalBody: '内容未通过结构校验，但可以阅读原始产出。',
     logs: '实时日志',
@@ -168,6 +174,10 @@ export const copy = {
     tooManyRuns: '当前排队任务较多，请稍后重试',
     budgetExceeded: '生成超出预算，可提高预算后重试',
     cancelled: '已取消',
+    /** ★v7（H3.5）：同一指纹出现 ≥3 次时把失败卡片换成更强的措辞。 */
+    sameCauseThrice: '这不是偶发失败：最近 {count} 次生成因同一原因失败',
+    /** ★v7：`usage_error` 的人话标签（hint 由服务端下发）。 */
+    usageRejected: '参数不被接受',
   },
 
   command: {
@@ -428,6 +438,13 @@ export const copy = {
     overridden: '已按预算覆盖继续生成',
     kinds: { run: '生成', ask_deep: '深度追问' },
     state: { ok: '额度充足', near: '接近上限', exceeded: '已超上限', unlimited: '不限额' },
+    /** ★v7（H7）：成本三态的三个标签 —— **永不合并成一个数**（R-31）。 */
+    confirmed: '已确认成本',
+    estimatedLabel: '估算成本',
+    unknownLabel: '成本未知',
+    includingEstimated: '含估算 ${usd}',
+    estimatedRuns: '{count} 次按估算计价',
+    estimatedNote: '其中 ${usd} 为按 token × 单价估算，不是引擎回执',
   },
 } as const;
 
@@ -443,4 +460,16 @@ export function fill(template: string, values: Record<string, string | number>):
   return template.replace(/\{(\w+)\}/g, (match, key: string) =>
     key in values ? String(values[key]) : match,
   );
+}
+
+/**
+ * ★v7（H7 / H-6）：成本三态的**唯一**标签映射。
+ *
+ * 面板、生成卡片、报告元信息都用它，所以「引擎回执」与「按 token × 单价估算」这两件事
+ * 在界面上不会有第二种说法。`unknown` 不是 0：它说的是"我们不知道"，而不是"这次免费"。
+ */
+export function costSourceLabel(source: string | null | undefined): string {
+  if (source === 'reported') return copy.cost.confirmed;
+  if (source === 'estimated') return copy.cost.estimatedLabel;
+  return copy.cost.unknownLabel;
 }

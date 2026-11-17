@@ -25,6 +25,14 @@ from typing import Any
 
 from ..config import get_settings
 from ..logging import get_logger
+from . import schema_budget
+from .failure import (
+    AUTH_HINTS,
+    CLI_ERROR_CODE_MAP,
+    EXIT_MAP,
+    STDERR_REFINE,
+    hint_for,
+)
 from .preflight import AragonCapability, check_aragon
 from .runner_base import AgentError, AgentEvent, AgentEventType, AgentRequest, AgentResult, AgentUsage
 
@@ -61,10 +69,27 @@ ENV_ALLOWLIST = (
 
 SESSION_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
 
+#: ★v7 §20.3.2 / H1：`lean` 体位注入的 6 个**全局** flag（必须在 `exec` 之前）。
+#: 实测（E-43）：默认体位比 lean 多 2551 input tokens（3352 → 5903，+76%），
+#: 并且 stderr 被打上一条与生成无关的 `[skills] warn`，被 `_read_stderr` 变成
+#: 逐条 SSE warn。六个 flag 全在 `aragon --help` 的全局段（`--no-skills` 放在
+#: `exec` 之后是 `error: unknown option`，exit 2）。
+LEAN_FLAGS: tuple[str, ...] = (
+    "--no-update",
+    "--no-skills",
+    "--no-gene",
+    "--no-memory",
+    "--no-todo",
+    "--no-team",
+)
+
 #: A tool_result line can be ~100KB; a small read buffer would truncate it.
 STREAM_LIMIT = 4 << 20
 
 CANCEL_GRACE_SEC = 5.0
+
+#: `--idle-timeout` 必须比 `--tool-timeout` 多出的余量（§20.5.3 的显式保证）。
+IDLE_TOOL_MARGIN_MS = 30_000
 
 
 def sanitize_session_id(value: str) -> str:
@@ -75,8 +100,29 @@ def sanitize_session_id(value: str) -> str:
     return cleaned[:48]
 
 
+def clamp_repair_turns(configured: int, capability: AragonCapability) -> int:
+    """`min(ARAGON_REPAIR_TURNS, capability.result.maxRepairTurns)`（§20.3.2）。
+
+    CLI 的 `maxRepairTurns` 是硬上限（实测 2，E-39）。超越它是 exit 2，而不是
+    "多修一轮"——所以这个夹取不是保守，是唯一正确的写法。
+    """
+    cli_max = (capability.result or {}).get("maxRepairTurns")
+    configured = max(0, int(configured))
+    if isinstance(cli_max, int) and cli_max >= 0:
+        return min(configured, cli_max)
+    return configured
+
+
 def build_argv(request: AgentRequest, capability: AragonCapability, binary: str) -> list[str]:
-    """Assemble the exact command line described in spec §5.4."""
+    """Assemble the exact command line described in spec §5.4 / §20.5.3.
+
+    这是**唯一**的 choke point（裁决 H-2）：生成与 deep ask 都经过它
+    （`ask_runner.build_ask_argv` 只是转发），所以 schema / 提示词 / 身份三道闸门
+    放在这里天然覆盖两条路径，不需要第二份判断。
+
+    纯函数：只读文件、不写盘、不 spawn。度量结果由 `stream()` 落盘
+    （★V8-P2-5：闸门失败的那一次最需要审计材料）。
+    """
     settings = get_settings()
     argv: list[str] = [binary]
 
@@ -87,9 +133,40 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
         argv += ["--model", settings.aragon_model]
     argv += ["--cwd", str(request.workspace)]
     argv += ["--tool-timeout", str(settings.aragon_tool_timeout_ms)]
-    argv += ["--idle-timeout", str(settings.aragon_idle_timeout_ms)]
-    argv += ["--max-tokens", "auto"]
+    # ★v8 评审（§20.5.3 的"显式保证"）：`--idle-timeout` 必须比 `--tool-timeout` 至少多
+    # 30s，否则一次慢工具会把整轮生成按"空闲"掐掉，而 CLI 那边只是慢。CLI 自己会抬，
+    # 但那是它的事；我们**显式保证**——配置写错时抬到安全值并留一条 warn，
+    # 而不是让生成以一条无法归因的 `cancelled` 结束。
+    tool_timeout = max(1, int(settings.aragon_tool_timeout_ms))
+    idle_timeout = max(int(settings.aragon_idle_timeout_ms), tool_timeout + IDLE_TOOL_MARGIN_MS)
+    if idle_timeout != settings.aragon_idle_timeout_ms:
+        logger.warning(
+            "ARAGON_IDLE_TIMEOUT_MS=%s 小于 tool-timeout+%sms，已抬到 %s",
+            settings.aragon_idle_timeout_ms,
+            IDLE_TOOL_MARGIN_MS,
+            idle_timeout,
+        )
+    argv += ["--idle-timeout", str(idle_timeout)]
+    # ★v7 H1：`auto` 的含义是"用模型上限"，于是"截断"变得不可预测；
+    # 实测 5 次真实成功生成的 output tokens 最大 34586，给 40000 让截断可解释。
+    argv += ["--max-tokens", str(max(1, int(settings.aragon_max_output_tokens)))]
+    # ★v7 H1：CLI 默认 10 次重试 + 每次退避上限 30s，最坏会撞上我们自己的
+    # `--max-duration`，把一个网络问题记成"模型太慢"（E-45：6 次已吃 44s）。
+    argv += ["--retry-max", str(max(0, min(20, int(settings.aragon_retry_max))))]
+    if settings.aragon_agent_posture == "lean":
+        # ★v7 H1：六个 `--no-*` 全在全局段。放在 `exec` 之后是 exit 2。
+        argv += list(LEAN_FLAGS)
     argv += ["--no-color"]
+
+    # ── 进门前闸门 1/3：资料预算（prompt + system + schema） ───────────────
+    schema_budget.assert_prompt_budget(request, settings.aragon_max_prompt_bytes)
+    # ── 进门前闸门 2/3：schema 预算（深度/体积/节点），CLI 硬上限来自 preflight ──
+    budget = schema_budget.measure(request.schema_path, schema_budget.limits_from_capability(capability))
+    if not budget.ok:
+        raise AgentError("schema_over_budget", f"报告 Schema 超出引擎预算：{budget.reason()}")
+    # ── 进门前闸门 3/3：交给 CLI 的那份必须与真源字节一致（漂移 = 白烧一轮） ──
+    if request.schema_source_path is not None:
+        schema_budget.assert_schema_identity(request.schema_path, request.schema_source_path)
 
     # ── subcommand ────────────────────────────────────────────────────────
     argv += ["exec"]
@@ -115,7 +192,8 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
 
     argv += ["--append-system-prompt-file", str(request.system_prompt_path)]
     argv += ["--result-schema", str(request.schema_path)]
-    argv += ["--result-repair-turns", "2"]
+    # ★v7 H1：配置化但默认不变；并且被 CLI 自己的 `maxRepairTurns` 夹取。
+    argv += ["--result-repair-turns", str(clamp_repair_turns(settings.aragon_repair_turns, capability))]
     argv += ["--on-result-unsatisfied", "error"]
 
     argv += ["--max-turns", str(request.max_turns)]
@@ -235,11 +313,39 @@ class AragonRunner:
         if not self.capability.canStructured:
             raise AgentError("structured_result_unsupported", "aragon 不支持结构化结果（ajv / structured_result）")
 
-        argv = build_argv(request, self.capability, binary)
         self._run_id = request.run_id
         request.workspace.mkdir(parents=True, exist_ok=True)
         ndjson_path = request.workspace / "aragon.ndjson"
         stderr_path = request.workspace / "aragon.stderr.log"
+
+        # ★v8（V8-P2-5）：度量**先落盘**，再 `build_argv()`。理由有两条：
+        # ①`build_argv` 是纯函数，黄金 argv 断言不该被"顺手写了一个文件"干扰；
+        # ②闸门**失败**的那一次，恰恰是最想知道"当时 schema 有多深"的一次——
+        #    把写盘放在函数尾部就等于在最需要审计材料的时候不写。
+        # ★v8 评审（V8-P2-5 的同型问题）：资料预算的**实测值**也要落盘，而且要在
+        # 断言**之前**算——`prompt_over_budget` 是三道闸门里唯一以"数字"为判据的一条，
+        # 失败的那一次过去在 `schema_budget.json` 里一个字节都看不到。
+        settings = get_settings()
+        measurement: dict[str, Any] = {
+            "posture": settings.aragon_agent_posture,
+            "retryMax": settings.aragon_retry_max,
+            "maxOutputTokens": settings.aragon_max_output_tokens,
+            "maxPromptBytes": settings.aragon_max_prompt_bytes,
+        }
+        try:
+            measurement["promptBytes"] = schema_budget.prompt_total_bytes(request)
+            measurement.update(
+                schema_budget.measure(
+                    request.schema_path, schema_budget.limits_from_capability(self.capability)
+                ).as_payload()
+            )
+        finally:
+            # 读文件这一层就可能抛（schema 不在 / 工作区被清）；抛也要留下现场。
+            (request.workspace / "schema_budget.json").write_text(
+                json.dumps(measurement, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+        argv = build_argv(request, self.capability, binary)
 
         argv_path = request.workspace / "argv.json"
         argv_path.write_text(json.dumps(argv, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -267,7 +373,15 @@ class AragonRunner:
         self._process = process
         logger.info("spawned aragon pid=%s run=%s", process.pid, request.run_id)
 
-        observed = {"result": None, "text": [], "usage": AgentUsage(), "error": None}
+        observed = {
+            "result": None,
+            "text": [],
+            "usage": AgentUsage(),
+            "error": None,
+            "retries": 0,
+            "engine": None,
+            "last_retry": None,
+        }
         readers = [
             asyncio.create_task(
                 self._read_stdout(process, ndjson_path, observed, emit_event),
@@ -411,6 +525,38 @@ class AragonRunner:
     ) -> None:
         kind = str(payload.get("type") or "")
         # Unknown types are ignored on purpose — forward compatibility (§5.4).
+        if kind == "system":
+            # ★v7 §20.3.7：`baseUrl` 只出现在 exec 的 system 事件里（不在
+            # `aragon info --json`，E-39）。有就记下，没有就留空 —— 不猜。
+            model_block = payload.get("model")
+            if isinstance(model_block, dict):
+                info = {
+                    "provider": model_block.get("provider"),
+                    "model": model_block.get("id") or model_block.get("model"),
+                    "baseUrl": model_block.get("baseUrl"),
+                }
+                observed["engine"] = {key: value for key, value in info.items() if value}
+            return
+
+        if kind == "retry":
+            # ★v7 §20.3.4 / P-4：实测 8 条 retry 事件过去被完全忽略。
+            # **累计用本地自增，绝不用 `attempt`**：实测同一进程里 attempt 会从
+            # 1 重新开始（两次独立请求各自从 1 数），拿它当累计会少报一半重试。
+            observed["retries"] = int(observed.get("retries") or 0) + 1
+            retry_payload = {
+                "attempt": payload.get("attempt"),
+                "maxRetries": payload.get("maxRetries"),
+                "errorType": payload.get("errorType"),
+                "delayMs": payload.get("delayMs"),
+                "tier": payload.get("tier"),
+                "tierCount": payload.get("tierCount"),
+                "totalAttempts": payload.get("totalAttempts"),
+                "retries": observed["retries"],
+            }
+            observed["last_retry"] = retry_payload
+            emit(AgentEvent(AgentEventType.retry, retry_payload))
+            return
+
         if kind == "result":
             observed["result"] = payload
             usage = payload.get("usage") or {}
@@ -478,6 +624,11 @@ class AragonRunner:
 
         if kind == "error":
             observed["error"] = payload.get("error") or payload
+            # ★v7（I-63）：`{"type":"error","fatal":true,"code":"stream_error",…}` 是 CLI
+            # 在**没有 result 行**时唯一的分类依据（实测：坏 base URL 就是先发它、再发
+            # 一行 isError 的 result；连接真断时可能只发它）。只留 code，不留整条 payload。
+            if payload.get("code"):
+                observed["fatal_code"] = str(payload.get("code"))
             emit(
                 AgentEvent(
                     AgentEventType.log,
@@ -506,11 +657,12 @@ class AragonRunner:
         # ★P0-1 / §5.4 point 3: judge by `structured`, never by exitCode.
         if isinstance(structured, dict) and isinstance(structured.get("value"), dict):
             doc = structured["value"]
-        elif result_payload:
-            error_code = "result_schema_unsatisfied"
-            error_message = "模型未能提交满足 JSON Schema 的结构化结果"
         else:
-            error_code, error_message = self._classify_exit(exit_code, stderr_path)
+            # ★v8（V8-P1-1）：分类入口是 `_classify_failure(observed, …)`，不是
+            # `_classify_exit`。`_finalize` 过去写成 `elif result_payload:` →
+            # `result_schema_unsatisfied`，把"有 result 行 + error.code=network_error"
+            # 也归成"模型没提交"——而那正是 AC-73 ② 要守的路径。
+            error_code, error_message = self._classify_failure(observed, exit_code, stderr_path)
 
         if result_payload.get("isError") and error_code is None and doc is None:
             error_code = "agent_error"
@@ -523,6 +675,7 @@ class AragonRunner:
         if self._cancelled and error_code is None and doc is None:
             error_code, error_message = "cancelled", "用户取消了本次生成"
 
+        attempts = structured.get("attempts") if isinstance(structured, dict) else None
         final = AgentResult(
             doc=doc,
             text=text,
@@ -536,34 +689,142 @@ class AragonRunner:
             model=self.capability.model,
             source=self.source,
             ndjson_path=str(ndjson_path),
+            engine_info=observed.get("engine"),
+            retries=int(observed.get("retries") or 0),
+            structured_attempts=attempts if isinstance(attempts, int) else None,
         )
         (request.workspace / "result.json").write_text(
             json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         logger.info(
-            "aragon finished run=%s exit=%s error=%s doc=%s", request.run_id, exit_code, error_code, doc is not None
+            "aragon finished run=%s exit=%s error=%s doc=%s retries=%s",
+            request.run_id,
+            exit_code,
+            error_code,
+            doc is not None,
+            final.retries,
         )
         return final
 
-    @staticmethod
-    def _classify_exit(exit_code: int | None, stderr_path: Path) -> tuple[str, str]:
-        detail = ""
-        try:
-            if stderr_path.exists():
-                detail = stderr_path.read_text(encoding="utf-8", errors="replace")[:600]
-        except OSError:  # pragma: no cover
-            detail = ""
+    def _classify_failure(
+        self,
+        observed: dict[str, Any],
+        exit_code: int | None,
+        stderr_path: Path,
+    ) -> tuple[str, str]:
+        """★v8（V8-P1-1 / O-14）：失败的**唯一**判定入口。
+
+        四条规则按顺序生效（§20.3.4）：
+
+        1. 有 `result` 行 + `structured.value` 是 dict → 成功（在 `_finalize` 里判定）。
+        2. 有 `result` 行但没提交结构化结果：
+           a. **先看 `result.error.code`** —— CLI 是唯一知道"为什么没提交"的一方，
+              它给的码永远优先于我们对 exit code 的猜测；
+           b. 有码但不在映射表里 → `agent_error`，把原码与原文放进去；
+           c. 完全没有 `error` 对象 → `result_schema_unsatisfied`（exit 1 的正常形态）。
+        3. 没有 `result` 行：
+           a. 观察到 `retry`（`retries > 0`）→ `provider_unavailable`（P-4）；
+           b. 引擎日志里有凭证类特征 → `provider_auth`；
+           c. 否则按 `EXIT_MAP` + `STDERR_REFINE`。
+        4. 以上都不成立 → `agent_error`（保留 `_finalize` 里 `isError` 那条的老行为）。
+
+        **为什么必须写第 2a 条**：`--retry-max 0` + 一个坏 base URL 会给出
+        "有 result 行、`error.code=network_error`、`retries=0`"。若只在"无 result 行"
+        的分支里认 `provider_*`，它就会落到 exit 1 → `result_schema_unsatisfied`，
+        把网络问题报成"模型不肯提交报告"。
+        """
+        result_payload = observed.get("result") or {}
+        if result_payload:
+            error_block = result_payload.get("error")
+            cli_code = None
+            cli_message = ""
+            if isinstance(error_block, dict):
+                cli_code = error_block.get("code")
+                cli_message = str(error_block.get("message") or "")
+            elif isinstance(error_block, str) and error_block:
+                cli_message = error_block
+            if cli_code:
+                mapped = CLI_ERROR_CODE_MAP.get(str(cli_code))
+                if mapped is not None:
+                    return mapped, (cli_message or hint_for(mapped))
+                return "agent_error", f"引擎报错 {cli_code}：{cli_message or '（无详情）'}"[:400]
+            return "result_schema_unsatisfied", cli_message or "模型未能提交满足 JSON Schema 的结构化结果"
+
+        retries = int(observed.get("retries") or 0)
+        last_retry = observed.get("last_retry") or {}
+        if retries > 0:
+            return "provider_unavailable", (
+                "模型服务连续不可用："
+                f"lastErrorType={last_retry.get('errorType') or 'unknown'}，"
+                f"maxRetries={last_retry.get('maxRetries') if last_retry.get('maxRetries') is not None else '?'}，"
+                f"attempts={retries}（本地累计，CLI 的 attempt 会重置），"
+                f"lastDelayMs={last_retry.get('delayMs') or 0}"
+            )
+
+        # ★v7（I-63）：没有 result 行时，CLI 的致命 `error` 行仍然是第一手证据。
+        fatal_code = observed.get("fatal_code")
+        if fatal_code and str(fatal_code) in CLI_ERROR_CODE_MAP:
+            mapped = CLI_ERROR_CODE_MAP[str(fatal_code)]
+            return mapped, f"引擎报告 {fatal_code}（未产出 result 行）"
+
+        detail = _read_stderr(stderr_path)
         lowered = detail.lower()
-        if exit_code == 0:
-            return "result_missing", "引擎正常退出但没有返回 result 事件"
-        if exit_code == 3:
-            return "budget_exceeded", "生成超出预算（max-turns / max-duration）"
-        if exit_code == 2:
-            return "usage_error", f"引擎配置或参数错误：{detail[:300] or 'exit 2'}"
-        if exit_code in (130, 143, 129):
-            return "cancelled", "生成被终止"
-        if "unknown option" in lowered:
-            return "usage_error", f"引擎参数不被识别：{detail[:300]}"
-        if "invalid --session-id" in lowered:
-            return "usage_error", "session id 非法"
-        return "agent_error", f"引擎异常退出（exit {exit_code}）：{detail[:300] or 'no stderr'}"
+        # ★v8 评审（B-2）：凭证扫描**只在退出码不是"确定结论"时才做**。
+        # `AUTH_HINTS` 里是 `401` / `403` / `quota` 这类裸子串，而一次用户取消
+        # （130/143）或撞预算（3）的 stderr 完全可能带一个端口号 `4013` 或一句
+        # "quota will reset at…"。那两件事的结论是**已知的**（cancelled / budget_exceeded），
+        # 不该被一次子串匹配改写——改写的结果是用户点了取消却看到"凭证被拒"。
+        definitive = exit_code in _EXIT_CODES_WITH_CERTAINTY
+        if not definitive and any(hint in lowered for hint in AUTH_HINTS):
+            return "provider_auth", f"模型凭证被拒绝或额度耗尽：{detail[:300]}"
+
+        return _classify_exit(exit_code, stderr_path, detail=detail)
+
+
+def _read_stderr(stderr_path: Path) -> str:
+    """读引擎 stderr 的前 600 字符（分类用）。读不到就是空串，绝不抛。"""
+    try:
+        if stderr_path.exists():
+            return stderr_path.read_text(encoding="utf-8", errors="replace")[:600]
+    except OSError:  # pragma: no cover
+        return ""
+    return ""
+
+
+#: 这些退出码本身就已经是**结论**，不该再被 stderr 里的子串改写（★v8 评审 B-2）。
+#: `budget_exceeded` 是引擎自己的判定、`cancelled` 是用户的判定——两者都比一句
+#: "stderr 里出现了 401" 更权威。
+_EXIT_CODES_WITH_CERTAINTY = frozenset({3, 129, 130, 143})
+
+
+def _classify_exit(exit_code: int | None, stderr_path: Path, *, detail: str | None = None) -> tuple[str, str]:
+    """`_classify_failure` 的第 3c 步（★v8：它**不再是**入口）。
+
+    表驱动：`EXIT_MAP` 查 exit code，`STDERR_REFINE` 精化 exit 2——把"参数错误"里的
+    `result_schema_too_deep` 认成 `schema_over_budget`（历史 run `06456fcb` 就是死在
+    那一条上，过去却被报成"参数错误"，对实现者没有任何指向性）。
+
+    ★v8 评审（B-1 / B-3）两处修正：
+    * 精化**只对 exit 2 生效**（`STDERR_REFINE` 的语义是"exit 2 的已知精化"）：过去它
+      在任意退出码上都跑，于是一次 exit 0 的 `result_missing`、一次 exit 143 的
+      `cancelled` 只要 stderr 里出现 `unknown option` 就会被改写成 `usage_error`。
+    * 精化命中后，**message 也必须跟着换**：过去返回的是 `EXIT_MAP[2]` 的
+      "引擎配置或参数错误"，于是码说"schema 太深"、句子说"参数错误"——正是
+      §20.3.4 要消灭的那种自相矛盾。
+    """
+    text = _read_stderr(stderr_path) if detail is None else detail
+    lowered = text.lower()
+    code, message = EXIT_MAP.get(
+        exit_code if exit_code is not None else -1,
+        ("agent_error", f"引擎异常退出（exit {exit_code}）"),
+    )
+    if exit_code == 2:
+        for needle, refined in STDERR_REFINE:
+            if needle in lowered:
+                # 码与句子一起换：`hint_for` 给出"下一步做什么"，原文留 300 字符做证据。
+                return refined, f"{hint_for(refined)}｜引擎原文：{text[:300].strip() or '（无输出）'}"
+    if code == "usage_error":
+        return code, f"{message}：{text[:300] or f'exit {exit_code}'}"
+    if exit_code is not None and exit_code not in EXIT_MAP:
+        return code, f"{message}：{text[:300] or 'no output'}"
+    return code, message

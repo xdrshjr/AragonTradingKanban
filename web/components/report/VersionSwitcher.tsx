@@ -173,7 +173,7 @@ export function VersionSwitcher({
                   <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-[var(--text-tertiary)]">
                     <span title={dateTime(report.generatedAt)}>{relativeTime(report.generatedAt)}</span>
                     {report.model ? <span className="mono">{report.model}</span> : null}
-                    <span>{costLabel(report.costUsd, report.costKnown)}</span>
+                    <span>{costLabel(report.costUsd, report.costKnown, report.quality.cost)}</span>
                   </span>
                 </button>
 

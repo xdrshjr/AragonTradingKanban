@@ -94,6 +94,8 @@ def create_version(
     model: str | None = None,
     cost_usd: float | None = None,
     cost_known: bool = False,
+    cost_source: str | None = None,
+    cost_usd_est: float | None = None,
     tokens_in: int | None = None,
     tokens_out: int | None = None,
     duration_ms: int | None = None,
@@ -174,6 +176,17 @@ def create_version(
     # write is guarded by its own savepoint (`cost_service.record`), so "账本失败
     # 不得回滚报告" is a property of the code rather than a comment. Not a second
     # `begin_nested()` around this call — the template above is already the shape.
+    # ★v7（V8-P1-4）：`source` 必填。深答那条路（`ask_service`）也要传，否则
+    # 已知成本的行会被默认值静默标成 `unknown`（R-42 / AC-86）。
+    # ★v8 评审（R-42 的第二个入口）：`cost_source` 的默认值 `"unknown"` 本身就是同一个
+    # 坑——调用方传了 `cost_usd` 却忘了 `source`，`record()` 会把 `usd` 丢弃（三态互斥），
+    # 于是那一行变成"未知成本"而**没有任何报错**。所以默认值改成 `None` 并在下面推导：
+    # 三态的真源仍然只有 `COST_SOURCES`，这里只是不让"漏传"变成"错标"。
+    resolved_source = cost_source or (
+        "reported"
+        if cost_known and cost_usd is not None
+        else ("estimated" if cost_usd_est is not None else "unknown")
+    )
     cost_service.record(
         session,
         kind="run",
@@ -183,6 +196,8 @@ def create_version(
         model=model,
         usd=cost_usd,
         known=bool(cost_known),
+        usd_est=cost_usd_est,
+        source=resolved_source,
     )
 
     if run_id:

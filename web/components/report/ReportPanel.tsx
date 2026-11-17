@@ -390,7 +390,7 @@ export function ReportPanel({
             />
             <span className="hidden text-[10.5px] text-[var(--text-tertiary)] sm:inline">
               {copy.report.generatedAt} {relativeTime(summary?.generatedAt)}
-              {summary ? ` · ${costLabel(summary.costUsd, summary.costKnown)}` : ''}
+              {summary ? ` · ${costLabel(summary.costUsd, summary.costKnown, summary.quality.cost)}` : ''}
             </span>
             <VersionSwitcher
               reports={reports}

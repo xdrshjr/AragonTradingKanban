@@ -36,6 +36,14 @@ def capability(**overrides) -> AragonCapability:
         extraAllowTools=["read_file", "glob", "grep", "list_dir", "submit_result"],
         tools=list(ALL_TOOLS),
         resolvedBinary=str(FAKE),
+        # ★v7：schema 预算闸门的上限来自 `info.result`（E-39 的实测值）。
+        result={
+            "schemaBytes": 65536,
+            "schemaDepth": 12,
+            "validationNodes": 5000,
+            "valueBytes": 262144,
+            "maxRepairTurns": 2,
+        },
     )
     for key, value in overrides.items():
         setattr(base, key, value)
@@ -47,7 +55,11 @@ def request_factory(tmp_path: Path):
     workspace = tmp_path / "run"
     workspace.mkdir()
     schema = workspace / "schema.json"
-    schema.write_text("{}", encoding="utf-8")
+    # ★v7（V8-P0-1）：`build_argv()` 会断言"交给 CLI 的那份"与真源**字节一致**，
+    # 所以这里的 fixture 必须是真源的副本，而不是一个占位 `{}`。占位值会让每一条
+    # argv 断言都变成 `schema_drift`——而那正好是这道闸门存在的理由。
+    source = Path(__file__).resolve().parents[1] / "app" / "agent" / "schemas" / "report_doc.schema.json"
+    schema.write_bytes(source.read_bytes())
     prompt = workspace / "prompt.md"
     prompt.write_text("# prompt", encoding="utf-8")
     system = workspace / "system.md"
@@ -60,6 +72,8 @@ def request_factory(tmp_path: Path):
             prompt_path=prompt,
             system_prompt_path=system,
             schema_path=schema,
+            # ★v7：真源随 request 走，`build_argv()` 据此做字节身份断言（V8-P0-1）。
+            schema_source_path=schema,
             instrument_symbol="600519.SH",
             instrument_name="贵州茅台",
             max_turns=40,

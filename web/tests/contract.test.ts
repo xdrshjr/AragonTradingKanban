@@ -4,6 +4,7 @@ import { BLOCK_TYPES } from '@/lib/types';
 import type {
   BudgetState,
   Comparability,
+  CostEntry,
   CostSummary,
   EngineCapability,
   EngineInfo,
@@ -165,15 +166,75 @@ describe('v6 mirror fields', () => {
       from: '2026-01-11T00:00:00Z',
       to: '2026-02-10T00:00:00Z',
       spentUsd: 3.42,
+      // ★v7：`spentUsd`（只含回执）/ `estimatedUsd`（只含估算）/ 两者的合计。
+      estimatedUsd: 0.31,
+      spentIncludingEstimatedUsd: 3.73,
       knownRuns: 18,
+      reportedRuns: 18,
+      estimatedRuns: 3,
       unknownRuns: 4,
       byKind: { run: 2.91, ask_deep: 0.51 },
       byModel: [{ model: 'claude-sonnet', usd: 3.42, runs: 18 }],
       budget: { monthlyUsd: 0, remainingUsd: null, resetAt: null, state: 'unlimited' },
+      priceVersion: '2026-03',
       ledgerGap: 0,
     };
     expect(summary.unknownRuns).toBe(4);
     expect(summary.budget.remainingUsd).toBeNull();
+    // ★v7（AC-79）：三态各计一次，且"含估算"= 两者相加（不是重复计）。
+    expect(summary.reportedRuns + summary.estimatedRuns + summary.unknownRuns).toBe(25);
+    expect(summary.spentIncludingEstimatedUsd).toBeCloseTo(summary.spentUsd + summary.estimatedUsd);
+  });
+
+  it('EngineCapability mirrors the v7 additions without model/provider (H-19)', () => {
+    const capability: EngineCapability = {
+      fingerprint: 'abc123abc123',
+      drift: false,
+      schemaBytes: 18392,
+      allowTools: ['read_file'],
+      posture: 'lean',
+      schemaSha1: '7a93509904b4',
+      schema: { bytes: 18392, depth: 11, nodes: 658, maxBytes: 65536, maxDepth: 12, maxNodes: 5000, headroom: 1, ok: true },
+      limits: { retryMax: 6, repairTurns: 2, maxOutputTokens: 40000, valueBytes: 262144, schemaBytes: 65536 },
+      priceVersion: '2026-03',
+      lastFailure: null,
+    };
+    expect(Object.keys(capability).sort()).toEqual(
+      [
+        'allowTools',
+        'drift',
+        'fingerprint',
+        'lastFailure',
+        'limits',
+        'posture',
+        'priceVersion',
+        'schema',
+        'schemaBytes',
+        'schemaSha1',
+      ].sort(),
+    );
+    expect('model' in capability).toBe(false);
+    expect(capability.schema?.headroom).toBe(1);
+  });
+
+  it('CostEntry carries the tri-state source next to the two amounts (AC-86)', () => {
+    const entry: CostEntry = {
+      id: 1,
+      kind: 'run',
+      refId: 'run-1',
+      symbol: '600519.SH',
+      reportId: 'rep-1',
+      model: 'deepseek-flash',
+      usd: null,
+      known: false,
+      usdEst: 0.0172,
+      source: 'estimated',
+      createdAt: '2026-02-10T00:00:00Z',
+    };
+    // `estimated` 行的 `usd` 必须为空：两列互斥，不是"两个数都填"。
+    expect(entry.usd).toBeNull();
+    expect(entry.usdEst).toBeCloseTo(0.0172);
+    expect(entry.source).toBe('estimated');
   });
 
   it('BlockRangeResponse mirrors the /reports/{id}/blocks envelope', () => {

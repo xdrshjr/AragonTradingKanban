@@ -15,22 +15,32 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
-from ..agent import decide_mode
+from ..agent import decide_mode, schema_budget
+from ..agent.aragon_runner import clamp_repair_turns
+from ..agent.cost_model import COST_SOURCES  # noqa: F401 - 文档性引用，说明三态来源
 from ..agent.fingerprint import current_fingerprint
 from ..agent.preflight import check_aragon
+from ..agent.pricing import PRICE_VERSION
+from ..agent.runner_base import AgentError
 from ..config import get_settings
 from ..db.session import get_db
+from ..logging import get_logger
 from ..schemas.capabilities import (
     CapabilitiesResponse,
     DataProviderCapability,
     EngineCapabilityOut,
+    EngineLastFailureOut,
+    EngineLimitsOut,
+    EngineSchemaOut,
     FeaturesOut,
 )
-from ..services import ask_service, cost_service, numeric_claims, report_validator, search_index
+from ..services import ask_service, cost_service, numeric_claims, report_validator, run_diagnostics, search_index
 from ..services.market_data.registry import get_registry
 from ..services.run_manager import MAX_CONCURRENT_RUNS
 
 router = APIRouter(tags=["capabilities"])
+
+logger = get_logger("capabilities")
 
 
 def _grounding_available() -> bool:
@@ -69,6 +79,41 @@ def _cost_ledger_available(db: Session) -> bool:
         return False
 
 
+def _engine_payload(db: Session, settings, capability, fingerprint) -> EngineCapabilityOut:
+    """★v7 §20.3.7：`capabilities.engine` = 指纹四项 + 六项新事实。
+
+    **`model` / `provider` 永不进来**（H-19 / V6-P1-3）：它们的权威是
+    `aragon.*` 与 `reports.model|provider`，第三份副本必然漂移。
+    """
+    base: dict[str, object] = dict(fingerprint.as_capability()) if fingerprint is not None else {}
+    # ★v8 评审（B-5）：`measure()` 读不到文件时会抛 `schema_over_budget`（这是闸门该有的
+    # 行为）。但 `/capabilities` 是**诊断**端点：一个坏掉的 schema 不该让它 500，
+    # 那会把"为什么生成不了"的唯一入口也一起关掉。所以这里降级成 `schema: null`。
+    try:
+        budget = schema_budget.measure(
+            settings.schemas_dir / "report_doc.schema.json",
+            schema_budget.limits_from_capability(capability),
+        )
+    except AgentError as exc:
+        logger.warning("capabilities: schema 度量失败（降级为 null）：%s", exc.message)
+        budget = None
+    cli_result = capability.result or {}
+    base["posture"] = settings.aragon_agent_posture
+    base["schemaSha1"] = report_validator.schema_sha1()
+    base["schema"] = EngineSchemaOut.model_validate(budget.as_payload()) if budget is not None else None
+    base["limits"] = EngineLimitsOut(
+        retryMax=max(0, min(20, int(settings.aragon_retry_max))),
+        repairTurns=clamp_repair_turns(settings.aragon_repair_turns, capability),
+        maxOutputTokens=max(1, int(settings.aragon_max_output_tokens)),
+        valueBytes=int(cli_result.get("valueBytes") or 262_144),
+        schemaBytes=int(cli_result.get("schemaBytes") or schema_budget.FALLBACK_LIMITS["schemaBytes"]),
+    )
+    base["priceVersion"] = PRICE_VERSION
+    failure = run_diagnostics.recent_failure(db)
+    base["lastFailure"] = EngineLastFailureOut.model_validate(failure) if failure else None
+    return EngineCapabilityOut.model_validate(base)
+
+
 @router.get("/capabilities", response_model=CapabilitiesResponse)
 def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
     settings = get_settings()
@@ -79,11 +124,7 @@ def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
 
     pinyin_on = search_index.pinyin_available() and settings.search_pinyin != "off"
     fingerprint = current_fingerprint(schema_bytes=report_validator.schema_bytes())
-    engine = (
-        EngineCapabilityOut.model_validate(fingerprint.as_capability())
-        if fingerprint is not None
-        else EngineCapabilityOut()
-    )
+    engine = _engine_payload(db, settings, capability, fingerprint)
     return CapabilitiesResponse(
         aragon=capability.as_payload(),  # type: ignore[arg-type]
         agentMode=mode,  # type: ignore[arg-type]
@@ -123,5 +164,7 @@ def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
             "minFactClaims": numeric_claims.MIN_FACT_CLAIMS,
             "maxBlockRangeYears": 5,
             "maxBlockRangeDays": 1825,
+            # ★v7（§20.5.1）：资料预算上限，界面用它解释 `prompt_over_budget`。
+            "maxPromptBytes": settings.aragon_max_prompt_bytes,
         },
     )

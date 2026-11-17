@@ -4,8 +4,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import { ApiError, api } from '@/lib/api';
+import { copy, fill } from '@/lib/copy';
 import { subscribeToRun, type RunStreamEvent } from '@/lib/sse';
-import type { RunStageId } from '@/lib/types';
+import type { CostSource, RunStageId } from '@/lib/types';
 
 /**
  * Generation state machine (spec §10.2).
@@ -44,11 +45,25 @@ export interface GenerationState {
   logs: LogLine[];
   tools: ToolCallView[];
   streamText: string;
-  error: { code: string; message: string } | null;
+  error: {
+    code: string;
+    message: string;
+    /** ★v7：服务端下发的一句"下一步做什么"（H-12：前端不拼文案）。 */
+    hint?: string | null;
+    /** ★v7：同一根因的指纹与次数——`count >= 3` 时换成更强的措辞。 */
+    fingerprint?: string | null;
+    repeatCount?: number;
+    retryable?: boolean;
+  } | null;
   reportId: string | null;
   version: number | null;
   costUsd: number | null;
   costKnown: boolean;
+  /** ★v7（H4）：成本三态。`estimated` 与 `reported` 永不同义（H-6）。 */
+  costSource: CostSource | null;
+  costUsdEst: number | null;
+  /** ★v7（§20.3.4）：本次 run 观察到多少次 CLI 重试（`run.retry` 的本地累计）。 */
+  retryCount: number;
   startedAt: number | null;
   finishedAt: number | null;
   reconnectAttempt: number;
@@ -72,6 +87,9 @@ export const initialGenerationState: GenerationState = {
   version: null,
   costUsd: null,
   costKnown: false,
+  costSource: null,
+  costUsdEst: null,
+  retryCount: 0,
   startedAt: null,
   finishedAt: null,
   reconnectAttempt: 0,
@@ -165,6 +183,23 @@ export function generationReducer(state: GenerationState, action: GenerationActi
           const message = String(payload.message ?? '');
           return { ...state, logs: pushLog(state.logs, level, message, at) };
         }
+        case 'run.retry': {
+          // ★v7（§20.3.4 / AC-85）：一条 warn 日志 + 计数。计数用本地自增，
+          // 因为 CLI 的 `attempt` 会重置（E-45：同一进程出现两段 1..6）。
+          const attempt = typeof payload.attempt === 'number' ? payload.attempt : null;
+          const max = typeof payload.maxRetries === 'number' ? payload.maxRetries : null;
+          const errorType = typeof payload.errorType === 'string' ? payload.errorType : 'unknown';
+          const message = fill(copy.generation.retryNotice, {
+            attempt: attempt ?? '—',
+            max: max ?? '—',
+            errorType,
+          });
+          return {
+            ...state,
+            retryCount: state.retryCount + 1,
+            logs: pushLog(state.logs, 'warn', message, at),
+          };
+        }
         case 'run.done':
           return {
             ...state,
@@ -174,6 +209,11 @@ export function generationReducer(state: GenerationState, action: GenerationActi
             version: typeof payload.version === 'number' ? payload.version : null,
             costUsd: typeof payload.costUsd === 'number' ? payload.costUsd : null,
             costKnown: Boolean(payload.costKnown),
+            // ★v7：三态与估算金额一起进 state——只留 `costKnown` 会让界面把估算当回执。
+            costSource: (payload.costSource as CostSource | undefined) ?? null,
+            costUsdEst: typeof payload.costUsdEst === 'number' ? payload.costUsdEst : null,
+            retryCount:
+              typeof payload.retryCount === 'number' ? Math.max(state.retryCount, payload.retryCount) : state.retryCount,
             finishedAt: at,
             error: null,
           };
@@ -182,7 +222,21 @@ export function generationReducer(state: GenerationState, action: GenerationActi
           return {
             ...state,
             phase: code === 'cancelled' ? 'cancelled' : 'error',
-            error: { code, message: String(payload.message ?? '生成失败') },
+            error: {
+              code,
+              message: String(payload.message ?? '生成失败'),
+              // ★v7（H-12 / P-2）：hint 由服务端下发；前端**不再**按码拼字符串。
+              hint: typeof payload.hint === 'string' ? payload.hint : null,
+              fingerprint: typeof payload.failureFingerprint === 'string' ? payload.failureFingerprint : null,
+              // ★v8 评审（H3.5 的数据通路）：同指纹在最近 N 条 run 里的次数由服务端算好，
+              // 前端只负责与阈值比较——否则"同一原因失败三次"这句文案永远没有数据来源。
+              repeatCount: typeof payload.repeatCount === 'number' ? payload.repeatCount : undefined,
+              retryable: typeof payload.retryable === 'boolean' ? payload.retryable : undefined,
+            },
+            costSource: (payload.costSource as CostSource | undefined) ?? state.costSource,
+            costUsdEst: typeof payload.costUsdEst === 'number' ? payload.costUsdEst : state.costUsdEst,
+            retryCount:
+              typeof payload.retryCount === 'number' ? Math.max(state.retryCount, payload.retryCount) : state.retryCount,
             finishedAt: at,
           };
         }

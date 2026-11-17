@@ -19,6 +19,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy.orm import Session
 
+from ..agent.schema_budget import assert_schema_identity
 from ..config import get_settings
 from ..logging import get_logger
 from ..models import Instrument
@@ -440,14 +441,34 @@ def render_prompt(
     )
     path.write_text(prompt, encoding="utf-8")
     system_source = settings.prompts_dir / "research_system.md"
-    system_path.write_text(system_source.read_text(encoding="utf-8"), encoding="utf-8")
+    # ★v8 评审（AC-81 的漏洞）：**必须按字节复制**，与 I-58 在 schema 上修的是同一个 bug。
+    # `read_text()` + `write_text()` 在 Windows 上把 LF 变成 CRLF（实测 3822B → 3864B，
+    # 多出 42 个 `\r`），于是 `quality.prompt.sha1` 记下的永远是**副本**的指纹，
+    # 与仓库里的 `research_system.md` 对不上——而 AC-81 要求两者相等，
+    # `test_prompt_discipline` 只比对了源文件，所以它一直是绿的。
+    system_path.write_bytes(system_source.read_bytes())
     return prompt
 
 
-def write_schema_copy(path: Path) -> None:
+def write_schema_copy(path: Path) -> str:
+    """把真源复制成工作区那份，并**立刻**断言两份字节一致（§20.3.3，裁决 H-17）。
+
+    返回值是真源的 sha1（12 位），由 `run_manager` 记进
+    `schema_budget.json` / `quality.engine.schemaSha1`——事后任何一次
+    "CLI 接受、Python 拒绝"都能对上号。
+
+    唯一实现在 `agent/schema_budget.py`：`services → agent` 是合法方向，
+    而把实现放在这里、又在 `agent/aragon_runner.build_argv()` 里调用会反向依赖
+    （`test_boundaries::test_agent_never_imports_services`）。**一份实现、两个调用点。**
+    """
     settings = get_settings()
     source = settings.schemas_dir / "report_doc.schema.json"
-    path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    # ★实施发现（I-58）：**必须按字节复制**，不能 `read_text()` + `write_text()`。
+    # 后者在 Windows 上会把 `\n` 变成 `\r\n`（18392 B → 19295 B，多 903 个 `\r`），
+    # 于是一份"文本上完全相同"的副本在 sha1 上就是另一份 schema——E-55 那 34 份漂移
+    # 副本里有 18 份正是 19295 B（= 18392 + 903），来源就是这个换行归一化。
+    path.write_bytes(source.read_bytes())
+    return assert_schema_identity(path, source)
 
 
 def write_snapshot_files(bundle: SnapshotBundle, workspace: Path, system_path: Path) -> Path:

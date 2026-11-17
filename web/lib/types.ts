@@ -353,6 +353,26 @@ export interface ReportQuality {
   grounding?: GroundingQuality | null;
   /** ★v6 G4: the engine that produced this version. No `model`/`provider` here. */
   engine?: EngineInfo | null;
+  /** ★v7 H4: 三态成本。老报告没有这个键 → 界面按「早期版本」渲染，不回填。 */
+  cost?: QualityCost | null;
+  /** ★v7 H5: 当次提示词的版本与指纹。**不进**引擎指纹（裁决 H-5）。 */
+  prompt?: QualityPrompt | null;
+}
+
+/** `quality.cost` —— 与 `agent/cost_model.py::CostResolution.as_payload()` 同形。 */
+export interface QualityCost {
+  source: CostSource;
+  reportedUsd?: number | null;
+  estimatedUsd?: number | null;
+  usd?: number | null;
+  priceVersion?: string | null;
+}
+
+/** `quality.prompt` —— `{version, sha1, bytes}`。 */
+export interface QualityPrompt {
+  version?: number | null;
+  sha1: string;
+  bytes: number;
 }
 
 /** One un-traceable number, with the coordinates needed to jump to it. */
@@ -409,6 +429,40 @@ export interface EngineInfo {
   cliVersion?: string | null;
   allowTools: string[];
   schemaBytes: number;
+  /** ★v7：**当次交给 CLI 的那份** schema 的 sha1（`workspace/schema.json`）。 */
+  schemaSha1?: string | null;
+}
+
+/** ★v7（AC-70）：当前 schema 的实测预算与深度余量。`headroom` 当前 = 1。 */
+export interface EngineSchemaBudget {
+  bytes: number;
+  depth: number;
+  nodes: number;
+  maxBytes: number;
+  maxDepth: number;
+  maxNodes: number;
+  headroom: number;
+  ok: boolean;
+}
+
+/** ★v7：这次 spawn 的显式预算（镜像 `EngineLimitsOut`）。 */
+export interface EngineLimits {
+  retryMax: number;
+  repairTurns: number;
+  maxOutputTokens: number;
+  valueBytes: number;
+  schemaBytes: number;
+}
+
+/** ★v7（H3.5）：最近一次失败。只读、不据此降级。 */
+export interface EngineLastFailure {
+  code: string;
+  hint: string;
+  at?: string | null;
+  /** 同一指纹在同一标的最近 N 条 run 里出现的次数（`>= 3` 才换更强措辞）。 */
+  count: number;
+  /** ★v8：服务端判定好的"该换更强措辞了吗"——阈值不在前端各写一份。 */
+  alert?: boolean;
 }
 
 /** `GET /capabilities.engine` — a new object, not a field on `aragon`. */
@@ -417,6 +471,13 @@ export interface EngineCapability {
   drift: boolean;
   schemaBytes: number;
   allowTools: string[];
+  /** ★v7：`lean` / `full`。出问题时能追到"是不是体位导致的"（R-32）。 */
+  posture?: string | null;
+  schemaSha1?: string | null;
+  schema?: EngineSchemaBudget | null;
+  limits?: EngineLimits | null;
+  priceVersion?: string | null;
+  lastFailure?: EngineLastFailure | null;
 }
 
 /** ★v6 G4: "these two versions came from different engines". Never changes a delta. */
@@ -451,14 +512,26 @@ export interface CostSummary {
   to: string;
   /** Known spend only — unknown runs are counted separately, never as $0.00. */
   spentUsd: number;
+  /** ★v7：按 token × 单价估算的部分，单独一列，绝不并进 `spentUsd`。 */
+  estimatedUsd: number;
+  /** ★v7：两数相加的合计，界面上的「含估算」。 */
+  spentIncludingEstimatedUsd: number;
   knownRuns: number;
+  /** ★v7：三态各计一次（`reported + estimated + unknown == 行数`）。 */
+  reportedRuns: number;
+  estimatedRuns: number;
   unknownRuns: number;
   byKind: Record<string, number>;
   byModel: CostModelRow[];
   budget: CostBudget;
+  /** ★v7：估算用的价格表版本。 */
+  priceVersion?: string | null;
   /** Ledger rows lost to a savepoint (report still landed) — R-26. */
   ledgerGap: number;
 }
+
+/** 成本三态。`estimated` 与 `reported` 永不同义（H-6）。 */
+export type CostSource = 'reported' | 'estimated' | 'unknown';
 
 export interface CostEntry {
   id: number;
@@ -469,6 +542,9 @@ export interface CostEntry {
   model?: string | null;
   usd?: number | null;
   known: boolean;
+  /** ★v7：估算值与来源三态（`usd` / `usdEst` 互斥，AC-86）。 */
+  usdEst?: number | null;
+  source: CostSource;
   createdAt: string;
 }
 
@@ -573,6 +649,15 @@ export interface RunOut {
   costUsd?: number | null;
   costKnown: boolean;
   usage: RunUsage;
+  /** ★v7（§20.5.1）：8 个新字段。`hint` 由服务端按码下发，前端不拼文案（H-12）。 */
+  retryCount: number;
+  structuredAttempts?: number | null;
+  agentProvider?: string | null;
+  agentModel?: string | null;
+  costSource?: CostSource | null;
+  costUsdEst?: number | null;
+  failureFingerprint?: string | null;
+  hint?: string | null;
 }
 
 export interface CreateRunResponse {
@@ -597,6 +682,12 @@ export interface AragonCapability {
   extraAllowTools: string[];
   resolvedBinary?: string | null;
   degradedReason?: string | null;
+  /** ★v7（V8-P1-2）：`exec` 的 `system` 事件里的 `model.baseUrl`；没有就为空。 */
+  baseUrl?: string | null;
+  /** ★v7（H8）：`aragon doctor` 的摘要。**只 warn 不降级**——`ok` 之外的值不是故障。 */
+  doctor?: string | null;
+  /** ★v7：目标模型是否在 `aragon models` 的名单里。`null` = 没测（自检关闭）。 */
+  modelKnown?: boolean | null;
   errors: string[];
 }
 

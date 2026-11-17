@@ -507,18 +507,35 @@ def test_post_schedule_twice_conflicts_with_409(client) -> None:
 
 
 def test_patch_and_delete_schedule(client) -> None:
-    """§18.5.5：PATCH 能改 cron/开关，DELETE 之后 GET 里不再出现。"""
+    """§18.5.5：PATCH 能改 cron/开关，DELETE 之后 GET 里不再出现。
+
+    ★实施发现（I-64）：这条用例原来 PATCH 成 `*/30 * * * *` 并断言
+    `nextRunAt != created.nextRunAt`。那是一个**时间窗口依赖**的假红：当 UTC 时间落在
+    08:30–09:00 时，`*/30` 的下一次与 `0 9 * * 1-5` 的**恰好是同一点**（实测 08:38Z：
+    两者都是 09:00Z），于是这条断言在一天里的某个半小时内必然失败。改成 `0 4 * * *`
+    （与 9 点不可能是同一时刻），并额外用**服务端同一个纯函数**核对重算结果——
+    这样它断言的是"PATCH 真的重算了"，而不是"这两个值此刻恰好不相等"。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.services import cron as cron_module
+
     client.post("/api/v1/symbols/resolve", json={"query": "600519"})
     created = client.post(
         "/api/v1/schedules",
         json={"instrumentId": "CN:600519.SH", "cron": "0 9 * * 1-5", "enabled": True, "minAgeHours": 12},
     ).json()
 
-    patched = client.patch(f"/api/v1/schedules/{created['id']}", json={"cron": "*/30 * * * *", "minAgeHours": 6})
+    patched = client.patch(f"/api/v1/schedules/{created['id']}", json={"cron": "0 4 * * *", "minAgeHours": 6})
     assert patched.status_code == 200, patched.text
-    assert patched.json()["cron"] == "*/30 * * * *"
+    assert patched.json()["cron"] == "0 4 * * *"
     assert patched.json()["minAgeHours"] == 6
-    assert patched.json()["nextRunAt"] != created["nextRunAt"]
+    assert patched.json()["nextRunAt"] != created["nextRunAt"], "改了 cron 就必须重算 nextRunAt"
+
+    # 重算的正确性：与 scheduler 用的同一个纯函数一致（容差 90s，覆盖执行耗时）。
+    expected = cron_module.next_fire("0 4 * * *", datetime.now(UTC))
+    actual = datetime.fromisoformat(patched.json()["nextRunAt"].replace("Z", "+00:00"))
+    assert abs(actual - expected) <= timedelta(seconds=90)
 
     disabled = client.patch(f"/api/v1/schedules/{created['id']}", json={"enabled": False})
     assert disabled.status_code == 200

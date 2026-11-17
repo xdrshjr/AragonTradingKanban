@@ -81,9 +81,31 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
     # ★v6：新增顶层 `engine` 对象（V6-P1-3：它是**新增**的，不是给既有对象加字段）。
     assert set(body) == {"aragon", "agentMode", "dataProviders", "features", "limits", "engine"}
     assert {"available", "version", "versionOk", "provider", "model", "ajv"} <= set(body["aragon"])
-    # ★v6 V6-P1-3 / O-13：`engine` 只带四项，`model`/`provider` 留在 `aragon`。
-    assert set(body["engine"]) == {"fingerprint", "drift", "schemaBytes", "allowTools"}
+    # ★v7（V8-P1-2）：`baseUrl` 归 `aragon`（"引擎是谁"），不归 `engine`（"指纹与预算"）。
+    assert "baseUrl" in body["aragon"]
+    # ★v7：`engine` = v6 的四项 + 六项新事实，且**仍然**没有 model/provider（H-19）。
+    assert set(body["engine"]) == {
+        "fingerprint",
+        "drift",
+        "schemaBytes",
+        "allowTools",
+        "posture",
+        "schemaSha1",
+        "schema",
+        "limits",
+        "priceVersion",
+        "lastFailure",
+    }
     assert "model" not in body["engine"] and "provider" not in body["engine"]
+    assert body["engine"]["posture"] in ("lean", "full")
+    assert isinstance(body["engine"]["drift"], bool), "drift 是布尔：三态由 comparability.same 表达"
+    # AC-70：深度余量 = 1 这件事必须能在 /capabilities 上读到。
+    assert body["engine"]["schema"]["depth"] == 11
+    assert body["engine"]["schema"]["headroom"] == 1
+    assert body["engine"]["limits"]["retryMax"] == 6
+    assert body["engine"]["limits"]["repairTurns"] == 2
+    assert body["engine"]["priceVersion"]
+    assert body["engine"]["lastFailure"] is None, "这个库里还没有失败记录"
     # ★V4-P2-4: `ask` is no longer a 501 placeholder, so the flags are the v4 set —
     # and every one of them is a measurement, which is what the next test pins down.
     assert body["features"] == {
@@ -149,3 +171,14 @@ def test_fake_cli_info_contract() -> None:
     assert {"ajv", "schemaBytes", "schemaDepth", "schemaRefs", "validationNodes", "maxRepairTurns"} <= set(
         info["result"]
     )
+
+def test_limits_expose_the_prompt_budget(capability_client) -> None:
+    """★v8 评审：§20.5.1 要求顶层 `limits` 增 `maxPromptBytes`，而此前没有任何断言。
+
+    它不是一个装饰字段：界面用它解释 `prompt_over_budget`（"上限是多少、我超了多少"），
+    漏了它那条 hint 就只能说"超了"。
+    """
+    body = capability_client()
+    assert body["limits"]["maxPromptBytes"] == get_settings().aragon_max_prompt_bytes
+    assert body["limits"]["maxPromptBytes"] > 0
+

@@ -1,3 +1,5 @@
+<!-- version: 7 -->
+
 你是 Aragon Research Terminal 的报告答疑分析师。
 
 ## 任务
