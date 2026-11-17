@@ -136,6 +136,15 @@ async def build_snapshot(
     if quote_row is None:
         close = bars[-1].close if bars else None
         quote_row = QuoteRow(last=close, prev_close=close, updated_at=_iso(), source=source)
+    elif quote_row.source and quote_row.source != source:
+        # ★PCD-2 / §6.1 #8: `/quote` and `/bars` walk the chain on their own, so the
+        # report could be handed a quote and a series from two providers. Left
+        # unsaid, the model did the only thing it could — it wrote the contradiction
+        # into the report ("快照 quote.last 1634.88 … 与日线收盘 1729.52 相差 5.47%").
+        # Same wording pattern as the fundamentals check below, so a reader sees one
+        # shape of caveat, and `dataQuality.quoteSource` keeps the two traceable
+        # separately instead of collapsing them into one `source`.
+        warnings.append(f"报价来源为 {quote_row.source}，与行情来源 {source} 不同，请注意口径。")
 
     try:
         chain_fund = await registry.fundamentals(instrument.symbol, 8)
@@ -170,8 +179,17 @@ async def build_snapshot(
 
     data_quality = {
         "source": source,
+        # ★PCD-2: the quote may come from a different provider than the bars, and the
+        # reader (and the model) needs to be able to see that without diffing prose.
+        "quoteSource": quote_row.source or source,
         "barsCount": len(bars),
         "lastBarTs": bars[-1].ts if bars else None,
+        # NOT `BarsMeta.stale`. That one may only claim "the newest bar lags the
+        # session that is due" (§R-7); this one is the snapshot's own summary flag —
+        # "there is something the reader must be told" — and `run_manager` turns it
+        # into the 资料自检 line "数据存在陈旧警告". The precise caveat (lag, cross
+        # source, missing fundamentals) travels in `warnings`, which is injected into
+        # the prompt verbatim, so this flag never has to carry the detail.
         "stale": bool(warnings),
         "cached": used_cache,
         "warnings": warnings,

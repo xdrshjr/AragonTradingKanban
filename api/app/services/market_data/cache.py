@@ -45,6 +45,18 @@ _LEGACY_SYNTHETIC = "synthetic"
 #: Session close in UTC hours — coarse, like ``is_market_open`` (no holiday table).
 _CLOSE_HOUR_UTC = {"CN": 7, "HK": 8, "US": 21}
 
+#: Why a cached read did or did not produce a series (★PCD-4 / §R-7). Reported as
+#: ``/bars.meta.reasonCode`` so "the cache is dirty" never has to masquerade as
+#: "this data is stale" — the two are different claims and the reader deserves the
+#: one that is true.
+REASON_OK = "ok"
+REASON_EMPTY = "empty"
+REASON_UNCOVERED = "uncovered"
+REASON_PROVIDER_FALLBACK = "provider_fallback"
+REASON_MIXED_SOURCE = "mixed_source"
+REASON_DIVERGENT_SOURCE = "divergent_source"
+REASON_LEGACY_GENERATION = "legacy_generation"
+
 
 def is_market_open(market: str, now: datetime | None = None) -> bool:
     """Coarse session check — good enough to pick a TTL, not a trading calendar."""
@@ -132,6 +144,28 @@ def read_bars(
     adjust: str,
     start_ts: int,
 ) -> tuple[list[BarRow], str | None]:
+    bars, source, _reason = read_bars_detail(
+        session, instrument_id, timeframe=timeframe, adjust=adjust, start_ts=start_ts
+    )
+    return bars, source
+
+
+def read_bars_detail(
+    session: Session,
+    instrument_id: str,
+    *,
+    timeframe: str,
+    adjust: str,
+    start_ts: int,
+) -> tuple[list[BarRow], str | None, str]:
+    """Same read as ``read_bars``, plus *why* it missed (★PCD-4 / §6.1 #13).
+
+    A miss used to be silent: the reader saw an empty chart, the endpoint refetched,
+    and nobody could tell "cache is empty" from "cache is dirty". The reason code is
+    what ``/bars`` turns into ``meta.reasonCode`` — a separate channel from
+    ``meta.stale``, which may only ever mean "the newest bar lags the session that is
+    due" (§R-7).
+    """
     rows = list(
         session.execute(
             select(Bar)
@@ -157,7 +191,7 @@ def read_bars(
                 Bar.source == _LEGACY_SYNTHETIC,
             )
         )
-        return [], None
+        return [], None, REASON_LEGACY_GENERATION
     if len({row.source for row in rows}) > 1:
         # Two producers spliced into one series (R-2(c)/R-2(d)). Their adjustment
         # bases differ, and a synthetic row sits on a different price level than a
@@ -165,7 +199,10 @@ def read_bars(
         # 600519.SH where a 22-row akshare block met 761 synthetic rows — served
         # with `cached=true, source=akshare`, i.e. both a fake move and a false
         # attribution. Miss instead, so one producer refills the whole window.
-        return [], None
+        # ★R-5: this gate stays exactly as it was — the fix for the dirty series is
+        # on the *write* side (`write_bars` takes the series over), because widening
+        # the gate is what brought the -15.33% seam back.
+        return [], None, REASON_MIXED_SOURCE
     bars: list[BarRow] = []
     source: str | None = None
     for row in rows:
@@ -181,7 +218,9 @@ def read_bars(
             )
         )
         source = row.source
-    return bars, _public_source(source)
+    if not bars:
+        return [], None, REASON_EMPTY
+    return bars, _public_source(source), REASON_OK
 
 
 def bars_cover(bars: list[BarRow], start_ts: int) -> bool:
@@ -189,6 +228,13 @@ def bars_cover(bars: list[BarRow], start_ts: int) -> bool:
 
     ``read_bars`` already filters by ``ts >= start_ts``, so without this a cache
     filled by a narrow range answers every wider one with its own 22 bars.
+
+    ★R-1 only exists for *stored* buckets: a weekly/monthly series stamped at its last
+    bar starts later than the window, and the daily 10-day slack called that
+    uncovered — `?timeframe=1m&range=3y` was a permanent cache miss. The fix is not a
+    second tolerance here: 周/月 are derived *above* the cache from the daily series
+    (`routers/instruments.py`), so the only stored series is a daily one and this
+    predicate keeps its original meaning.
     """
     if not bars:
         return False
@@ -242,9 +288,35 @@ def write_bars(
     bars: list[BarRow],
     source: str,
 ) -> None:
+    """Store a refill: **one series, one producer** (★PCD-4 / §R-5).
+
+    Writing used to upsert only inside the incoming window, so a series could hold
+    two producers forever: a synthetic fallback left ghost rows on the holidays the
+    real source does not trade, `read_bars` refused the spliced series (correctly —
+    the seam was a fake candle), and since the next refill *also* only touched its
+    own window, one ghost row made every wider range a permanent cache miss (3/3
+    requests refetched 1.9–2.9 s). Scoping the delete to the incoming window does not
+    converge either: measured 281 akshare + 5 synthetic rows still mixing after a
+    *narrower* rewrite. So the delete is series-level, and the read-side gate above
+    is left alone (§6.3 #3).
+
+    The cost is stated where it can be seen: if the real source fails once, the
+    synthetic rows replace the real history of that series for this adjust/timeframe,
+    the caller reports `mixed_source`/`source=synthetic` in ``meta``, and the next
+    successful refill repaints the whole series. That is strictly better than mixing
+    two price levels behind one attribution label.
+    """
     if not bars:
         return
     stored_source = _storage_tag(source)
+    session.execute(
+        delete(Bar).where(
+            Bar.instrument_id == instrument_id,
+            Bar.timeframe == timeframe,
+            Bar.adjust == adjust,
+            Bar.source != stored_source,
+        )
+    )
     existing = {
         row.ts: row
         for row in session.execute(
@@ -339,7 +411,3 @@ def write_quote(session: Session, instrument_id: str, quote: QuoteRow) -> None:
     row.source = quote.source
     row.updated_at = quote.updated_at
     session.flush()
-
-
-def purge_instrument_bars(session: Session, instrument_id: str) -> None:
-    session.execute(delete(Bar).where(Bar.instrument_id == instrument_id))

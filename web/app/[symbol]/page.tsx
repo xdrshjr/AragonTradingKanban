@@ -5,7 +5,14 @@ import { ReportMeta } from '@/components/shell/ReportMeta';
 
 import { WorkspaceClient } from '@/components/shell/WorkspaceClient';
 import { api, ApiError } from '@/lib/api';
-import type { Capabilities, Instrument, ReportDetail, ReportListResponse, WatchlistEntry } from '@/lib/types';
+import type {
+  Capabilities,
+  ChartView,
+  Instrument,
+  ReportDetail,
+  ReportListResponse,
+  WatchlistEntry,
+} from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -85,6 +92,10 @@ type WorkspaceSearchParams = {
   view?: string | string[];
   /** ★v6 G2a: `?range=2025-03-01..2025-04-15` — K 线 brush 生成的区间。 */
   range?: string | string[];
+  /** ★PCD-3: `?tf=1w` / `?win=3y` / `?adj=hfq` — 图表口径。 */
+  tf?: string | string[];
+  win?: string | string[];
+  adj?: string | string[];
 };
 
 function firstValue(value: string | string[] | undefined): string | null {
@@ -103,6 +114,21 @@ function parseRangeParam(value: string | null | undefined): { from: string; to: 
   const iso = /^\d{4}-\d{2}-\d{2}$/;
   if (!iso.test(from) || !iso.test(to) || from > to) return null;
   return { from, to };
+}
+
+/**
+ * ★PCD-3：图表口径也是链接的一部分（`?tf=1w&win=3y&adj=hfq`）。
+ * 不合法值丢弃而不是报错——与 `parseRangeParam` 同一份宽容。
+ */
+function parseChartView(query: WorkspaceSearchParams): ChartView {
+  const timeframe = firstValue(query.tf);
+  const range = firstValue(query.win);
+  const adjust = firstValue(query.adj);
+  return {
+    timeframe: timeframe === '1w' || timeframe === '1m' ? timeframe : '1d',
+    range: range === '1m' || range === '3m' || range === '6m' || range === '3y' ? range : '1y',
+    adjust: adjust === 'none' || adjust === 'hfq' ? adjust : 'qfq',
+  };
 }
 
 export default async function WorkspacePage({
@@ -142,6 +168,7 @@ export default async function WorkspacePage({
         initialBlockId={block}
         initialView={firstValue(query.view) === 'full' ? 'full' : 'tabs'}
         initialRange={parseRangeParam(firstValue(query.range))}
+        initialChartView={parseChartView(query)}
       />
     </>
   );

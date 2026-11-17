@@ -15,7 +15,7 @@ import {
   computeWidths,
 } from '@/lib/layout';
 import { useUiStore } from '@/lib/store';
-import type { Instrument, ReportDetail, ReportSummary, WatchlistEntry } from '@/lib/types';
+import type { ChartView, Instrument, ReportDetail, ReportSummary, WatchlistEntry } from '@/lib/types';
 
 import { PricePanel } from '../chart/PricePanel';
 import { GenerationOverlay } from '../generation/GenerationOverlay';
@@ -104,6 +104,12 @@ export interface AppShellProps {
   };
   /** ★v6 G1：`capabilities.features.grounding`。 */
   groundingEnabled?: boolean;
+  /**
+   * ★PCD-3：图表口径由 `WorkspaceClient` 拥有（它写 URL，并让左栏的选中行跟随它）。
+   * K 线面板与它的抽屉共用同一份 state，否则收起再打开会悄悄换回复权口径。
+   */
+  chart?: ChartView;
+  onChartViewChange?: (next: ChartView) => void;
   /** ★v6 G3：成本面板入口（命令面板的「成本…」）。 */
   onOpenCost?: () => void;
   costEnabled?: boolean;
@@ -143,6 +149,8 @@ export function AppShell({
   onOpenSearchResult,
   reading,
   groundingEnabled = false,
+  chart,
+  onChartViewChange,
   onOpenCost,
   costEnabled = false,
 }: AppShellProps) {
@@ -304,8 +312,11 @@ export function AppShell({
                 timezone={activeInstrument.tz}
                 lastPrice={quoteQuery.data?.last}
                 changePct={quoteQuery.data?.changePct}
+                quoteSource={quoteQuery.data?.source ?? null}
                 brushRange={reading?.range ?? null}
                 onBrushRange={reading?.onBrushRange}
+                chartView={chart}
+                onChartViewChange={onChartViewChange}
               />
             </div>
             <Splitter
@@ -362,7 +373,10 @@ export function AppShell({
               timezone={activeInstrument.tz}
               lastPrice={quoteQuery.data?.last}
               changePct={quoteQuery.data?.changePct}
+              quoteSource={quoteQuery.data?.source ?? null}
               onCloseDrawer={() => setKlineDrawer(false)}
+              chartView={chart}
+              onChartViewChange={onChartViewChange}
             />
           </div>
         ) : null}

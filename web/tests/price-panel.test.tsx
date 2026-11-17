@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PricePanel } from '@/components/chart/PricePanel';
+import { copy } from '@/lib/copy';
 import { deltaArrow, epochToDate, num } from '@/lib/format';
 import type { Bar, BarsResponse } from '@/lib/types';
 
@@ -130,5 +131,42 @@ describe('PricePanel 头部一对数字同源', () => {
 
     expect(await screen.findByText(num(BAR_LAST, 2))).toBeInTheDocument();
     expect(screen.queryByText(num(QUOTE_LAST, 2))).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * ★PCD-2：报价与 K 线落在不同 provider 上时，以前两个价并排而无人告诉读者。
+ * 后端已经在 `meta.warnings` 里写了一条可读文案，这里要求界面上也有一个
+ * 一眼可见的徽标，而且它**不能**靠 `stale` 来触发（那会把“混源”说成“陈旧”）。
+ */
+describe('PricePanel 跨源提示（PCD-2）', () => {
+  it('reasonCode=divergent_source 且两侧来源不同时出徽标', async () => {
+    mocks.bars.mockResolvedValue({
+      ...barsResponse([bar(BAR_TS - 86400 * 3, BAR_PREV), bar(BAR_TS, BAR_LAST)]),
+      meta: {
+        ...barsResponse([]).meta,
+        source: 'beta',
+        reasonCode: 'divergent_source',
+        barsCount: 2,
+        stale: false,
+      },
+    });
+    renderPanel(
+      <PricePanel {...baseProps} lastPrice={QUOTE_LAST} changePct={QUOTE_CHANGE} quoteSource="alpha" />,
+    );
+
+    expect(await screen.findByText(copy.chart.sourceDivergent)).toBeInTheDocument();
+    // 它不是“数据陈旧”：这份数据一点也不陈旧。
+    expect(screen.queryByText(/陈旧/)).not.toBeInTheDocument();
+  });
+
+  it('来源相同时不出徽标', async () => {
+    mocks.bars.mockResolvedValue(barsResponse([bar(BAR_TS - 86400 * 3, BAR_PREV), bar(BAR_TS, BAR_LAST)]));
+    renderPanel(
+      <PricePanel {...baseProps} lastPrice={QUOTE_LAST} changePct={QUOTE_CHANGE} quoteSource="synthetic" />,
+    );
+
+    expect(await screen.findByText(num(BAR_LAST, 2))).toBeInTheDocument();
+    expect(screen.queryByText(copy.chart.sourceDivergent)).not.toBeInTheDocument();
   });
 });

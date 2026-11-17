@@ -305,6 +305,10 @@ pinyinSearch, schedule, offline, realtimeQuote, semanticSearch`，`limits` 增�
 | 版本比较里 PE 上涨是绿色（利好）？ | 若显示为绿，说明该指标的 `polarity` 是 `bullish`。`polarity` 缺省时**一律中性灰**，不猜 |
 | `/search` 返回 `degraded: true` | 当前构建没有 `ENABLE_FTS5`，走的是文本扫描兜底。不 500，但 `features.fullTextSearch=false` |
 | 定时刷新没在整点触发 | ticker 默认 30s 一轮（`SCHEDULER_TICK_SECONDS`），且容量不足时会顺延 5 分钟让位给手动生成 |
+| K 线面板出现「报价与 K 线来自不同数据源」 | `/quote`（60s 缓存）与 `/bars`（15min 缓存）**各自**走 provider 链，两侧可能落在不同源上。这不是数据坏了，是分叉被**说出来**了：`meta.reasonCode=divergent_source` + 一条中文告警，且以 K 线的数为当前口径。彻底的解不是钉住某个源，而是一个 `/screen` 端点一次解析（v7 第一项） |
+| 左栏选中行没有「复权」角标，其余行也没有 | 角标只在**选中行**且口径非前复权时出现：那一行的价格来自图表那条序列（`?tf=&win=&adj=`）。图表还没数据时它退回 `/quote`，此时口径留空——实时报价本来就不复权，标成「前复权」是在替它背书 |
+| 周/月线的第一根看起来「不在画布起点」 | 周/月线由**同一条日线**按 ISO 周 / 自然月聚合，`ts` 取桶内最后一根，所以首尾桶天然是残缺的。它不会被写进缓存，覆盖率只按日线判定，因此不会出现「换个周期就永远未命中」 |
+| `/bars.meta.reasonCode` 不是 `ok` | 一个回答只带一个码：`uncovered`（缓存没覆盖该窗口，已重新取数）/`provider_fallback`（链上降级，告警在 `warnings`）/`mixed_source`（序列曾有两个来源，本次已接管重写）/`legacy_generation`（旧一代合成数据已退役，一次性迁移）/`divergent_source`（报价与 K 线不同源）。原因从不写在 `stale` 里 |
 
 ---
 

@@ -65,6 +65,10 @@ class QuoteOut(BaseModel):
     volume: float | None = None
     updatedAt: str
     source: str | None = None
+    #: ★§6.1 #17: whether this answer came from the cache instead of a live provider.
+    #: It replaces the old `source: "akshare (cached)"` string, which put a state into
+    #: the source field and then flowed into `dataQuality` and the report text.
+    cached: bool = False
 
 
 class InstrumentsResponse(BaseModel):

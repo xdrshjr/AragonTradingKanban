@@ -261,21 +261,84 @@ def test_a_series_spliced_from_two_producers_is_not_served(session, instrument) 
     akshare block met 761 synthetic rows. Two producers also mean one attribution
     label for two price levels, so the honest answer is a miss — the caller refills
     the whole window from a single producer.
+
+    ★R-5: `write_bars` can no longer create this state (it takes the series over, see
+    the test below), so the splice is planted directly in the table. The gate itself
+    must stay: it is what stops a row written before this fix, or by a second
+    process, from being served behind a single source label.
     """
-    base = int(time.time()) - 5 * DAY
-    first = [BarRow(ts=base + index * DAY, open=1.0, high=1.0, low=1.0, close=1.0) for index in range(3)]
-    second = [BarRow(ts=base + index * DAY, open=2.0, high=2.0, low=2.0, close=2.0) for index in range(3, 5)]
-    cache.write_bars(session, instrument.id, timeframe="1d", adjust="qfq", bars=first, source="akshare")
-    session.commit()
-    cache.write_bars(session, instrument.id, timeframe="1d", adjust="qfq", bars=second, source="synthetic-v2")
-    session.commit()
-
-    read, source = cache.read_bars(session, instrument.id, timeframe="1d", adjust="qfq", start_ts=0)
-    assert read == [] and source is None, "one series may not splice two producers"
-
     from app.models import Bar
 
-    assert session.query(Bar).filter(Bar.source == "akshare").count() == 3, "real rows are kept, not discarded"
+    base = int(time.time()) - 5 * DAY
+    for index in range(3):
+        session.add(
+            Bar(
+                instrument_id=instrument.id,
+                timeframe="1d",
+                ts=base + index * DAY,
+                adjust="qfq",
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                volume=0.0,
+                source="akshare",
+            )
+        )
+    for index in range(3, 5):
+        session.add(
+            Bar(
+                instrument_id=instrument.id,
+                timeframe="1d",
+                ts=base + index * DAY,
+                adjust="qfq",
+                open=2.0,
+                high=2.0,
+                low=2.0,
+                close=2.0,
+                volume=0.0,
+                source="synthetic-v2",
+            )
+        )
+    session.commit()
+
+    read, source, reason = cache.read_bars_detail(
+        session, instrument.id, timeframe="1d", adjust="qfq", start_ts=0
+    )
+    assert read == [] and source is None, "one series may not splice two producers"
+    assert reason == cache.REASON_MIXED_SOURCE, "and the reason must be reportable, not silent"
+    assert session.query(Bar).filter(Bar.source == "akshare").count() == 3, "the gate does not delete"
+
+
+def test_a_write_takes_over_the_whole_series(session, instrument) -> None:
+    """★PCD-4 / R-5: "one series, one producer" is a *write-time* invariant.
+
+    Deleting only inside the incoming window does not converge: the live database
+    held 726 akshare rows plus 57 `synthetic-v2` ghost rows (a synthetic walk traded
+    on Chinese holidays, the real source did not), and with a narrower rewrite the
+    mix survived as 281 + 5. Both cases end here as a single producer.
+    """
+    from app.models import Bar
+
+    base = int(time.time()) - 30 * DAY
+    wide = [BarRow(ts=base + index * DAY, open=3.0, high=3.0, low=3.0, close=3.0) for index in range(30)]
+    cache.write_bars(session, instrument.id, timeframe="1d", adjust="qfq", bars=wide, source="synthetic")
+    session.commit()
+    assert session.query(Bar).count() == 30
+
+    # The real source comes back with a *narrower* window than it left with.
+    narrow = [BarRow(ts=base + (25 + index) * DAY, open=1.0, high=1.0, low=1.0, close=1.0) for index in range(5)]
+    cache.write_bars(session, instrument.id, timeframe="1d", adjust="qfq", bars=narrow, source="akshare")
+    session.commit()
+
+    rows = session.query(Bar).all()
+    assert {row.source for row in rows} == {"akshare"}, "the series may hold only one producer"
+    assert len(rows) == 5, "the previous producer's rows are not kept next to the new price level"
+
+    read, source, reason = cache.read_bars_detail(
+        session, instrument.id, timeframe="1d", adjust="qfq", start_ts=0
+    )
+    assert len(read) == 5 and source == "akshare" and reason == cache.REASON_OK
 
 
 def test_a_quote_stamped_in_the_future_is_not_fresh() -> None:

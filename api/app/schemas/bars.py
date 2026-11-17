@@ -80,7 +80,16 @@ class BarsMeta(BaseModel):
     adjust: str
     timeframe: str
     cached: bool = False
+    #: Only ever "the newest bar lags the session that is due" (★§R-7). Everything
+    #: else that used to be folded in here — provider fallback, a dirty cache — has
+    #: its own channel below, because claiming 陈旧 about current data is a lie the
+    #: reader cannot check.
     stale: bool = False
+    #: ok / uncovered / provider_fallback / mixed_source / legacy_generation /
+    #: divergent_source. One code per answer, so a caller can tell "the cache missed"
+    #: from "the series had two producers" from "the quote came from elsewhere"
+    #: without matching Chinese prose.
+    reasonCode: str = "ok"
     warnings: list[str] = []
 
 

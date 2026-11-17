@@ -24,6 +24,7 @@ import type {
   ReportSummary,
   ScheduleListResponse,
   WatchlistEntry,
+  ChartView,
 } from '@/lib/types';
 
 import { useGenerationStream } from '../generation/useGenerationStream';
@@ -53,6 +54,12 @@ export interface BudgetGateState {
   estimateUsd: number | null;
 }
 
+/** 写图表口径参数：值为 null 就删除。 */
+function setOrDelete(params: URLSearchParams, key: string, value: string | null): void {
+  if (value === null) params.delete(key);
+  else params.set(key, value);
+}
+
 export interface WorkspaceClientProps {
   initialInstrument: Instrument;
   initialReports: ReportSummary[];
@@ -68,6 +75,8 @@ export interface WorkspaceClientProps {
   initialView?: ReadingMode;
   /** ★v6 G2a：`?range=`（`from > to` 或格式不对时由服务端丢弃）。 */
   initialRange?: { from: string; to: string } | null;
+  /** ★PCD-3：`?tf=` / `?win=` / `?adj=` —— 图表口径要活过刷新与分享。 */
+  initialChartView?: ChartView;
 }
 
 /**
@@ -86,6 +95,7 @@ export function WorkspaceClient({
   initialBlockId,
   initialView = 'tabs',
   initialRange = null,
+  initialChartView,
 }: WorkspaceClientProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -116,6 +126,12 @@ export function WorkspaceClient({
    */
   const [view, setViewState] = useState<ReadingMode>(initialView);
   const [range, setRangeState] = useState<{ from: string; to: string } | null>(initialRange);
+  /**
+   * ★PCD-3：图表口径上升到这里，因为它有两个消费者：K 线面板（渲染）与左栏的选中行（必须与图表同一条序列，否则后复权下左栏与头部相差 514%）。写回 URL 才能活过刷新。
+   */
+  const [chartView, setChartView] = useState<ChartView>(
+    initialChartView ?? { timeframe: '1d', range: '1y', adjust: 'qfq' },
+  );
 
   const selectedReportId = activeReportId ?? initialReportId ?? initialDetail?.report.id ?? null;
 
@@ -217,7 +233,7 @@ export function WorkspaceClient({
 
   // §6.3 wants 现价 + 涨跌 on every rail row; the quotes are fetched here rather
   // than plumbed through the page, so the rail stays self-sufficient.
-  const railItems = useRailQuotes(baseRailItems);
+  const railItems = useRailQuotes(baseRailItems, { selectedId: instrument.id, chart: chartView });
 
   /**
    * 把 `view` / `range` 写回 URL（`router.replace`，不新增历史条目）。
@@ -226,7 +242,7 @@ export function WorkspaceClient({
    * `range`，清 brush 也不会把 `view` 打回 `tabs`（AC-64 的两条独立性）。
    */
   const syncUrl = useCallback(
-    (next: { view?: ReadingMode; range?: { from: string; to: string } | null }) => {
+    (next: { view?: ReadingMode; range?: { from: string; to: string } | null; chart?: ChartView }) => {
       const params = new URLSearchParams(window.location.search);
       if (next.view !== undefined) {
         if (next.view === 'tabs') params.delete('view');
@@ -235,6 +251,12 @@ export function WorkspaceClient({
       if (next.range !== undefined) {
         if (next.range === null) params.delete('range');
         else params.set('range', `${next.range.from}..${next.range.to}`);
+      }
+      if (next.chart !== undefined) {
+        // ★PCD-3：三个参数各自独立，且等于默认值时删掉——URL 只记录“与默认不同”的那一部分。
+        setOrDelete(params, 'tf', next.chart.timeframe === '1d' ? null : next.chart.timeframe);
+        setOrDelete(params, 'win', next.chart.range === '1y' ? null : next.chart.range);
+        setOrDelete(params, 'adj', next.chart.adjust === 'qfq' ? null : next.chart.adjust);
       }
       const query = params.toString();
       router.replace(query ? `?${query}` : '?', { scroll: false });
@@ -254,6 +276,14 @@ export function WorkspaceClient({
     (next: { from: string; to: string } | null) => {
       setRangeState(next);
       syncUrl({ range: next });
+    },
+    [syncUrl],
+  );
+
+  const changeChartView = useCallback(
+    (next: ChartView) => {
+      setChartView(next);
+      syncUrl({ chart: next });
     },
     [syncUrl],
   );
@@ -550,6 +580,8 @@ export function WorkspaceClient({
           onBrushRange: changeRange,
         }}
         groundingEnabled={capabilities.features.grounding === true}
+        chart={chartView}
+        onChartViewChange={changeChartView}
         onOpenCost={() => setCostOpen(true)}
         costEnabled={capabilities.features.costLedger === true}
         focusSection={focusTarget.section}

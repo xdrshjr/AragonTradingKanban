@@ -8,7 +8,7 @@ import { copy } from '@/lib/copy';
 import { deltaArrow, epochToDate, num } from '@/lib/format';
 import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
-import type { BarsResponse } from '@/lib/types';
+import type { BarsResponse, ChartAdjust, ChartRange, ChartTimeframe, ChartView } from '@/lib/types';
 
 import { CandleChart } from './CandleChart';
 import {
@@ -43,9 +43,9 @@ const ADJUSTS = [
   { value: 'hfq', label: '后复权' },
 ] as const;
 
-type TimeframeValue = (typeof TIMEFRAMES)[number]['value'];
-type RangeValue = (typeof RANGES)[number]['value'];
-type AdjustValue = (typeof ADJUSTS)[number]['value'];
+type TimeframeValue = ChartTimeframe;
+type RangeValue = ChartRange;
+type AdjustValue = ChartAdjust;
 
 export interface PricePanelProps {
   instrumentId: string;
@@ -55,11 +55,19 @@ export interface PricePanelProps {
   timezone?: string;
   lastPrice?: number | null;
   changePct?: number | null;
+  /** ★PCD-2：报价的来源，用来提示"报价与 K 线来自不同数据源"。 */
+  quoteSource?: string | null;
   onCloseDrawer?: () => void;
   /** ★v6 G2a：当前框选的区间（来自 URL），用于提示条与再框一次替换的语义。 */
   brushRange?: { from: string; to: string } | null;
   /** 框选完成 → 上行给 `WorkspaceClient`（它写 URL，`ReportPanel` 消费）。 */
   onBrushRange?: (range: { from: string; to: string } | null) => void;
+  /**
+   * ★PCD-3：图表口径受控时由 `WorkspaceClient` 拥有（写 URL，并让左栏的选中行
+   * 跟着它走）。不传则组件自己管——`Web/tests/price-panel.test.tsx` 就是这样渲染的。
+   */
+  chartView?: ChartView;
+  onChartViewChange?: (next: ChartView) => void;
 }
 
 export function PricePanel({
@@ -70,15 +78,32 @@ export function PricePanel({
   timezone = 'Asia/Shanghai',
   lastPrice,
   changePct,
+  quoteSource = null,
   onCloseDrawer,
   brushRange = null,
   onBrushRange,
+  chartView,
+  onChartViewChange,
 }: PricePanelProps) {
-  const [timeframe, setTimeframe] = useState<TimeframeValue>('1d');
-  const [range, setRange] = useState<RangeValue>('1y');
-  const [adjust, setAdjust] = useState<AdjustValue>('qfq');
+  const [localView, setLocalView] = useState<ChartView>({ timeframe: '1d', range: '1y', adjust: 'qfq' });
   const [showSettings, setShowSettings] = useState(false);
   const [indicatorState, setIndicatorState] = useState<IndicatorState>(DEFAULT_INDICATORS);
+
+  const view = chartView ?? localView;
+  const { timeframe, range, adjust } = view;
+  const updateView = useCallback(
+    (patch: Partial<ChartView>) => {
+      const next = { ...view, ...patch };
+      // Keep the local copy in sync even when controlled: it is what the uncontrolled
+      // case reads, and it costs nothing.
+      setLocalView(next);
+      onChartViewChange?.(next);
+    },
+    [onChartViewChange, view],
+  );
+  const setTimeframe = useCallback((value: TimeframeValue) => updateView({ timeframe: value }), [updateView]);
+  const setRange = useCallback((value: RangeValue) => updateView({ range: value }), [updateView]);
+  const setAdjust = useCallback((value: AdjustValue) => updateView({ adjust: value }), [updateView]);
 
   // localStorage is read after mount (never during render) to stay hydration-safe,
   // and every change is written back so the toggles survive a reload (§6.3).
@@ -125,6 +150,13 @@ export function PricePanel({
   }, [bars, changePct, latest, pairSource]);
 
   const changeTone = (change ?? 0) >= 0 ? 'text-[var(--chart-up)]' : 'text-[var(--chart-down)]';
+
+  // ★PCD-2：两个端点落在不同 provider 上时，屏幕上就有两个价，而以前没有任何提示。
+  // `bars` 一侧的 `meta.warnings` 已经带了一条可读文案（后端），这里再给一眼可见的徽标。
+  const barsSource = barsQuery.data?.meta.source ?? null;
+  const sourceDiverges = Boolean(
+    quoteSource && barsSource && quoteSource !== barsSource && barsQuery.data?.meta.reasonCode === 'divergent_source',
+  );
 
   const retry = useCallback(() => {
     void barsQuery.refetch();
@@ -229,6 +261,13 @@ export function PricePanel({
         <span className="num">{barsQuery.data?.meta.barsCount ?? 0} 根</span>
         {barsQuery.data?.meta.cached ? <Badge tone="neutral">{copy.chart.cached}</Badge> : null}
         {barsQuery.data?.meta.source === 'synthetic' ? <Badge tone="warn">{copy.chart.synthetic}</Badge> : null}
+        {/* ★PCD-2：`/quote` 与 `/bars` 各自走链，来源可以不同。钉住那个赢家被否决了
+            （解钉只会变成某个端点 503），所以这里把分叉说出来，而不是静默。 */}
+        {sourceDiverges ? (
+          <Badge tone="warn" title={copy.chart.sourceDivergentHint}>
+            {copy.chart.sourceDivergent}
+          </Badge>
+        ) : null}
         {latest ? <Tag>{epochToDate(latest.ts, timezone)}</Tag> : null}
       </footer>
     </section>

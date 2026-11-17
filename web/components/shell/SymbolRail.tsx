@@ -6,8 +6,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { copy } from '@/lib/copy';
 import { deltaArrow, num, shortSymbol } from '@/lib/format';
-import type { Instrument, WatchlistEntry } from '@/lib/types';
+import type { ChartAdjust, Instrument, WatchlistEntry } from '@/lib/types';
 
+import { Badge } from '../ui/Badge';
 import { Input } from '../ui/Input';
 import { Skeleton } from '../ui/Skeleton';
 import { SymbolSearchInput } from './SymbolSearchInput';
@@ -19,6 +20,16 @@ export interface RailItem {
   hasReport?: boolean;
   /** A4 / §18.4.5：这个标的有启用中的定时刷新（`schedules` 里 `enabled=1`）。 */
   scheduled?: boolean;
+  /**
+   * ★PCD-5：这一行的价格是谁给的。以前只有图表 footer 会标「合成数据」，左栏把
+   * AAPL 的 100% 合成价格当真实价格展示。徽标复用同一个 `copy.chart.synthetic`。
+   */
+  source?: string | null;
+  /**
+   * ★PCD-3：这一行价格的口径。选中行跟随图表的复权口径，所以非前复权时要明说，
+   * 否则"左栏 1,439.78 / 图表 8,840.24"看起来像 bug 而不是复权。
+   */
+  adjust?: ChartAdjust | null;
 }
 
 export interface SymbolRailProps {
@@ -257,7 +268,17 @@ function RailRow({
           <span className="num block text-[11.5px] text-[var(--text-primary)]">
             {item.last === null || item.last === undefined ? '—' : num(item.last, 2)}
           </span>
-          <span className={cn('num block text-[10px]', tone)}>{deltaArrow(change)}</span>
+          <span className="flex items-center justify-end gap-1">
+            {item.adjust && item.adjust !== 'qfq' ? (
+              <span className="text-[9px] text-[var(--text-tertiary)]">{copy.chart.adjustApplied[item.adjust]}</span>
+            ) : null}
+            {item.source === 'synthetic' ? (
+              <Badge tone="warn" className="px-1 py-0 text-[9px] leading-[13px]">
+                {copy.chart.synthetic}
+              </Badge>
+            ) : null}
+            <span className={cn('num block text-[10px]', tone)}>{deltaArrow(change)}</span>
+          </span>
         </span>
       </button>
 

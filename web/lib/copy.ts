@@ -51,6 +51,14 @@ export const copy = {
     dataSource: '数据来源',
     cached: '缓存',
     synthetic: '合成数据',
+    /** ★PCD-2：两个端点落在不同 provider 上时的提示（不是"数据陈旧"）。 */
+    sourceDivergent: '报价与 K 线来自不同数据源',
+    sourceDivergentHint: '该标的的报价与 K 线来自不同数据源，两个数字可能不同口径；以 K 线（图表）为准。',
+    adjustApplied: {
+      qfq: '前复权',
+      none: '不复权',
+      hfq: '后复权',
+    },
     summaryTable: '最近 5 根 K 线（文本替代）',
     openDrawer: '打开 K 线',
     closeDrawer: '收起 K 线',

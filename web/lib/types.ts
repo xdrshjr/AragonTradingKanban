@@ -62,6 +62,8 @@ export interface Quote {
   volume?: number | null;
   updatedAt: string;
   source?: string | null;
+  /** ★§6.1 #17：这次回答来自缓存而不是实时源（原本塞在 `source` 字符串里）。 */
+  cached?: boolean;
 }
 
 export interface Bar {
@@ -96,8 +98,32 @@ export interface BarsMeta {
   adjust: string;
   timeframe: string;
   cached: boolean;
+  /** 只表示"最新一根落后于应有会话"；原因走 `reasonCode`（★§R-7）。 */
   stale: boolean;
+  /**
+   * `ok / uncovered / provider_fallback / mixed_source / legacy_generation / divergent_source`。
+   * 一个回答只带一个码，调用方不必匹配中文文案就能分辨"缓存没覆盖 / 序列曾经混源 /
+   * 报价在别处"。
+   */
+  reasonCode?: string;
   warnings: string[];
+}
+
+/* ── chart view (the window the chart is showing) ─────────────────────────── */
+
+export type ChartTimeframe = '1d' | '1w' | '1m';
+export type ChartRange = '1m' | '3m' | '6m' | '1y' | '3y';
+export type ChartAdjust = 'qfq' | 'none' | 'hfq';
+
+/**
+ * ★PCD-3：图表当前的口径。它由 `WorkspaceClient` 拥有（因为要写进 URL，还要让左栏
+ * 的**选中行**跟着它走），所以 `PricePanel` 既能受控也能自己管（`price-panel.test.tsx`
+ * 就是不带这套 props 直接渲染的）。
+ */
+export interface ChartView {
+  timeframe: ChartTimeframe;
+  range: ChartRange;
+  adjust: ChartAdjust;
 }
 
 export interface BarsResponse {
