@@ -35,6 +35,9 @@ playwright-report/
 test-results/
 *.log
 
+# local run state written by start-all.ps1 / stop-all.ps1 (PIDs + service logs)
+/.run/
+
 # typescript build info
 *.tsbuildinfo
 

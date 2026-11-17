@@ -90,6 +90,32 @@ cd web
 npm run dev
 ```
 
+### Windows 一键启停（PowerShell 5.1）
+
+`npm run dev` 是**前台**跑法：任一子进程退出就收掉全部，日志混在一个终端里、带 `[api]`/`[web]` 前缀。
+仓库根的两个脚本是**后台**跑法：服务独立常驻、日志分文件，适合 "起一次、关电脑前再关掉" 的用法。
+两者启动参数一致（`--workers 1`、web 强制 `NODE_ENV=development`），差别只在退出语义和日志形态。
+
+```text
+PowerShell 里：
+.\start-all.ps1                 # 后台起 API :8000 + Web :3000，等到就绪再打印地址并打开浏览器
+.\start-all.ps1 -Restart -Mock  # 先停再起，并强制示例模式
+.\stop-all.ps1                  # 关闭两个服务（手工起的同端口进程也一并收掉）
+.\stop-all.ps1 -DryRun          # 只列出会被结束的进程，不真的执行
+
+cmd.exe 里请走 powershell：
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-all.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
+```
+
+- 运行态（PID + 日志）写进 `.run\`（`/.run/` 已在 `.gitignore` 里，可随时删）。uvicorn 把 INFO 日志写 **stderr**，所以在 `.run\logs\api.err.log`；Next 在 `.run\logs\web.out.log`。
+- `start-all.ps1` 是幂等的且**认身份**：端口上跑着的确实是本项目服务（命令行对得上、`/api/v1/health` 返回 200）才复用；占端口的是别的东西时它报冲突并跳过，不会假装就绪。
+- `stop-all.ps1` 只收三类目标：`.run\*.pid` 里记录的进程（会核对进程名与启动时间，PID 被系统复用就跳过）、监听 :8000 / :3000 的进程、命令行可定位到本仓库的 `next dev`。结束前可先 `-DryRun` 看一眼。
+- 参数：`-NoBrowser` 不自动开浏览器 / `-Mock` 强制 `AGENT_MODE=mock`（只对新起的进程生效）/ `-Restart` 先停再起 / `-NoReload` API 不带 `--reload`。
+- 退出码：两个脚本都是 `0` 成功、`1` 有服务没就绪或端口没释放，可直接写进批处理判断。
+- 改了 `PY_API_PORT` 记得同步 `NEXT_PUBLIC_API_BASE`（脚本会告警，但不会替你改前端指向）。
+- 这两个 `.ps1` 是 Windows-only 的便捷入口，跨平台入口仍然是 `npm run dev`。
+
 > ⚠️ **API 必须单 worker。** 生成编排是进程内的 `asyncio` 任务，订阅者队列在内存里；多 worker 会导致"任务在 A 进程、SSE 连接打到 B 进程"，表现为进度条永远不动。启动时的 `assert_single_worker()` 会直接 `RuntimeError` 拒绝启动，而不是让你在线上慢慢发现。跨进程恢复靠启动时把遗留 `running` 置为 `failed(interrupted)` + `run_events` 重放。
 
 > ⚠️ **Schema 只有一个真源：Alembic。** `api/app` 里不存在 `create_all`；它只允许出现在 `tests/conftest.py`。校验命令：`grep -r "create_all" api/app` 必须为空。
