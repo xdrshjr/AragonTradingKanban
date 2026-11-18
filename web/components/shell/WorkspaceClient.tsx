@@ -8,6 +8,7 @@ import { api, ApiError } from '@/lib/api';
 import { copy } from '@/lib/copy';
 import { exportFilenameHint, triggerDownload } from '@/lib/download';
 import { modifierLabel, useHotkeys } from '@/lib/keyboard';
+import { libraryHref } from '@/lib/library';
 import {
   REPORT_GENERATED_AT_META,
   isOffline,
@@ -141,7 +142,14 @@ export function WorkspaceClient({
     queryKey: ['report', selectedReportId],
     queryFn: () => (selectedReportId ? api.report(selectedReportId) : Promise.resolve(null)),
     enabled: Boolean(selectedReportId),
-    initialData: initialDetail ?? undefined,
+    // ★v14（U2 / AC-141 的连带修正，见 spec「实施过程发现的方案缺陷」D-8）：
+    // `initialData` 的**值是数据、不是函数**，而 `queryKey` 里含 `selectedReportId`
+    // ⇒ 每一个新 key 首次挂载都会拿到同一份 RSC 首屏 detail。配合 `staleTime: Infinity`，
+    // 从深链切到别的版本时新 key 既"有数据"又"永不陈旧"，界面就停在旧版，而 URL 已经
+    // 指向新版 —— 这正是 U-0c 说的"切版本之后看到的还是同一份"。
+    // 所以只在那份 detail 真的属于当前 id 时才把它当首屏数据。
+    initialData:
+      initialDetail && initialDetail.report.id === selectedReportId ? initialDetail : undefined,
     staleTime: Infinity,
   });
 
@@ -244,7 +252,13 @@ export function WorkspaceClient({
    * `range`，清 brush 也不会把 `view` 打回 `tabs`（AC-64 的两条独立性）。
    */
   const syncUrl = useCallback(
-    (next: { view?: ReadingMode; range?: { from: string; to: string } | null; chart?: ChartView }) => {
+    (next: {
+      view?: ReadingMode;
+      range?: { from: string; to: string } | null;
+      chart?: ChartView;
+      /** ★v14：`null` = 删掉该参数（选中的是最新版时）。 */
+      report?: string | null;
+    }) => {
       const params = new URLSearchParams(window.location.search);
       if (next.view !== undefined) {
         if (next.view === 'tabs') params.delete('view');
@@ -253,6 +267,11 @@ export function WorkspaceClient({
       if (next.range !== undefined) {
         if (next.range === null) params.delete('range');
         else params.set('range', `${next.range.from}..${next.range.to}`);
+      }
+      if (next.report !== undefined) {
+        // ★v14（U2 / §23.3.3）：`report` 与其他参数同一套纪律——只改自己那一个键，
+        // 且等于默认（= 最新版）时删掉。于是 F5 / 分享链接看到的还是同一版（U-0c）。
+        setOrDelete(params, 'report', next.report);
       }
       if (next.chart !== undefined) {
         // ★PCD-3：三个参数各自独立，且等于默认值时删掉——URL 只记录“与默认不同”的那一部分。
@@ -298,12 +317,62 @@ export function WorkspaceClient({
     [instrument.id, router],
   );
 
+  /**
+   * ★v14（U2 / ★P1-7）：**最新版 id 的权威来源**。
+   *
+   * 深链时 `initialDetail` 已经被 `?report=` 那一份**替换**（`app/[symbol]/page.tsx`），
+   * 所以 `initialDetail.report.id` 不是最新版；`initialReports` 又默认 `includeArchived=false`。
+   * 取值顺序写死，且与 `report_service.latest_of()` 同序，不允许在组件里另发明一套：
+   * ① `initialReports` 里 `isLatest === true` 的那一行 →
+   * ② 否则 `version` 最大且 `provisional === false` 的那一行 →
+   * ③ 否则 `version` 最大的那一行 → ④ 都没有则 `null`（不出横幅）。
+   */
+  const latestReport = useMemo<ReportSummary | null>(() => {
+    const rows = reportsQuery.data?.items ?? reports;
+    if (rows.length === 0) return null;
+    const flagged = rows.find((row) => row.isLatest);
+    if (flagged) return flagged;
+    const solid = rows.filter((row) => !row.provisional);
+    const pool = solid.length > 0 ? solid : rows;
+    const head = pool[0];
+    if (!head) return null;
+    return pool.reduce((best, row) => (row.version > best.version ? row : best), head);
+  }, [reports, reportsQuery.data]);
+  const latestReportId = latestReport?.id ?? null;
+
+  /**
+   * ★v14（U1 / 评审 R-2）：命令面板里的「最近 5 份报告」。
+   *
+   * **只在面板打开时取**（`enabled`）：面板是低频入口，让它常驻查询等于给每次进工作台
+   * 都加一次 `/reports`，而工作台首屏的请求数是有预算的（★E-126 的另一面）。
+   * `reportLibrary.available()` 为假时也不取——那说明后端没有这个能力，取也是 404/500。
+   */
+  const commandPaletteOpen = useUiStore((state) => state.commandPaletteOpen);
+  const libraryEnabled = capabilities.features.reportLibrary === true;
+  const recentReportsQuery = useQuery({
+    queryKey: ['reports', 'library', 'palette', 5],
+    queryFn: () => api.reportLibrary({ scope: 'latest', limit: 5, withCounts: false }),
+    enabled: libraryEnabled && commandPaletteOpen,
+    staleTime: 30_000,
+    select: (data) =>
+      data.items.map((item) => ({
+        id: item.report.id,
+        symbol: item.instrument.symbol,
+        name: item.instrument.name,
+        headline: item.report.headline || item.report.title,
+        version: item.report.version,
+      })),
+  });
+
   const selectVersion = useCallback(
     (reportId: string) => {
       setActiveReport(reportId);
+      // ★v14（U2）：URL 是"当前哪一版"的**唯一**真源（它能被刷新、收藏、分享）。
+      // 选中的是最新版时把参数删掉 —— "URL 只记录与默认不同"这条既有纪律。
+      syncUrl({ report: latestReportId && reportId === latestReportId ? null : reportId });
       void queryClient.invalidateQueries({ queryKey: ['report', reportId] });
     },
-    [queryClient, setActiveReport],
+    [latestReportId, queryClient, setActiveReport, syncUrl],
   );
 
   const toggleWatchlist = useCallback(
@@ -451,6 +520,16 @@ export function WorkspaceClient({
   // and the report header all trigger the same run, so there is one owner.
   const generation = useGenerationStream({
     onDone: (reportId) => selectVersion(reportId),
+    // ★v14（U3 / §23.3.4a）：内容与最新版完全一致 ⇒ 没有新增版本。仍然打开那一版
+    // （"什么都不发生"是最坏的一种反馈），并说清为什么。
+    onDeduped: (reportId, version) => {
+      selectVersion(reportId);
+      notify.info(
+        version !== null
+          ? copy.history.deduped.replace('{version}', String(version))
+          : copy.history.deduped.replace('{version}', '—'),
+      );
+    },
     onError: (code, message) => notify.error(`${message}（${code}）`),
     // ★v9（K6 / §21.3.7）：接管不再是静默的 —— 用 `copy.errors.runConflict`
     // （这条文案写了两年，一直没有被任何代码用过）。
@@ -469,7 +548,7 @@ export function WorkspaceClient({
   });
 
   const requestGeneration = useCallback(
-    (options: { force?: boolean; override?: boolean } = {}) => {
+    (options: { force?: boolean; override?: boolean; baseReportId?: string | null } = {}) => {
       if (generation.isActive) {
         notify.info('已有一次生成在进行中');
         return;
@@ -565,6 +644,18 @@ export function WorkspaceClient({
           askDeep: capabilities.features.askDeep === true,
           schedule: capabilities.features.schedule !== false,
           search: capabilities.features.fullTextSearch !== false,
+          // ★v14（U1 / §23.5.4）：`false` 时**不渲染**「报告库」入口（不留死链）。
+          reportLibrary: capabilities.features.reportLibrary === true,
+        }}
+        history={{
+          // ★P1-7：最新版 id 只有一个权威来源（上面那段 `latestReport`），组件不猜。
+          latestReportId,
+          latestVersion: latestReport?.version ?? null,
+          latestGeneratedAt: latestReport?.generatedAt ?? null,
+          onBackToLatest: () => {
+            if (latestReportId) selectVersion(latestReportId);
+          },
+          onBaseThisVersion: (reportId: string) => requestGeneration({ baseReportId: reportId }),
         }}
         askDailyLimit={
           typeof capabilities.limits.askDailyLimit === 'number' ? capabilities.limits.askDailyLimit : 30
@@ -592,6 +683,14 @@ export function WorkspaceClient({
         onChartViewChange={changeChartView}
         onOpenCost={() => setCostOpen(true)}
         costEnabled={capabilities.features.costLedger === true}
+        // ★v14（U1 / 评审 R-2）：命令面板的「报告库」入口与「最近 5 份报告」。
+        onOpenLibrary={() => router.push('/reports')}
+        recentReports={recentReportsQuery.data}
+        onOpenReport={(symbol, reportId) => {
+          // ★U-0b：打开的是**那一版**（`libraryHref` 100% 带 `?report=`），不是这个标的的最新版。
+          setActiveReport(reportId);
+          router.push(libraryHref(symbol, reportId));
+        }}
         focusSection={focusTarget.section}
         focusBlockId={focusTarget.block}
         onReportJump={(blockId, sectionId) => {

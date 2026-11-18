@@ -34,6 +34,8 @@ function failedState(code: string, message = '出错了'): GenerationState {
     error: { code, message },
     reportId: null,
     version: null,
+    // ★v14（U3）：`GenerationState` 新增 `deduped`（`run.done` 的"未新增版本"标记）。
+    deduped: false,
     costUsd: null,
     costKnown: false,
     costSource: null,

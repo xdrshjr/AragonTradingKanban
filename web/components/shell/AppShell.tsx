@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -98,7 +99,13 @@ export interface AppShellProps {
   generation: UseGenerationStreamResult;
   onToggleWatchlist?: (instrumentId: string, inWatchlist: boolean) => void;
   /** `capabilities.features` — every A1/A3/A4 entry is gated on a measurement. */
-  features?: { askDeep?: boolean; schedule?: boolean; search?: boolean };
+  features?: {
+    askDeep?: boolean;
+    schedule?: boolean;
+    search?: boolean;
+    /** ★v14（U1）：报告库是否可用（`features.reportLibrary` 的**实测**结论）。 */
+    reportLibrary?: boolean;
+  };
   askDailyLimit?: number;
   /** version comparison state, owned by `WorkspaceClient` (an A3 route state). */
   compare?: {
@@ -131,6 +138,33 @@ export interface AppShellProps {
   };
   /** ★v6 G1：`capabilities.features.grounding`。 */
   groundingEnabled?: boolean;
+  /**
+   * ★v14（U1）：打开报告库。`features.reportLibrary === false` 时**不传** ⇒ 命令面板里
+   * 这一项不出现（与 `onOpenCost` 完全同形，无悬挂分支）。
+   */
+  onOpenLibrary?: () => void;
+  /**
+   * ★v14（U1 / 评审 R-2）：最近 5 份报告 —— 命令面板里的动态项。
+   *
+   * 这条数据由 `WorkspaceClient` 在**命令面板打开时**才去取（`enabled`），所以工作台首屏
+   * 的请求数不变：面板是低频入口，不该让每次进工作台都多一次 `/reports`。
+   */
+  recentReports?: { id: string; symbol: string; name: string; headline: string; version: number }[];
+  /** ★v14（评审 R-2）：打开某一版（跨标的）；`recentReports` 的每一行都靠它。 */
+  onOpenReport?: (symbol: string, reportId: string) => void;
+  /**
+   * ★v14（U2 / §23.3.3）：历史版本横幅需要的四样东西。
+   *
+   * `latestReportId` 由 `WorkspaceClient` 按权威取值顺序算出来（组件不猜）——
+   * 猜错就把最新版渲染成历史版，而这两种错误在界面上长得一模一样（★P1-7）。
+   */
+  history?: {
+    latestReportId: string | null;
+    latestVersion: number | null;
+    latestGeneratedAt: string | null;
+    onBackToLatest: () => void;
+    onBaseThisVersion: (reportId: string) => void;
+  };
   /**
    * ★PCD-3：图表口径由 `WorkspaceClient` 拥有（它写 URL，并让左栏的选中行跟随它）。
    * K 线面板与它的抽屉共用同一份 state，否则收起再打开会悄悄换回复权口径。
@@ -177,6 +211,10 @@ export function AppShell({
   onOpenSearchResult,
   reading,
   groundingEnabled = false,
+  onOpenLibrary,
+  recentReports,
+  onOpenReport,
+  history,
   chart,
   onChartViewChange,
   onOpenCost,
@@ -296,6 +334,15 @@ export function AppShell({
         <span className="truncate text-[12px] text-[var(--text-secondary)]">{activeLabel}</span>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* ★v14（U1）：`features.reportLibrary === false` 时**不渲染**（不留死链）。 */}
+          {features?.reportLibrary ? (
+            <Link
+              href="/reports"
+              className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
+            >
+              {copy.library.open}
+            </Link>
+          ) : null}
           <RunStatusBadge
             generation={generation}
             agentMode={agentMode}
@@ -399,6 +446,7 @@ export function AppShell({
             range={reading?.range ?? null}
             onClearRange={reading?.onClearRange}
             groundingEnabled={groundingEnabled}
+            history={history}
           />
         </div>
 
@@ -448,6 +496,11 @@ export function AppShell({
         onToggleChart={() => setKlineDrawer(!klineDrawerOpen)}
         onOpenSearch={features?.search === false ? undefined : () => setSearchOpen(true)}
         onOpenCost={costEnabled ? onOpenCost : undefined}
+        // ★v14（U1 / 评审 R-2）：`features.reportLibrary === false` 时两个都**不传** ⇒
+        // 「打开报告库」与「最近 5 份报告」都不出现（不留死链，也无悬挂分支）。
+        onOpenLibrary={features?.reportLibrary === false ? undefined : onOpenLibrary}
+        recentReports={features?.reportLibrary === false ? undefined : recentReports}
+        onOpenReport={features?.reportLibrary === false ? undefined : onOpenReport}
       />
 
       {/* A2: one search surface for the rail and ⌘K; mounted on demand. */}

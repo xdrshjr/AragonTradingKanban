@@ -92,6 +92,10 @@ class FeaturesOut(BaseModel):
     costLedger: bool = False
     #: G4：preflight 拿到了版本，能算出指纹。
     engineFingerprint: bool = False
+    #: ★v14（U1 / §23.5.4）：报告库可用（`0006_report_library` 已应用 + `reports.doc_sha1`
+    #: 可查）。`false` 时前端**不渲染**「报告库」入口——不留死链，这是既有纪律。
+    #: 判据来自**一次测量**（`report_library.available()`），不是常量：禁止硬编码 `True`。
+    reportLibrary: bool = False
 
 
 class EngineSchemaOut(BaseModel):

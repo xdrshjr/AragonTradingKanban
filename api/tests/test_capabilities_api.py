@@ -172,6 +172,10 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
         "readingMode": True,
         "costLedger": True,
         "engineFingerprint": True,
+        # ★v14（U1 / §23.5.4）：**实测**判据（`0006_report_library` 已应用 + `doc_sha1` 可查）。
+        # 这条断言是**精确相等**的 18 键字典，所以下一次再加开关时必须同步这里——
+        # 那正是"响应模型是第二道门"的机器化版本（V10-P1-1 的同型守卫）。
+        "reportLibrary": True,
     }
     assert body["limits"]["askDailyLimit"] == 30
     # ★v6：面板与徽标需要的四个数（`maxBlockRangeDays` 只用于 UI 文案）。

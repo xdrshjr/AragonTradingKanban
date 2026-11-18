@@ -47,7 +47,7 @@ from .routers import (
     symbols,
     watchlist,
 )
-from .services import ask_service, search_index
+from .services import ask_service, report_service, search_index
 from .services.run_manager import get_manager
 from .services.scheduler_ticker import get_ticker
 
@@ -108,6 +108,10 @@ async def _sweep_loop() -> None:
     根本不启动（`lifespan` 里那两行就是全部真相），而"关掉定时刷新"恰恰是最需要自愈的
     配置。这也是为什么这里**不**用 `asyncio.create_task` 再包一层：`sweep_stale_runs()`
     是同步函数（只碰 DB），直接调、异常直接落日志，而不是丢进一个没人 await 的 Task。
+
+    ★v14（U5 / ★P1-14）：`purge_trash()` 也挂**这里**，理由与 V11-P1-4 同构——
+    `SCHEDULER_ENABLED=0` 的部署不会启动 ticker，挂在 ticker 上等于"回收站永不清理、
+    `.db` 只增不减"。它同样只碰 DB，异常只记日志（不变量 3：清理失败不改任何响应结论）。
     """
     while True:
         try:
@@ -115,10 +119,29 @@ async def _sweep_loop() -> None:
             swept = get_manager().sweep_stale_runs()
             if swept:
                 logger.warning("活性清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
+            _purge_trash_once()
         except asyncio.CancelledError:  # pragma: no cover - shutdown
             raise
         except Exception:  # pragma: no cover - 一次对账失败不该杀死清扫
             logger.exception("活性清扫失败")
+
+
+def _purge_trash_once() -> None:
+    """回收站硬清理（唯一入口调用的地方之一，另一个是 lifespan）。
+
+    ★P1-14：**不能**挂 scheduler tick（ticker 只在 `SCHEDULER_ENABLED=1` 时启动）。
+    永不抛：清理是后台事务，失败只记日志。
+    """
+    session = SessionLocal()
+    try:
+        purged = report_service.purge_trash(session)
+        if purged["reports"]:
+            logger.info("回收站清理：%s 份报告 / %s 条追问已永久删除", purged["reports"], purged["asks"])
+    except Exception:  # pragma: no cover - 清理失败不影响服务
+        logger.exception("回收站清理失败（不影响任何读路径）")
+        session.rollback()
+    finally:
+        session.close()
 
 
 @asynccontextmanager
@@ -163,6 +186,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if swept:
             logger.warning("启动清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
         get_manager().cleanup_workspaces(session)
+        # ★v14（U5 / §23.3.5）：启动就跑一次回收站硬清理（与 `cleanup_workspaces()` 并列）。
+        # 它只碰 DB，异常只记日志——清理失败不该拒绝启动（S-2 的同一条纪律）。
+        try:
+            purged = report_service.purge_trash(session)
+            if purged["reports"]:
+                logger.info("启动清理：%s 份过期报告 / %s 条追问已永久删除", purged["reports"], purged["asks"])
+        except Exception:  # pragma: no cover - 清理失败不影响启动
+            logger.exception("启动清理回收站失败（不影响启动）")
+            session.rollback()
         # ★V4-P1-5: an ask left `queued`/`running` by a killed process would otherwise
         # keep its SSE stream polling forever and make cancel a silent no-op.
         stale_asks = ask_service.recover_interrupted(session)

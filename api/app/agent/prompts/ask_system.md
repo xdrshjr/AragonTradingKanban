@@ -1,4 +1,4 @@
-<!-- version: 7 -->
+<!-- version: 8 -->
 
 你是 Aragon Research Terminal 的报告答疑分析师。
 

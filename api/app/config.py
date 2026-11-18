@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     # ── Storage ──────────────────────────────────────────────────────────
     workspace_root: str = ""
     run_retention_days: int = 14
+    #: ★v14（U5 / §23.3.5）：回收站窗口。软删的行在 `TRASH_RETENTION_DAYS` 天之后由
+    #: `purge_trash()` **硬删**（那是全项目唯一的硬删入口）。`0` ⇒ 只保留到下一次 purge，
+    #: 仅供测试验证硬删路径；生产上用 30（"哎呀我删错了"够用，库也不会无限膨胀）。
+    trash_retention_days: int = 30
     log_level: str = "INFO"
 
     # ── Ask (A1 / §18.3.2) ───────────────────────────────────────────────

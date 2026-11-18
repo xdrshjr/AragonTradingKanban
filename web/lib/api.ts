@@ -23,6 +23,7 @@ import type {
   HealthResponse,
   Instrument,
   Quote,
+  LibraryResponse,
   ReportDetail,
   ReportListResponse,
   ReportSummary,
@@ -91,6 +92,17 @@ export function sseBase(): string {
 
 function authHeaders(): Record<string, string> {
   return API_TOKEN ? { authorization: `Bearer ${API_TOKEN}` } : {};
+}
+
+/** `reportLibrary()` 的参数；`before` 是**已编码**的游标，不是原始 `{at}|{id}`。 */
+export interface LibraryParams {
+  scope?: import('./types').LibraryScope;
+  q?: string;
+  instrumentId?: string;
+  limit?: number;
+  before?: string | null;
+  withCounts?: boolean;
+  includeActive?: boolean;
 }
 
 interface RequestOptions {
@@ -198,9 +210,32 @@ export const api = {
 
   report: (reportId: string) => request<ReportDetail>(`/reports/${encodeURIComponent(reportId)}`),
 
+  /**
+   * ★v14（U1 / §23.5.1）：报告库列表 —— 首页、库页、命令面板的**唯一**读路径。
+   *
+   * 三个量别混：`counts` 是不含 `q`/`instrumentId` 的全库计数（tab 徽章恒定），
+   * `total` 是当前过滤命中数（联动），`nextCursor` 只在有下一页时非 null。
+   */
+  reportLibrary: (params: LibraryParams = {}) => {
+    const search = new URLSearchParams();
+    search.set('scope', params.scope ?? 'latest');
+    if (params.q) search.set('q', params.q);
+    if (params.instrumentId) search.set('instrumentId', params.instrumentId);
+    if (params.limit !== undefined) search.set('limit', String(params.limit));
+    // 游标已经是 `encodeURIComponent` 过的：原样透传（服务端只做正则校验，不做时间解析）。
+    if (params.before) search.set('before', params.before);
+    if (params.withCounts === false) search.set('withCounts', '0');
+    if (params.includeActive) search.set('includeActive', '1');
+    return request<LibraryResponse>(`/reports?${search.toString()}`);
+  },
+
+  /** ★v14（U5 / §23.5.2）：把一份软删的版本救回来。未删除 ⇒ 409 `report_not_deleted`。 */
+  restoreReport: (reportId: string) =>
+    request<ReportSummary>(`/reports/${encodeURIComponent(reportId)}/restore`, { method: 'POST' }),
+
   createReport: (
     instrumentId: string,
-    body: { reason?: string; force?: boolean } = {},
+    body: { reason?: string; force?: boolean; dedupe?: boolean; baseReportId?: string | null } = {},
     options: { override?: boolean } = {},
   ) =>
     request<CreateRunResponse>(

@@ -15,6 +15,7 @@ import type { ReportDetail, ReportSummary, SourceRef } from '@/lib/types';
 import { Badge, Tag } from '../ui/Badge';
 import { IconButton } from '../ui/Button';
 import { EmptyReportState } from './EmptyReportState';
+import { HistoricalBanner } from './HistoricalBanner';
 import { DiffBadge } from './DiffBadge';
 import { ReportRenderer } from './ReportRenderer';
 import { SourceDrawer } from './SourceDrawer';
@@ -113,6 +114,17 @@ export interface ReportPanelProps {
    * （徽标、点、脚注都不出现），而不是渲染一个空壳（§19.2 的"E 层无悬挂分支"）。
    */
   groundingEnabled?: boolean;
+  /**
+   * ★v14（U2 / §23.3.3 / AC-141）：历史版本横幅需要的三样东西。
+   * `latestReportId` 由 `WorkspaceClient` 按权威取值顺序给出——组件自己**不猜**。
+   */
+  history?: {
+    latestReportId: string | null;
+    latestVersion: number | null;
+    latestGeneratedAt: string | null;
+    onBackToLatest: () => void;
+    onBaseThisVersion: (reportId: string) => void;
+  };
 }
 
 /**
@@ -147,6 +159,7 @@ export function ReportPanel({
   range = null,
   onClearRange,
   groundingEnabled = true,
+  history,
 }: ReportPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabsRef = useRef<HTMLDivElement | null>(null);
@@ -167,6 +180,19 @@ export function ReportPanel({
    * 所以"徽标说 48/51、页面却是另一个版本"这个坑在这里被结构性地堵住。
    */
   const grounding = groundingEnabled ? (summary?.quality.grounding ?? null) : null;
+  /**
+   * ★v14（U2 / ★P1-7）：**只有**当 `latestReportId` 存在且当前这一版不是它时才是历史版本。
+   * 缺 `history`（或没有最新版）⇒ 不出横幅 —— 宁可不提示，也不要提示错。
+   */
+  const isHistorical =
+    Boolean(history?.latestReportId) &&
+    Boolean(summary) &&
+    summary?.id !== history?.latestReportId;
+  /**
+   * ★v14（U4 / §23.5.4）：损坏的 doc 仍然**可读**（后端给的是能通过 `ReportDoc` 的
+   * 最小壳），所以这里只把徽标切到 warn 并给一行指引，不隐藏任何内容。
+   */
+  const corrupt = detail?.integrity === 'corrupt';
 
   useEffect(() => {
     if (askOpen) setAskMounted(true);
@@ -446,6 +472,25 @@ export function ReportPanel({
             </GenerateButton>
           </div>
         </div>
+
+        {/* ★v14（U2 / AC-141）：历史版本横幅。常驻（不是 toast）——否则读者会忘了自己在看历史。 */}
+        {isHistorical && summary && history ? (
+          <HistoricalBanner
+            version={summary.version}
+            generatedAt={summary.generatedAt}
+            latestVersion={history.latestVersion ?? summary.version}
+            latestGeneratedAt={history.latestGeneratedAt}
+            onBackToLatest={history.onBackToLatest}
+            onBaseThisVersion={() => history.onBaseThisVersion(summary.id)}
+            onCompare={onCompare}
+            busy={generating}
+          />
+        ) : null}
+        {corrupt ? (
+          <p className="border-b border-[var(--warn)]/30 bg-[var(--warn-weak)] px-3 py-1.5 text-[11px] text-[var(--warn)]">
+            {copy.library.integrityCorruptHint}
+          </p>
+        ) : null}
 
         <div className="flex items-center gap-2 px-3 pb-1.5">
           <div

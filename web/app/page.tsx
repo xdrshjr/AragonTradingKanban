@@ -2,10 +2,11 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { ArrowRight, FileText, LineChart, Layers } from 'lucide-react';
 
+import { RecentReports } from '@/components/library/RecentReports';
 import { LandingSearch } from '@/components/shell/LandingSearch';
 import { api } from '@/lib/api';
 import { copy } from '@/lib/copy';
-import type { Instrument, ReportSummary, WatchlistEntry } from '@/lib/types';
+import type { LibraryResponse, WatchlistEntry } from '@/lib/types';
 
 export const metadata: Metadata = {
   title: 'Aragon Research Terminal',
@@ -13,29 +14,31 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
-async function loadRail(): Promise<{ instruments: Instrument[]; reports: Record<string, ReportSummary> }> {
-  try {
-    const watchlist = await api.watchlist();
-    const entries: WatchlistEntry[] = watchlist.items;
-    const ids = entries.map((entry) => entry.instrument.id);
-    if (ids.length === 0) return { instruments: [], reports: {} };
-
-    const list = await api.instruments(ids);
-    const reports: Record<string, ReportSummary> = {};
-    await Promise.all(
-      list.items.slice(0, 12).map(async (instrument) => {
-        try {
-          const latest = await api.latestReport(instrument.id);
-          if (latest) reports[instrument.id] = latest.report;
-        } catch {
-          /* a broken report must not break the landing page */
-        }
-      }),
-    );
-    return { instruments: list.items, reports };
-  } catch {
-    return { instruments: [], reports: {} };
-  }
+/**
+ * 首页 = **两个区块 + 一个入口**（spec §23.3.7 / U1 + U6）。
+ *
+ * 它过去是 `1 × /watchlist + 1 × /instruments + 最多 12 × /reports/latest`（★E-126：
+ * 最坏 14 次串行 RSC fetch），而且列的是**自选标的**——把茅台移出自选，它的报告就从
+ * 首页彻底消失（U-0a / E-120）。现在：
+ *
+ * * **主区块**「最近生成的研报」—— 一次 `GET /reports?scope=latest&limit=6&includeActive=1&withCounts=1`；
+ * * **次区块**「最近标的」—— 一次 `GET /watchlist`（它自带 instrument，**不再需要**
+ *   `/instruments`，所以是 2 次 fetch 而不是 3 次）；降级为单列、最多 6 行、不再显示版本徽标
+ *   —— 自选是"我关注的"，报告是"我做过的"，两者不能互相代表。
+ *
+ * 两个请求都**失败也不炸**：首页是读路径，读不到就是空态。
+ */
+async function loadHome(): Promise<{ reports: LibraryResponse; watchlist: WatchlistEntry[] }> {
+  const [reports, watchlist] = await Promise.all([
+    api
+      .reportLibrary({ scope: 'latest', limit: 6, includeActive: true, withCounts: true })
+      .catch<LibraryResponse>(() => ({ items: [], total: 0, counts: {}, active: [], nextCursor: null })),
+    api
+      .watchlist()
+      .then((response) => response.items)
+      .catch<WatchlistEntry[]>(() => []),
+  ]);
+  return { reports, watchlist: watchlist.slice(0, 6) };
 }
 
 const FEATURES = [
@@ -51,25 +54,33 @@ const FEATURES = [
   },
   {
     icon: <FileText className="size-4" />,
-    title: '版本化与导出',
-    body: '每次生成都是一个不可变版本，可切换比较、置顶归档，导出 HTML / Markdown。',
+    title: '生成一次，反复查看',
+    body: '报告库按时间列出每一份报告；点进去看到的就是列表上那一版，刷新与分享都不变。',
   },
 ];
 
 export default async function LandingPage() {
-  const { instruments, reports } = await loadRail();
+  const { reports, watchlist } = await loadHome();
 
   return (
     <main className="flex min-h-dvh flex-col items-center overflow-y-auto px-5 py-10">
       <div className="w-full max-w-[760px]">
-        <header className="flex items-center gap-2">
-          <span className="flex size-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-text)]">
-            A
-          </span>
-          <span className="flex items-baseline gap-1.5">
-            <span className="text-[14px] font-semibold tracking-tight">{copy.brand}</span>
-            <span className="text-[11.5px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>
-          </span>
+        <header className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="flex size-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-text)]">
+              A
+            </span>
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-[14px] font-semibold tracking-tight">{copy.brand}</span>
+              <span className="text-[11.5px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>
+            </span>
+          </div>
+          <Link
+            href="/reports"
+            className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
+          >
+            {copy.library.open}
+          </Link>
         </header>
 
         <section className="mt-16 text-center">
@@ -86,40 +97,42 @@ export default async function LandingPage() {
           </div>
         </section>
 
-        {instruments.length > 0 ? (
-          <section className="mt-12">
-            <h2 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
-              {copy.landing.recent}
-            </h2>
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              {instruments.map((instrument) => {
-                const report = reports[instrument.id];
-                return (
-                  <Link
-                    key={instrument.id}
-                    href={`/${encodeURIComponent(instrument.id)}`}
-                    className="group flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface-1)] px-3 py-2.5 transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-2)]"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-[12.5px] font-medium text-[var(--text-primary)]">
-                        {instrument.name}
-                      </span>
-                      <span className="mono block text-[10.5px] text-[var(--text-tertiary)]">{instrument.symbol}</span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      {report ? (
-                        <span className="rounded-full border border-[var(--accent)]/35 bg-[var(--accent-weak)] px-1.5 py-px text-[10px] text-[var(--accent)]">
-                          v{report.version}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-[var(--text-tertiary)]">未生成</span>
-                      )}
-                      <ArrowRight className="size-3 text-[var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
-                    </span>
-                  </Link>
-                );
-              })}
+        <RecentReports initialData={reports} initialDataUpdatedAt={Date.now()} />
+
+        {watchlist.length > 0 ? (
+          <section className="mt-10" aria-labelledby="recent-symbols-heading">
+            <div className="mb-2 flex items-baseline justify-between">
+              <h2
+                id="recent-symbols-heading"
+                className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]"
+              >
+                {copy.landing.recent}
+              </h2>
+              <span className="text-[10px] text-[var(--text-tertiary)]">{copy.landing.watchlistIsNotReports}</span>
             </div>
+            <ul className="space-y-1">
+              {watchlist.map((entry) => (
+                <li key={entry.instrument.id}>
+                  <Link
+                    href={`/${encodeURIComponent(entry.instrument.symbol)}`}
+                    className="group flex items-center justify-between gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 transition-colors hover:bg-[var(--bg-surface-2)]"
+                  >
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="truncate text-[12px] text-[var(--text-primary)]">
+                        {entry.instrument.name}
+                      </span>
+                      <span className="mono shrink-0 text-[10px] text-[var(--text-tertiary)]">
+                        {entry.instrument.symbol}
+                      </span>
+                    </span>
+                    <ArrowRight
+                      aria-hidden="true"
+                      className="size-3 shrink-0 text-[var(--text-tertiary)] transition-transform group-hover:translate-x-0.5"
+                    />
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </section>
         ) : (
           <p className="mt-10 text-center text-[11.5px] text-[var(--text-tertiary)]">{copy.landing.empty}</p>

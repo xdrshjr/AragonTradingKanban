@@ -294,6 +294,46 @@ class SchemaUnsatisfied(AppError):
     message = "生成结果不满足结构化契约"
 
 
+#: ★v14（§23.5.5）：三条新码**全是 HTTP 码**，不进 `RUN_ERROR_CODES`
+#: （`tests/test_contract_codes.py` 会替我们盯着"run 码与 HTTP 码不相交"）。
+#: 三条的语义都是"换个参数 / 刷新一下就能继续"，与既有 `schema_drift` 的 `retry` 同类。
+class InvalidCursor(AppError):
+    """`before` 不是 `"{iso}|{32 hex}"`。
+
+    非法游标必须 **422**，不能静默忽略：静默忽略会让"翻页翻不动"变成一个没人能诊断的
+    幽灵 bug（★P1-3）。也**不做**任何时间解析/归一化——一次
+    `datetime.fromisoformat(...).isoformat()` 往返就会把 `Z` 变成 `+00:00`，于是字符串比较
+    `generated_at < ?` **整段漏行**且不报错（R-76）。
+    """
+
+    code = "invalid_cursor"
+    status_code = 422
+    message = "游标不合法"
+
+
+class ReportNotDeleted(Conflict):
+    """对一份**没被删除**的报告调 restore ⇒ 409。
+
+    不是 200：那会让前端以为"状态变了"而实际上什么都没发生。
+    """
+
+    code = "report_not_deleted"
+    status_code = status.HTTP_409_CONFLICT
+    message = "这份报告没有被删除，无需恢复"
+
+
+class BaseReportMismatch(AppError):
+    """`baseReportId` 不属于该标的（或已被硬删）⇒ 422。
+
+    ★评审 P1-15：**取不到结构**（provisional / corrupt）**不是** 422 —— 那种情况按"无 base"
+    处理，不报错、不崩。只有"不属于这个标的"才是参数错误。
+    """
+
+    code = "base_report_mismatch"
+    status_code = 422
+    message = "所选的基准版本不属于该标的"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error_handler(_: Request, exc: AppError) -> JSONResponse:

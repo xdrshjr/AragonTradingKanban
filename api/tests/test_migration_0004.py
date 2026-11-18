@@ -77,7 +77,7 @@ def test_upgrade_head_reaches_0004_from_an_empty_database(migrated) -> None:
     """AC-87：整条链在空库上一次跑通（`down_revision` 指向**真实的** revision id）。"""
     config, engine = migrated
     command.upgrade(config, "head")
-    assert _revision(engine) == "0005_engine_probes"
+    assert _revision(engine) == "0006_report_library"
 
     run_columns = _columns(engine, "runs")
     assert set(run_columns) >= RUN_COLUMNS
@@ -107,7 +107,7 @@ def test_downgrade_and_upgrade_round_trip(migrated) -> None:
     assert not (LEDGER_COLUMNS & set(_columns(engine, "cost_ledger")))
 
     command.upgrade(config, "head")
-    assert _revision(engine) == "0005_engine_probes"
+    assert _revision(engine) == "0006_report_library"
     assert set(_columns(engine, "runs")) >= RUN_COLUMNS
     indexes = {index["name"] for index in sa.inspect(engine).get_indexes("cost_ledger")}
     assert "ux_cost_ledger_ref" in indexes, "往返之后幂等键仍在"
@@ -143,7 +143,7 @@ def test_old_rows_keep_usd_null_and_get_source_unknown(migrated) -> None:
 def test_revision_ids_are_the_real_ones_not_abbreviations() -> None:
     """★v8（V8-P0-2）：写 `"0003"` 会让 `upgrade head` 第一步就炸，不必能起数据库也能发现。"""
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
-    assert script.get_current_head() == "0005_engine_probes"
+    assert script.get_current_head() == "0006_report_library"
     revision = script.get_revision("0004_agent_diagnostics")
     assert revision is not None
     assert revision.down_revision == "0003_cost_ledger"

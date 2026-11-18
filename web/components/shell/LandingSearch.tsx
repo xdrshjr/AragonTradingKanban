@@ -58,6 +58,10 @@ export function LandingSearch() {
         onGenerate={() => undefined}
         onExport={() => undefined}
         onToggleChart={() => undefined}
+        // ★v14（U1 / 评审 R-2）：首页广告了 ⌘K，所以这里的「报告库」入口也要真的能打开它
+        // （入口有、点了没反应，比没有入口更糟）。最近 5 份报告不在这里取：首页已经用
+        // `RecentReports` 展示过一次，面板再发一次请求是纯浪费。
+        onOpenLibrary={() => router.push('/reports')}
       />
     </>
   );

@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "_comment": "★v12（§22.5.3 / AC-104 / AC-124）：前后端码表的**唯一跨语言真源**。pytest 断言 `set(RUN_ERROR_CODES) == codes`（21 条，集合相等不是子集），vitest 断言 `RUN_ERROR_ACTIONS ⊇ codes` 且 `HTTP_ERROR_ACTIONS ⊇ httpCodes`，并对**每一行**逐字段断言 `action`。v12 只追加三个 run 码（event_loop_unsupported / agent_timeout / output_truncated）与两条 httpCodes（too_many_runs / run_conflict，它们早已在 runErrors.ts 里，夹具落后了整整两轮），既有 18 条的 severity / retryable / action 一个字都没改。",
+  "version": 3,
+  "_comment": "★v14（§23.5.5 / AC-104）：`version` 2 → 3，`httpCodes` 追加三条（invalid_cursor / report_not_deleted / base_report_mismatch），**每条都带 `action`**（既有 7 条都有，`web/tests/runErrors.test.ts` 会逐行比对）。三个 `action` 都是 `retry`：语义与既有 `schema_drift` 同类（换个参数或刷新一下就能继续）。`codes`（run 级）**一条都没动**，仍是 21 条——3 条新码说的是「这次请求参数不对」，不是「这次 run 怎么了」。",
   "codes": [
     { "code": "provider_auth", "severity": "config", "retryable": false, "action": "checkKey" },
     { "code": "provider_unavailable", "severity": "transient", "retryable": true, "action": "wait" },
@@ -31,7 +31,10 @@
     { "code": "probe_disabled", "status": 503, "action": "openSettings" },
     { "code": "agent_mock_mode", "status": 503, "action": "openSettings" },
     { "code": "too_many_runs", "status": 429, "action": "wait" },
-    { "code": "run_conflict", "status": 409, "action": "none" }
+    { "code": "run_conflict", "status": 409, "action": "none" },
+    { "code": "invalid_cursor", "status": 422, "action": "retry" },
+    { "code": "report_not_deleted", "status": 409, "action": "retry" },
+    { "code": "base_report_mismatch", "status": 422, "action": "retry" }
   ],
   "sseEvents": [
     "run.stage",

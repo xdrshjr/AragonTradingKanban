@@ -120,12 +120,27 @@ def schema_sha1() -> str | None:
         return None
 
 
-#: `<!-- version: 7 -->` —— 提示词版本标记（AC-81 读它，也在页面上展示）。
+#: `<!-- version: 8 -->` —— 提示词版本标记（AC-81 读它，也在页面上展示）。
+#:
+#: ★v14（P0-3）：版本标记的唯一宿主是**两个 system 提示词**（`research_system.md` /
+#: `ask_system.md`，两者必须一致）。`research_task.md.j2` **没有也不需要**标记——
+#: 不要给它加一个（`test_prompt_discipline` 只认那两个 system 文件）。
+#: 7 → 8 的语义是“提示词契约升了一版（新增 base_digest 段与它的硬指令）”，不是“正文改了”。
 PROMPT_VERSION_RE = re.compile(r"<!--\s*version:\s*(\d+)\s*-->")
 
 
-def prompt_quality(path: Path) -> dict[str, Any] | None:
-    """`quality.prompt = {version, sha1, bytes}`；文件不存在 → `None`（不编造）。
+def prompt_quality(
+    path: Path,
+    *,
+    base_report_id: str | None = None,
+    base_version: int | None = None,
+) -> dict[str, Any] | None:
+    """`quality.prompt = {version, sha1, bytes, baseReportId, baseVersion}`；文件不存在 → `None`。
+
+    ★v14（★P1-11）：两个新键**恒在**（值可为 `None`），且**生产者就是这里**。只给响应
+    模型加字段等于加两个永远为 `None` 的空键——那正是 `cost` / `prompt` 丢了整整两个版本
+    的那个坑（V10-P2-7 / R-77）。四个键“都有生产者”由
+    `tests/test_prompt_quality_keys.py` 跑一次真实调用来守。
 
     ★v7（裁决 H-5）：提示词指纹**不进**引擎指纹。指纹是可比性的输入，多一个输入项
     会让**所有历史报告**变成"引擎不同"，于是版本比较永远带一条琥珀横幅——那恰好违反
@@ -140,6 +155,9 @@ def prompt_quality(path: Path) -> dict[str, Any] | None:
         "version": int(match.group(1)) if match else None,
         "sha1": hashlib.sha1(raw).hexdigest()[:12],
         "bytes": len(raw),
+        # ★v14：两个键恒在，值可为 None —— “这一版是基于哪一版更新的”的唯一来源。
+        "baseReportId": base_report_id,
+        "baseVersion": base_version,
     }
 
 

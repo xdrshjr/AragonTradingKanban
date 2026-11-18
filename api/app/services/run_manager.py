@@ -45,6 +45,70 @@ logger = get_logger("run_manager")
 MAX_CONCURRENT_RUNS = 2
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "timeout", "budget_exceeded")
 
+#: ★v14（U3 / §23.3.4b）：`{{ base_digest }}` 段的硬上限。2048 B 的来源不是"看着差不多"：
+#: 预算的判定口径是 `prompt.md + system.md + schema.json ≤ 32 KB`
+#: （`agent/schema_budget.py`）。schema 18392 B + system 3822 B + prompt.md ≈ 2.5 KB ≈ 22 KB，
+#: 再加 2048 B 仍 ≈ 24 KB，**余量 8 KB 以上**。所以这里只断言"≤2048 B"，不新增第二个
+#: 预算判定器（AC-146）。
+BASE_DIGEST_MAX_BYTES = 2048
+
+#: 摘要最后那句硬指令。它的存在是 R-69 的那一半："这是上一版的判断，不是新证据"。
+BASE_DIGEST_INSTRUCTION = "以上是上一版的结构与判断，不是新证据；有新材料支持时改判，否则保持一致。"
+
+
+def base_digest_text(doc: dict[str, Any], *, version: int, max_bytes: int = BASE_DIGEST_MAX_BYTES) -> str:
+    """把上一版 doc 收敛成一段**只有结构与判断、没有数值**的提示词片段。
+
+    五样东西，按 §23.3.4b 写死：标的与 `asOf`（一行）、评级四元组（标注"上一版的判断"）、
+    8 个章节的 id + 标题、至多 10 个 `keyMetrics.label`（**只给标签，不给数值**）、
+    以及一句硬指令。
+
+    字节上限是**硬约束**（不是心算）：章节行与指标行按顺序加，加不进去就停——于是"上一版
+    章节特别多"只会让指标行缺席，而不会让整段超预算。最后还有一道兜底切片，保证返回值
+    `len(text.encode()) <= max_bytes` 恒成立。
+    """
+    instrument = doc.get("instrument") or {}
+    rating = doc.get("rating") or {}
+    sections = [item for item in (doc.get("sections") or []) if isinstance(item, dict)]
+    labels = [
+        str(item.get("label"))
+        for item in (doc.get("keyMetrics") or [])
+        if isinstance(item, dict) and item.get("label")
+    ][:10]
+
+    head = [
+        "# 上一版报告的结构与判断（不是新证据）",
+        "",
+        f"- 标的：{instrument.get('symbol', '')} {instrument.get('name', '')} · "
+        f"as-of {doc.get('asOf', '')} · 版本 v{version}",
+        "- 上一版评级（这是上一版的判断，不是新证据）："
+        f"stance={rating.get('stance', '')} · conviction={rating.get('conviction', '')} · "
+        f"horizon={rating.get('horizon', '')} · targetPrice={rating.get('targetPrice', '—')}",
+    ]
+    section_line = (
+        "- 上一版章节（保持这套标题与顺序）："
+        + " / ".join(f"{item.get('id', '')} {item.get('title', '')}".strip() for item in sections[:8])
+        if sections
+        else ""
+    )
+    metric_line = "- 上一版指标标签（只有标签，没有数值，请按新资料重算）：" + " / ".join(labels) if labels else ""
+    tail = ["", BASE_DIGEST_INSTRUCTION]
+
+    pieces = list(head)
+    for extra in (section_line, metric_line):
+        if not extra:
+            continue
+        candidate = "\n".join([*pieces, extra, *tail])
+        if len(candidate.encode("utf-8")) <= max_bytes:
+            pieces.append(extra)
+    text = "\n".join([*pieces, *tail])
+    encoded = text.encode("utf-8")
+    if len(encoded) > max_bytes:
+        ellipsis = "…".encode()
+        text = encoded[: max_bytes - len(ellipsis)].decode("utf-8", "ignore") + "…"
+    return text
+
+
 
 def hard_deadline_seconds() -> float:
     """★v12（S2 / §22.3.3 第 1 层）：一次生成在 Python 侧的墙钟上限。
@@ -210,6 +274,7 @@ class RunManager:
         reason: str = "manual",
         force: bool = False,
         override_budget: bool = False,
+        base_report_id: str | None = None,
     ) -> Run:
         """Create the run row and schedule the orchestration task.
 
@@ -272,6 +337,20 @@ class RunManager:
             # 留痕：`String(16)`，15 个字符放得下（§19.5.3）。
             reason = "budget_override"
 
+        # ★v14（§23.5.3 / ★P1-15）：`baseReportId` 的校验排在**三个既有闸门之后**——
+        # 一个开不了的请求不该先报 422（K-6 的优先级链 409 → 429 → 402 一个字不改）。
+        # 只校验"属于该标的、且未被硬删"：已软删的版本**允许**（它仍是素材）；
+        # **取不到结构**（provisional / corrupt）不在这里报错，由 `_base_digest()` 按
+        # "无 base"处理（不 422、不崩）。
+        if base_report_id:
+            base = report_service.get(session, base_report_id, include_deleted=True)
+            if base is None or base.instrument_id != instrument.id:
+                from ..errors import BaseReportMismatch
+
+                raise BaseReportMismatch(
+                    detail={"baseReportId": base_report_id, "instrumentId": instrument.id}
+                )
+
         settings = get_settings()
         run_id = uuid.uuid4().hex
         workspace = settings.runs_dir / run_id
@@ -305,9 +384,19 @@ class RunManager:
         logger.info("run queued id=%s instrument=%s reason=%s", run.id, instrument.id, reason)
         return run
 
-    def schedule(self, run_id: str, *, force: bool = False) -> None:
+    def schedule(
+        self,
+        run_id: str,
+        *,
+        force: bool = False,
+        base_report_id: str | None = None,
+        dedupe: bool = True,
+    ) -> None:
         """Fire-and-forget the orchestration in a background task."""
-        task = asyncio.create_task(self._run(run_id, force=force), name=f"run-{run_id}")
+        task = asyncio.create_task(
+            self._run(run_id, force=force, base_report_id=base_report_id, dedupe=dedupe),
+            name=f"run-{run_id}",
+        )
         self._tasks[run_id] = task
         task.add_done_callback(lambda finished: self._forget(run_id, finished))
 
@@ -321,7 +410,14 @@ class RunManager:
             logger.exception("run task crashed run=%s", run_id)
 
     # ── the six stages ───────────────────────────────────────────────────
-    async def _run(self, run_id: str, *, force: bool = False) -> None:
+    async def _run(
+        self,
+        run_id: str,
+        *,
+        force: bool = False,
+        base_report_id: str | None = None,
+        dedupe: bool = True,
+    ) -> None:
         session = report_service_session()
         self._sessions[run_id] = session
         run = session.get(Run, run_id)
@@ -337,7 +433,14 @@ class RunManager:
         lock = self._lock_for(instrument.id)
         async with self._global_slots, lock:
             try:
-                await self._pipeline(session, run, instrument, force=force)
+                await self._pipeline(
+                    session,
+                    run,
+                    instrument,
+                    force=force,
+                    base_report_id=base_report_id,
+                    dedupe=dedupe,
+                )
             except asyncio.CancelledError:  # pragma: no cover - shutdown
                 self._finalize_failure(session, run, "interrupted", "服务重启，本次生成中断", None)
                 raise
@@ -356,7 +459,16 @@ class RunManager:
                 # 今天已经 1545.71 MB 早过阈值 ⇒ 第一次 tick 就会删别人的东西）。
                 await self._cleanup_session(run_id)
 
-    async def _pipeline(self, session: Session, run: Run, instrument: Instrument, *, force: bool) -> None:
+    async def _pipeline(
+        self,
+        session: Session,
+        run: Run,
+        instrument: Instrument,
+        *,
+        force: bool,
+        base_report_id: str | None = None,
+        dedupe: bool = True,
+    ) -> None:
         settings = get_settings()
         workspace = Path(run.workspace_path or settings.runs_dir / run.id)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -390,8 +502,14 @@ class RunManager:
         # ── 3. prepare ───────────────────────────────────────────────────
         self._advance(session, run, "prepare")
         system_path = workspace / "system.md"
+        # ★v14（U3 / §23.3.4b）：`{{ base_digest }}` 进的是**任务提示词**（渲染后落在工作区的
+        # `prompt.md`），而 `quality.prompt` 记的是**系统提示词** —— 两件事不要混（P0-3）。
+        # 摘要必须在 `write_snapshot_files()` **之前**算出来，那是唯一渲染 prompt.md 的地方。
+        base_digest, base_version = self._base_digest(session, run, instrument, base_report_id)
         try:
-            prompt_path = snapshot_service.write_snapshot_files(bundle, workspace, system_path)
+            prompt_path = snapshot_service.write_snapshot_files(
+                bundle, workspace, system_path, base_digest=base_digest
+            )
         except AgentError as exc:
             # ★v7（§20.3.3 / AC-72）：`write_schema_copy()` 在写完副本后立刻做身份断言，
             # 所以 `schema_drift` 在 spawn 之前、prepare 阶段就失败。
@@ -548,7 +666,11 @@ class RunManager:
             source=result.source,
             engine=self._engine_quality(schema_sha1),
             cost=resolution.as_payload(),
-            prompt=report_validator.prompt_quality(system_path),
+            prompt=report_validator.prompt_quality(
+                system_path,
+                base_report_id=base_report_id,
+                base_version=base_version,
+            ),
             # ★v8（V8-P0-1 / AC-88）：用**当次交给 CLI 的那份**校验。mock 路径下
             # 工作区里同样有那份副本（`write_snapshot_files` 写的），所以两条路一致。
             schema_path=request.schema_path,
@@ -591,7 +713,11 @@ class RunManager:
         # ── 6. persist ───────────────────────────────────────────────────
         self._advance(session, run, "persist")
         duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
-        report = report_service.create_version(
+        # ★v14（U3）：`create_or_reuse_version()` —— 内容与最新非临时版完全相同时**不新增
+        # 版本**，把这次 run 指向既有那一版，并**照记**这次的花费（硬约束 4 / E-127）。
+        # 临时版那条路（`_finalize_failure`）仍用 `create_version()`：两份失败说明文本相同
+        # **不代表**两次失败相同。
+        persisted = report_service.create_or_reuse_version(
             session,
             instrument,
             outcome.doc,
@@ -607,7 +733,21 @@ class RunManager:
             tokens_in=result.usage.input_tokens,
             tokens_out=result.usage.output_tokens,
             duration_ms=duration_ms,
+            dedupe=dedupe,
         )
+        report = persisted.report
+        if persisted.deduped:
+            self._record(
+                session,
+                run,
+                "run.log",
+                {
+                    "level": "info",
+                    "code": "deduped",
+                    "message": f"内容与 v{report.version} 完全一致，未新增版本（本次花费仍已记账）",
+                },
+                touch_run=False,
+            )
         (workspace / "report.json").write_text(json.dumps(outcome.doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
         run.status = "succeeded"
@@ -637,6 +777,10 @@ class RunManager:
                 "durationMs": duration_ms,
                 "groundedRatio": round(outcome.grounded_ratio, 4),
                 "source": result.source,
+                # ★v14（U3 / §23.3.4a）：`deduped=true` ⇒ 没有新增版本，`reportId`/`version`
+                # 指向的是**既有**那一版。前端据此提示"内容与 v13 一致，未新增版本"，并且
+                # **仍然**打开那一版（不要"什么都不发生"）。
+                "deduped": bool(persisted.deduped),
             },
         )
         self._check_cost(session, run, result, resolution)
@@ -659,6 +803,55 @@ class RunManager:
         if schema_sha1:
             payload["schemaSha1"] = schema_sha1
         return payload
+
+    def _base_digest(
+        self,
+        session: Session,
+        run: Run,
+        instrument: Instrument,
+        base_report_id: str | None,
+    ) -> tuple[str, int | None]:
+        """★v14（U3 / §23.3.4b）：把"上一版的结构与判断"算成一段 ≤2048 B 的提示词片段。
+
+        返回 `(文本, baseVersion)`。文本为空 ⇒ 模板里的 `{{ base_digest }}` 渲染成空行
+        （**不留占位符痕迹**）；`baseVersion` 仍然返回原值，因为 `quality.prompt.baseVersion`
+        记的是"用户确实选了哪一版"，不是"我们成功注入了哪一版"。
+
+        ★P1-15：**取不到结构不是 422**——provisional（`sections` 为空、内容是失败说明）与
+        `integrity=corrupt` 的版本都走"按无 base 处理"这条路：不报错、不崩，`run.log` 记一条
+        `info`，摘要段渲染成空行。否则用户选了一份失败说明就会拿到一张 500。
+
+        摘要里**只说结构与判断，不给数值**（R-69）：keyMetrics 只给标签，数值是"上一版的
+        事实"，把它写进提示词等于给模型一份可以照抄的旧数，而那正是接地率崩掉的方式。
+        """
+        if not base_report_id:
+            return "", None
+        base = report_service.get(session, base_report_id, include_deleted=True)
+        if base is None or base.instrument_id != instrument.id:
+            # 理论上 `start()` 已经拦过（422 base_report_mismatch），这里是防御。
+            return "", None
+        doc, integrity = report_service.load_doc_safe(base, instrument)
+        reason = None
+        if integrity != report_service.INTEGRITY_OK:
+            reason = "corrupt"
+        elif base.status == "provisional" or doc.get("provisional") is True or not doc.get("sections"):
+            reason = "provisional"
+        if reason is not None:
+            self._record(
+                session,
+                run,
+                "run.log",
+                {
+                    "level": "info",
+                    "message": (
+                        f"base_digest 跳过（原因={reason}）：v{base.version} 取不出结构，"
+                        "本次按独立生成处理"
+                    ),
+                },
+                touch_run=False,
+            )
+            return "", base.version
+        return base_digest_text(doc, version=base.version), base.version
 
     def _advance(self, session: Session, run: Run, stage: str) -> None:
         """Emit `run.stage` with a monotonic pct (§7.4)."""

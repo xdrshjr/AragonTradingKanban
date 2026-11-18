@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.agent.failure import RUN_ERROR_CODES
@@ -70,6 +71,42 @@ def test_http_codes_never_leak_into_the_run_code_set() -> None:
     for row in payload["httpCodes"]:
         assert row["code"] not in run_codes, f"{row['code']} 不该出现在 RUN_ERROR_CODES 里"
         assert 400 <= int(row["status"]) <= 599
+
+
+def test_every_code_row_carries_an_action_from_the_shared_vocabulary() -> None:
+    """★v14（§23.6.4 / 评审 R-3）：`action` 是**每一行**的必填字段，不是可选的补充说明。
+
+    两件事各守一次真实事故：
+
+    1. **缺 `action`** ⇒ `web/lib/runErrors.ts::actionFor()` 回落到 `openLog`，界面上那个码
+       就变成"看日志"——一个"看起来有动作"的空按钮（V11-P0-4 的同型事故：契约里少一个字段，
+       前端不会报错，只会静默少提示一件事）。
+    2. **动作不在词汇表里** ⇒ TS 侧逐行比对只会说"不一致"，而根因在这里多了一个没人认识的词。
+       词汇表的真源是 `RunErrorAction` 那个联合类型（6 个取值），两边必须一模一样。
+
+    `codes`（run 级）与 `httpCodes`（HTTP 级）都断言，因为 v14 的三条新码加在**后者**里，
+    而"只有前面那一组检查 action"正是这次差点漏掉的那种不对齐。
+    """
+    payload = contract()
+    vocabulary = {"retry", "openSettings", "checkKey", "wait", "openLog", "none"}
+    # 词汇表本身也要和 TS 侧同源：少一个取值，这里就会在下一行"合法动作"断言里红。
+    ts_source = (CONTRACT.parents[1] / "web" / "lib" / "runErrors.ts").read_text(encoding="utf-8")
+    declared = re.search(r"export type RunErrorAction = ([^;]+);", ts_source)
+    assert declared is not None, "runErrors.ts 里找不到 RunErrorAction 联合类型"
+    assert set(re.findall(r"'([a-zA-Z]+)'", declared.group(1))) == vocabulary
+
+    for group in ("codes", "httpCodes"):
+        for row in payload[group]:
+            assert row.get("action"), f"{group} 里的 {row['code']} 缺 action"
+            assert row["action"] in vocabulary, f"{row['code']} 的 action={row['action']} 不在词汇表里"
+
+    # ★v14（§23.5.5）：三条新码在 `httpCodes` 里、各带一个动作、且**不进** run 码表。
+    by_code = {row["code"]: row for row in payload["httpCodes"]}
+    for code, status in (("invalid_cursor", 422), ("report_not_deleted", 409), ("base_report_mismatch", 422)):
+        assert code in by_code, f"契约里缺 v14 的 {code}"
+        assert int(by_code[code]["status"]) == status
+        assert by_code[code]["action"] == "retry"
+    assert payload["version"] >= 3, "追加三条 httpCodes 之后契约版本必须 ≥ 3"
 
 
 def test_sse_events_match_the_frontend_subscription_list() -> None:

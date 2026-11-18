@@ -178,8 +178,22 @@ def test_soft_delete_keeps_the_run_link_intact(session, instrument, sample_repor
     assert session.get(Report, report.id).deleted_at is not None
 
 
-def test_hard_delete_nulls_the_run_link_instead_of_failing(session, instrument, sample_report, monkeypatch) -> None:
-    """The `SET NULL` on `runs.report_id` is what makes retention trimming safe."""
+def test_trim_soft_deletes_then_purge_nulls_the_run_link(
+    session, instrument, sample_report, monkeypatch
+) -> None:
+    """★v14（§23.7.4 / U5）：裁剪是**软删**，硬删只剩 `purge_trash()` 一个入口。
+
+    这条用例替换了旧的 `test_hard_delete_nulls_the_run_link_instead_of_failing`：旧断言
+    "老版本被 `session.delete`"记录的是**旧语义**（裁剪=硬删），而硬删正是"已存下来的东西
+    正在被一条看不见的规则一点点弄丢"（U-0d / E-121）的根因。新语义分两段，两段都要断言：
+
+    1. 裁剪之后行**仍在**、`deleted_at` 非空、`scope=trash` 查得到，且 `Run.report_id`
+       **仍指向它**（软删没有切断审计链）；
+    2. `purge_trash()` 跑过一次（`TRASH_RETENTION_DAYS=0`）之后，行才消失、`Run.report_id`
+       才变 `None`（`SET NULL` 兜底生效）。
+
+    **不许改弱**：两段都保留了"指针最终必须变 NULL"这条守卫，只是把它挪到了真正的硬删之后。
+    """
     run = Run(
         id="run-2",
         instrument_id=instrument.id,
@@ -196,8 +210,19 @@ def test_hard_delete_nulls_the_run_link_instead_of_failing(session, instrument, 
     _make(session, instrument, sample_report)
 
     session.expire_all()
-    assert session.get(Report, first.id) is None, "the old version should have been trimmed"
-    assert session.get(Run, "run-2").report_id is None
+    trimmed = session.get(Report, first.id)
+    assert trimmed is not None, "裁剪改软删：行必须还在（这才是「能救回来」的前提）"
+    assert trimmed.deleted_at is not None
+    assert session.get(Run, "run-2").report_id == first.id, "软删不切断审计链"
+
+    trashed, _total = report_service.list_versions(session, instrument.id)
+    assert first.id not in {row.id for row in trashed}, "被裁的版本不该出现在存活列表里"
+
+    purged = report_service.purge_trash(session, retention_days=0)
+    assert purged["reports"] == 1
+    session.expire_all()
+    assert session.get(Report, first.id) is None, "purge 之后才真的消失"
+    assert session.get(Run, "run-2").report_id is None, "硬删之后 SET NULL 兜底生效"
 
 
 def test_foreign_keys_are_actually_enforced(session, engine) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..db.session import get_db
@@ -50,12 +50,27 @@ def list_instruments(
         rows = db.execute(select(Instrument).order_by(Instrument.symbol)).scalars().all()
         return InstrumentsResponse(items=[to_instrument_out(row) for row in rows])
     wanted = [item.strip() for item in ids.split(",") if item.strip()]
-    rows = db.execute(select(Instrument).where(Instrument.id.in_(wanted))).scalars().all()
-    found = {row.id: row for row in rows}
-    missing = [item for item in wanted if item not in found]
+    # ★v14（U1 / §23.3.8 的连带修正，见 spec「实施过程发现的方案缺陷」D-7）：
+    # `libraryHref()` 用**可读的 symbol** 拼行链接（`/600519.SH?report=…`），而
+    # `app/[symbol]/page.tsx:24` 的第一步就是 `api.instrument(<那段 path>)` ⇒ 这里只认
+    # `Instrument.id`（`CN:600519.SH`）的话，报告库的**每一行都是死链**（404 →
+    # `loadWorkspace` 返回 null → notFound 页）。`_load()`（`:34-41`）早就两种都收，
+    # 注释原话就是"Accept a bare symbol too, so links stay readable"——这里补上同一条宽容，
+    # 而不是让前端改回 id（id 不可读、不可分享，且与 slug 的可读性裁决相反）。
+    upper = [item.upper() for item in wanted]
+    rows = db.execute(
+        select(Instrument).where(or_(Instrument.id.in_(wanted), Instrument.symbol.in_(upper)))
+    ).scalars().all()
+    by_key: dict[str, Instrument] = {}
+    for row in rows:
+        by_key[row.id] = row
+        by_key[row.symbol] = row
+    missing = [item for item in wanted if item not in by_key and item.upper() not in by_key]
     if missing:
         raise InstrumentNotFound(f"标的 {missing[0]} 不存在", detail={"missing": missing})
-    return InstrumentsResponse(items=[to_instrument_out(found[item]) for item in wanted])
+    return InstrumentsResponse(
+        items=[to_instrument_out(by_key[item] if item in by_key else by_key[item.upper()]) for item in wanted]
+    )
 
 
 @router.get("/{instrument_id}/bars", response_model=BarsResponse)

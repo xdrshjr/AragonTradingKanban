@@ -24,6 +24,21 @@ export interface CommandPaletteProps {
   onOpenSearch?: () => void;
   /** ★v6 G3: opens the cost panel. Omitted when `features.costLedger` is false. */
   onOpenCost?: () => void;
+  /**
+   * ★v14（U1）：打开报告库。`features.reportLibrary === false` 时**不传** ⇒
+   * 这一项不出现（无悬挂分支，与 `onOpenCost` 完全同形）。
+   */
+  onOpenLibrary?: () => void;
+  /**
+   * ★v14 评审（R-2）：打开**某一版**报告（跨标的）。`recentReports` 的每一行都靠它。
+   *
+   * 不复用 `onSelectInstrument`：那一个只换标的、打开的是**最新版**，而"最近生成"里 v12 与
+   * v13 并列时，点 v12 却看到 v13 正是 U-0b 的原话。也不复用 `onSelectVersion`：那个只在本
+   * 标的内部切版本（它写不进路径里的标的）。所以这里给的是 `(symbol, reportId)`。
+   */
+  onOpenReport?: (symbol: string, reportId: string) => void;
+  /** ★v14：最近 5 份报告（来自 `reportLibrary({limit:5})`），命令面板里的动态项。 */
+  recentReports?: { id: string; symbol: string; name: string; headline: string; version: number }[];
 }
 
 interface CommandItem {
@@ -45,6 +60,9 @@ export function CommandPalette({
   onToggleChart,
   onOpenSearch,
   onOpenCost,
+  onOpenLibrary,
+  onOpenReport,
+  recentReports = [],
 }: CommandPaletteProps) {
   const open = useUiStore((state) => state.commandPaletteOpen);
   const toggle = useUiStore((state) => state.toggleCommandPalette);
@@ -101,8 +119,40 @@ export function CommandPalette({
         ]
       : [];
 
+    // ★v14（U1）：报告库入口 + 最近 5 份报告。报告库是"我做过什么"的唯一入口，
+    // 所以它属于命令面板；`recentReports` 让"刚才那份"两次按键就能回到。
+    const libraryItems: CommandItem[] = onOpenLibrary
+      ? [
+          {
+            id: 'open-library',
+            label: copy.library.open,
+            hint: copy.library.subtitle,
+            group: copy.command.groups.actions,
+            run: () => {
+              toggle(false);
+              onOpenLibrary();
+            },
+          },
+        ]
+      : [];
+
+    const recentItems: CommandItem[] = onOpenReport
+      ? recentReports.slice(0, 5).map((report) => ({
+          id: `recent-${report.id}`,
+          label: `${report.name || report.symbol} · v${report.version}`,
+          hint: report.headline.slice(0, 24),
+          group: copy.command.groups.versions,
+          run: () => {
+            // ★v14 评审（R-2）：打开的是**那一版**，不是"这个标的最新版"（U-0b）。
+            onOpenReport(report.symbol, report.id);
+            toggle(false);
+          },
+        }))
+      : [];
+
     const actionItems: CommandItem[] = [
       ...searchItem,
+      ...libraryItems,
       {
         id: 'generate',
         label: copy.command.actions.generate,
@@ -175,16 +225,19 @@ export function CommandPalette({
       },
     ];
 
-    return [...actionItems, ...versionItems, ...symbolItems];
+    return [...actionItems, ...recentItems, ...versionItems, ...symbolItems];
   }, [
     instruments,
     onExport,
     onGenerate,
     onOpenCost,
+    onOpenLibrary,
+    onOpenReport,
     onOpenSearch,
     onSelectInstrument,
     onSelectVersion,
     onToggleChart,
+    recentReports,
     reports,
     resetLayout,
     setTheme,

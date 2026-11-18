@@ -144,6 +144,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
 | `DATA_PROVIDERS` | `akshare,yfinance,synthetic` | 数据源链，逐个降级 |
 | `ALLOW_SYNTHETIC` | `1` | 是否允许合成数据兜底 |
 | `RUN_RETENTION_DAYS` | `14` | 工作区与 `report_asks` 的保留期（同一窗口） |
+| `TRASH_RETENTION_DAYS` | `30` | ★v14：回收站窗口。软删的报告在此天数后由 `purge_trash()` **硬删**（全项目唯一硬删入口）；`0` 仅供测试 |
 | `ASK_DAILY_LIMIT` | `30` | 单报告 24h 内 `deep` 追问上限；超过 → `429 too_many_asks` |
 | `ASK_DEEP_MAX_TURNS` / `ASK_DEEP_MAX_DURATION_MS` | `12` / `180000` | `deep` 的独立预算（与生成预算分开） |
 | `ASK_MAX_QUESTION_CHARS` | `500` | 问题长度上限（`422 invalid_question`） |
@@ -240,6 +241,30 @@ cd api
 python -m alembic upgrade head
 python -m alembic revision --autogenerate -m "change description"
 ```
+
+---
+
+## 本期包含（v14：让「生成一次」真的能反复查看）
+
+Iteration 7 问的是一个更朴素的问题：**生成过的研报，用户不靠记忆还能不能找回来？**
+答案曾经是「不能」——首页列的是**自选标的**而不是报告，点进去永远是最新版，切到 v12 按 F5 又跳回
+v13，误删的版本没有回去的路，同样的内容会变成 v14/v15/v16。（设计文档：`docs/plans/report-library/spec.md`）
+
+| 能力 | 入口 | 关键设计 | 验收 |
+| --- | --- | --- | --- |
+| **U1 找得到** | 首页「最近生成的研报」+ `/reports` 报告库 | 首页从**最坏 14 次**串行 RSC fetch 降到 **2 次**（`GET /reports?scope=latest&limit=6` + `GET /watchlist`）；5 个 scope（`latest/all/starred/archived/trash`）+ keyset 游标（**不用 OFFSET**）+ 服务端计数 | AC-137~AC-140 |
+| **U2 打得开 / 留得住** | 列表每一行的 `?report=<id>` 深链；历史版本横幅 | `?report=` 是"我在看哪一版"的**唯一写者**（`selectVersion` 写 URL，不再是 zustand 与 URL 两个真源）；`latestReportId` 有写死的取值顺序，横幅不会把最新版说成历史版 | AC-141~AC-143 |
+| **U3 更新不重复** | 报告面板「基于此版本更新」 | 更新 = 生成新版本；内容与最新**非临时**版完全一致时**不新增版本**（`run.done.deduped=true`），但**照记这次的花费**（省一次版本 ≠ 省一次调用） | AC-144~AC-146 |
+| **U4 坏数据不炸** | 详情页 / 导出 / 区间反查 / 版本比较 | 五条读路径统一走 `load_doc_safe()`：`doc_json` 损坏时返回**能过 `ReportDoc` 的最小壳** + `integrity=corrupt`，而不是 500 | AC-147 / AC-149 |
+| **U5 救得回** | `/reports` 的「回收站」tab | 版本裁剪从**硬删**改为**软删**；硬删只剩 `purge_trash()` 一个入口且必须过 `TRASH_RETENTION_DAYS`（30 天）；恢复时同事务重建 FTS | AC-148 / AC-150 / AC-151 |
+| **U6 生成中可见** | 首页「正在生成」条 | `active`（≤3 条）来自 `runs` 的活跃三态，与既有 `ACTIVE_STATUSES` 同一定义；`run.done` 后失效 `['reports','library']` | AC-152 |
+
+两条不变量（写在这里是因为它们最容易被下一次改动破掉）：
+
+1. **`scope=latest` 与 `report_service.latest_of()` 逐字同形**（`deleted_at IS NULL`，**不筛** `archived`）。
+   加一个 `archived = 0` 看起来更"一致"，实际会让"最新版被归档"的标的出现两个不同的「最新」。
+2. **`doc_sha1` 为 NULL 的语义是「不知道」，不是「不同」**——老数据不回填（`scripts/backfill-report-sha1.py`
+   是**运维可选工具**，默认 dry-run，跑 `--apply` 等于用户显式同意推翻这条）。
 
 ---
 

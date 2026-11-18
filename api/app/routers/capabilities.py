@@ -40,6 +40,7 @@ from ..services import (
     ask_service,
     cost_service,
     numeric_claims,
+    report_library,
     report_validator,
     run_diagnostics,
     search_index,
@@ -223,6 +224,10 @@ def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
             readingMode=True,
             costLedger=_cost_ledger_available(db),
             engineFingerprint=fingerprint is not None,
+            # ★v14（U1 / §23.5.4）：**每次请求实测一次**，与 `costLedger` / `grounding`
+            # 完全同一形状（FeaturesOut 的 docstring 原话："每一个开关都来自一次测量"）。
+            # ★评审：不是"启动时测一次、缓存"——那会让"迁移刚跑完但进程没重启"变成假红。
+            reportLibrary=report_library.available(db),
         ),
         limits={
             "maxConcurrentRuns": MAX_CONCURRENT_RUNS,

@@ -91,6 +91,28 @@ def test_instruments_missing_id_is_404(client) -> None:
     assert response.status_code == 404
 
 
+def test_instruments_batch_lookup_accepts_a_bare_symbol(client) -> None:
+    """★v14（U1 / 实施发现 D-7）：**报告库的每一行都是一个 symbol 链接**。
+
+    `libraryHref()` 用的是可读的 `/{symbol}?report=…`，而 `web/app/[symbol]/page.tsx:24`
+    的第一步就是 `api.instrument(<那段 path>)` → `GET /instruments?ids=600519.SH`。
+    这里只认 `Instrument.id` 的话，报告库的每一行都会 404 到 notFound 页（U-0b 的直接反面）。
+    同名的宽容 `_load()`（`routers/instruments.py:34-41`）早就有，本用例把它钉在批量接口上。
+    """
+    client.post("/api/v1/symbols/resolve", json={"query": "600519"})
+    body = client.get("/api/v1/instruments?ids=600519.SH").json()
+    assert body["items"][0]["id"] == "CN:600519.SH"
+    assert body["items"][0]["symbol"] == "600519.SH"
+
+
+def test_instruments_batch_lookup_mixes_ids_and_symbols_in_order(client) -> None:
+    """同一请求里 id 与 symbol 混用，且**返回顺序跟请求顺序一致**（`ids=a,b` 是下标契约）。"""
+    client.post("/api/v1/symbols/resolve", json={"query": "600519"})
+    client.post("/api/v1/symbols/resolve", json={"query": "300750"})
+    body = client.get("/api/v1/instruments?ids=600519.SH,CN:300750.SZ").json()
+    assert [item["symbol"] for item in body["items"]] == ["600519.SH", "300750.SZ"]
+
+
 def test_bars_endpoint_returns_bars_and_indicators(client) -> None:
     client.post("/api/v1/symbols/resolve", json={"query": "600519"})
     response = client.get("/api/v1/instruments/CN:600519.SH/bars?timeframe=1d&range=3m&adjust=qfq")
@@ -154,6 +176,23 @@ def test_report_detail_returns_the_document(client, seeded_report, sample_report
     assert body["report"]["version"] == 2
     assert body["doc"]["schema"] == "aragon.report/v1".replace("aragon.report", "aragon.research.report")
     assert body["doc"]["sections"]
+    # ★v14（U4 / §23.5.4）：`integrity` 是**追加**字段，默认 `ok`。
+    # 损坏的壳与"导出仍然 200"在 `test_report_integrity.py` 里（★P0-1 的五条读路径）。
+    assert body["integrity"] == "ok"
+
+
+def test_latest_report_carries_integrity_too(client, seeded_report) -> None:
+    body = client.get(
+        f"/api/v1/instruments/{seeded_report['instrument']['id']}/reports/latest"
+    ).json()
+    assert body["integrity"] == "ok"
+
+
+def test_a_non_hex_report_id_is_not_swallowed_by_the_library(client) -> None:
+    """R-72：`/reports` 与 `/reports/{id}` 段数不同，`/reports/abc` 仍是 404。"""
+    response = client.get("/api/v1/reports/abc")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "report_not_found"
 
 
 def test_report_not_found(client) -> None:

@@ -647,11 +647,58 @@ export interface ReportSummary {
 export interface ReportDetail {
   report: ReportSummary;
   doc: ReportDoc;
+  /**
+   * ★v14（U4 / §23.5.4）：`'ok' | 'corrupt'`。默认 `'ok'` ⇒ 老后端缺这个键时按"正常"处理
+   * （向后兼容），而损坏的 doc 仍然可读（12 种块渲染器一行不用改）。
+   */
+  integrity?: 'ok' | 'corrupt';
 }
 
 export interface ReportListResponse {
   items: ReportSummary[];
   total: number;
+}
+
+/* ── 报告库（★v14 U1 / §23.4.3）───────────────────────────────────────────── */
+
+/** 五个 scope。`latest` 服务首页/命令面板；库页 4 个 tab（默认 `all`）。 */
+export type LibraryScope = 'latest' | 'all' | 'starred' | 'archived' | 'trash';
+
+export interface LibraryInstrument {
+  id: string;
+  symbol: string;
+  name: string;
+  market: Market;
+  currency: string;
+}
+
+export interface ReportLibraryItem {
+  report: ReportSummary;
+  instrument: LibraryInstrument;
+  /** `null` = 早期版本（`doc_sha1` 不回填）。**不是**"内容不同"。 */
+  docSha1?: string | null;
+  integrity: 'ok' | 'corrupt';
+  /** 非删除行恒 `null`；`scope=trash` 里非空（回收站要显示"删除于 X / 还剩 N 天"）。 */
+  deletedAt?: string | null;
+}
+
+export interface ActiveRunItem {
+  runId: string;
+  instrumentId: string;
+  symbol: string;
+  name: string;
+  stage?: string | null;
+  pct: number;
+  startedAt: string;
+}
+
+export interface LibraryResponse {
+  items: ReportLibraryItem[];
+  nextCursor?: string | null;
+  total: number;
+  /** 键 = 5 个 scope 名（**不含** `q` / `instrumentId` 的过滤）；服务端不下发中文标签。 */
+  counts: Partial<Record<LibraryScope, number>>;
+  active: ActiveRunItem[];
 }
 
 /* ── runs / capabilities ─────────────────────────────────────────────────── */
@@ -698,6 +745,11 @@ export interface CreateRunResponse {
   instrumentId: string;
   /** ★v6: may be `null` — "无法预估" is an answer, never a fake 0. */
   estimateUsd?: number | null;
+  /**
+   * ★v14（§23.5.3）：这次请求**请求了**去重，不是结论。
+   * 最终结论只有一个来源：`run.done.deduped`。
+   */
+  dedupe?: boolean;
 }
 
 export interface AragonCapability {

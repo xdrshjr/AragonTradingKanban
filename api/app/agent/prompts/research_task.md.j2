@@ -2,6 +2,10 @@
 
 {{ instrument.symbol }} {{ instrument.name }}（{{ instrument.market }} · {{ instrument.currency }}{% if instrument.sector %} · {{ instrument.sector }}{% endif %}）
 as-of: {{ as_of_local }}（{{ instrument.tz }}）
+{% if base_digest %}
+
+{{ base_digest }}
+{% endif %}
 
 # 你可以读到的资料（只读，全部在本目录，路径相对于当前工作目录）
 

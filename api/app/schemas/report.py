@@ -335,11 +335,24 @@ class CostQuality(BaseModel):
 
 
 class PromptQuality(BaseModel):
-    """★v7 H5：`quality.prompt` —— 提示词指纹（只做展示与追溯，**不进**引擎指纹）。"""
+    """★v7 H5：`quality.prompt` —— 提示词指纹（只做展示与追溯，**不进**引擎指纹）。
+
+    ★v14（§23.3.4b / ★P1-11）：追加 `baseReportId` / `baseVersion`，语义是"这一版是基于
+    哪一版更新的"。两个键**恒在、值可为 `None`**（独立生成 ⇒ 两个都是 `None`）。
+
+    只加响应字段**不算做完了**：生产者是 `report_validator.prompt_quality()`，它必须
+    同时给这两个键赋值，否则就是第三个"声明了但没有生产者"的空字段（R-77）。
+    `tests/test_prompt_quality_keys.py` 直接跑一次真实函数来盯这件事。
+    """
 
     version: int | None = None
     sha1: str | None = None
     bytes: int = 0
+    #: ★v14：用户点「基于此版本更新」时选的那一版。取值是**用户的选择**，即使那一版
+    #: 取不出结构（provisional / corrupt）也照记原值——事后要能看出"用户确实选了它"。
+    baseReportId: str | None = None
+    #: ★v14：上面那一版的 `version` 号（省一次前端查询；缺失 ⇒ 显示"独立生成"）。
+    baseVersion: int | None = None
 
 
 class ClampQuality(BaseModel):
@@ -411,6 +424,11 @@ class ReportSummary(BaseModel):
 class ReportDetail(BaseModel):
     report: ReportSummary
     doc: ReportDoc
+    #: ★v14（U4 / §23.5.4）：`"ok" | "corrupt"`。默认 `ok` ⇒ 老后端缺这个键时前端按
+    #: "正常"处理（向后兼容），而损坏壳仍然可读（12 种块渲染器一行不用改）。
+    #: 单数真源是 `report_service.load_doc_safe()`：列表用 SQL `json_valid()` 算，
+    #: 详情用 Python 解析算，**语义相同、成本不同**（★P1-2）。
+    integrity: Literal["ok", "corrupt"] = "ok"
 
 
 class ReportListResponse(BaseModel):
@@ -427,6 +445,14 @@ class ReportPatch(BaseModel):
 class CreateReportRequest(BaseModel):
     reason: Literal["manual", "refresh"] = "manual"
     force: bool = False
+    #: ★v14（§23.3.4a）：内容指纹与最新非临时版相同时**不新增版本**。默认开——这正是
+    #: "更新即复用"的那一半；关掉是逃生阀（用户明确要求"再来一版"）。
+    #: 响应体只追加 `"dedupe": true`，它说的是"这次请求**请求了**去重"，不是结论；
+    #: 最终结论只有一个来源：`run.done.deduped`。
+    dedupe: bool = True
+    #: ★v14（§23.3.4b）：把上一版的**结构摘要**注入任务提示词（≤2048 B，只给章节标题与
+    #: 指标标签，不给数值）。校验失败 → 422 `base_report_mismatch`。
+    baseReportId: str | None = None
 
 
 # ── version diff (§18.5.4) ──────────────────────────────────────────────────

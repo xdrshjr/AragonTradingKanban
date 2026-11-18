@@ -421,6 +421,7 @@ def render_prompt(
     snapshot: dict[str, Any],
     *,
     timeframe_label: str = "日线",
+    base_digest: str = "",
 ) -> str:
     settings = get_settings()
     environment = Environment(
@@ -438,6 +439,9 @@ def render_prompt(
         as_of_local=as_of,
         timeframe_label=timeframe_label,
         data_warnings=(snapshot.get("dataQuality") or {}).get("warnings") or [],
+        # ★v14（U3 / §23.3.4b）：空串 ⇒ 模板里的 `{% if base_digest %}` 整段不渲染，
+        # **不留占位符痕迹**（`prompt.md` 与没有 base 的版本逐字节相同）。
+        base_digest=base_digest,
     )
     path.write_text(prompt, encoding="utf-8")
     system_source = settings.prompts_dir / "research_system.md"
@@ -471,8 +475,18 @@ def write_schema_copy(path: Path) -> str:
     return assert_schema_identity(path, source)
 
 
-def write_snapshot_files(bundle: SnapshotBundle, workspace: Path, system_path: Path) -> Path:
-    """Persist the whole §8.2 workspace and return the prompt path."""
+def write_snapshot_files(
+    bundle: SnapshotBundle,
+    workspace: Path,
+    system_path: Path,
+    *,
+    base_digest: str = "",
+) -> Path:
+    """Persist the whole §8.2 workspace and return the prompt path.
+
+    ★v14：`base_digest` 是可选的（默认空串 ⇒ 模板整段不渲染）。它是"基于此版本更新"注入的
+    那一段结构摘要，上限 2048 B 由 `run_manager.base_digest_text()` 保证。
+    """
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "snapshot.json").write_text(
         json.dumps(bundle.snapshot, ensure_ascii=False, indent=2, default=_json_safe), encoding="utf-8"
@@ -487,7 +501,7 @@ def write_snapshot_files(bundle: SnapshotBundle, workspace: Path, system_path: P
     )
     write_sources_md(workspace / "sources.md", bundle.sources, bundle.warnings)
     prompt_path = workspace / "prompt.md"
-    render_prompt(prompt_path, system_path, bundle.snapshot)
+    render_prompt(prompt_path, system_path, bundle.snapshot, base_digest=base_digest)
     write_schema_copy(workspace / "schema.json")
     return prompt_path
 

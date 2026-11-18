@@ -57,6 +57,11 @@ export interface GenerationState {
   } | null;
   reportId: string | null;
   version: number | null;
+  /**
+   * ★v14（U3 / §23.3.4a）：这次生成**没有新增版本**（内容与最新版完全一致）。
+   * 它是唯一权威来源——202 响应里的 `dedupe` 只表示"请求了去重"。
+   */
+  deduped: boolean;
   costUsd: number | null;
   costKnown: boolean;
   /** ★v7（H4）：成本三态。`estimated` 与 `reported` 永不同义（H-6）。 */
@@ -85,6 +90,7 @@ export const initialGenerationState: GenerationState = {
   error: null,
   reportId: null,
   version: null,
+  deduped: false,
   costUsd: null,
   costKnown: false,
   costSource: null,
@@ -215,6 +221,8 @@ export function generationReducer(state: GenerationState, action: GenerationActi
             pct: 100,
             reportId: typeof payload.reportId === 'string' ? payload.reportId : null,
             version: typeof payload.version === 'number' ? payload.version : null,
+            // 缺字段 ⇒ false（旧后端仍然可用，界面只是不提示"未新增版本"）。
+            deduped: payload.deduped === true,
             costUsd: typeof payload.costUsd === 'number' ? payload.costUsd : null,
             costKnown: Boolean(payload.costKnown),
             // ★v7：三态与估算金额一起进 state——只留 `costKnown` 会让界面把估算当回执。
@@ -267,6 +275,11 @@ export interface UseGenerationStreamResult {
 
 export interface UseGenerationStreamOptions {
   onDone?: (reportId: string) => void;
+  /**
+   * ★v14：`run.done.deduped === true` 时调用（**在** `onDone` 之后）。
+   * 父组件负责说那句「内容与 v13 一致，未新增版本」，并且**仍然**打开那一版。
+   */
+  onDeduped?: (reportId: string, version: number | null) => void;
   onError?: (code: string, message: string) => void;
   /**
    * ★v6 G3：预算闸门被触发（402 `monthly_budget_exceeded`）。
@@ -289,7 +302,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
   const [state, dispatch] = useReducer(generationReducer, initialGenerationState);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const queryClient = useQueryClient();
-  const { onDone, onError, onBudgetBlocked, onTakeover } = options;
+  const { onDone, onDeduped, onError, onBudgetBlocked, onTakeover } = options;
 
   const teardown = useCallback(() => {
     unsubscribeRef.current?.();
@@ -333,7 +346,17 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         if (event.type === 'run.done') {
           const reportId = event.payload.reportId;
           void queryClient.invalidateQueries({ queryKey: ['reports', instrumentId] });
-          if (typeof reportId === 'string') onDone?.(reportId);
+          // ★v14（U6 / AC-152）：报告库与首页的『最近生成的研报』必须跟着变，
+          // 否则生成完切回首页还是旧列表（那正是本轮需求的原话背景）。
+          void queryClient.invalidateQueries({ queryKey: ['reports', 'library'] });
+          if (typeof reportId === 'string') {
+            onDone?.(reportId);
+            if (event.payload.deduped === true) {
+              const version =
+                typeof event.payload.version === 'number' ? event.payload.version : null;
+              onDeduped?.(reportId, version);
+            }
+          }
         }
         if (event.type === 'run.error') {
           onError?.(String(event.payload.code ?? 'internal'), String(event.payload.message ?? '生成失败'));
@@ -358,18 +381,27 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         void reconcileRun(runId, instrumentId);
       },
     }),
-    [onDone, onError, queryClient, reconcileRun],
+    [onDeduped, onDone, onError, queryClient, reconcileRun],
   );
 
   const start = useCallback(
-    async (instrumentId: string, startOptions: { force?: boolean; override?: boolean } = {}) => {
+    async (
+      instrumentId: string,
+      startOptions: { force?: boolean; override?: boolean; baseReportId?: string | null; dedupe?: boolean } = {},
+    ) => {
       teardown();
       dispatch({ type: 'submit', instrumentId });
 
       try {
         const created = await api.createReport(
           instrumentId,
-          { force: startOptions.force },
+          {
+            force: startOptions.force,
+            // ★v14（U3）：`baseReportId` = 用户点了「基于此版本更新」的那一版；
+            // 不传就是普通生成（服务端的摘要段渲染成空行）。
+            ...(startOptions.baseReportId ? { baseReportId: startOptions.baseReportId } : {}),
+            ...(startOptions.dedupe === false ? { dedupe: false } : {}),
+          },
           { override: startOptions.override },
         );
         dispatch({ type: 'queued', runId: created.runId });

@@ -79,6 +79,13 @@ export const HTTP_ERROR_ACTIONS: Record<string, RunErrorActionSpec> = {
   agent_mock_mode: { action: 'openSettings', primary: true }, // 503（mock 下探针无意义）
   too_many_runs: { action: 'wait', primary: true }, // 429
   run_conflict: { action: 'none', primary: false }, // 已自动接管，只说一句
+  // ── ★v14（§23.5.5）：三条新码全是 HTTP 码，**不进** `RUN_ERROR_CODES` ──────────
+  // 与 `contracts/run_error_codes.json` 的 `httpCodes` 逐字相同（`runErrors.test.ts`
+  // 断言 `HTTP_ERROR_ACTIONS ⊇ httpCodes` 并逐行比对 `action`）。
+  // 三条的语义都是'换个参数 / 刷新一下就能继续'，与既有 `schema_drift` 的 retry 同类。
+  invalid_cursor: { action: 'retry', primary: true }, // 422：游标不合法 → 从第一页重载
+  report_not_deleted: { action: 'retry', primary: true }, // 409：状态被别的标签页改过了
+  base_report_mismatch: { action: 'retry', primary: true }, // 422：改成独立生成重发
 };
 
 /** 未知码的兜底：**不猜动作**，只给"看日志"这一条真正有用的路。 */

@@ -26,6 +26,7 @@
  * 手工核对：`curl http://127.0.0.1:8010/api/v1/capabilities`
  */
 
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -128,13 +129,24 @@ const GENERATED_AT = {
  */
 const state = { latestVersion: 2, budgetUsd: 5, docById: new Map() };
 
-const reportId = (version) => `rpt-600519-v${version}`;
+/** 文档键：只在本文件内部索引 `docById`，**不是**对外 id（`rpt-600519-vN`）。 */
+const docKey = (version) => `rpt-600519-v${version}`;
+
+/**
+ * 对外的报告 id：32 位小写 hex（AC-143 断言的正是这个**形状**）。
+ *
+ * 一份报告**只有一个** id —— `/instruments/{id}/reports`、`/reports/{id}`、库页的每一行、
+ * `?report=` 深链、`/diff`、`/export` 全都用它。加密不是因为"好看"：前端拿 id 做**等值比较**
+ * （`ReportPanel` 判"这是不是历史版本"、`WorkspaceClient.syncUrl` 判"这是不是最新版"），
+ * 两个 id 空间会让"选了 v2 却还显示 v1"这种 fake-only 的怪象凭空出现。
+ */
+const reportId = (version) => createHash('md5').update(docKey(version)).digest('hex');
 
 for (const version of [1, 2, 3]) {
   const base = version === 2 ? DOC_V2 : DOC_V1;
   const doc = version === 3 ? JSON.parse(JSON.stringify(DOC_V1)) : base;
   if (version === 3) doc.headline = `${DOC_V1.headline}（第 3 版）`;
-  state.docById.set(reportId(version), doc);
+  state.docById.set(docKey(version), doc);
 }
 
 /* ── 质量 / 引擎（v6 G1 / G4） ─────────────────────────────────────────────── */
@@ -229,7 +241,7 @@ function quality(version) {
 /** 镜像 `web/lib/types.ts::ReportSummary`。 */
 function summaryFor(version) {
   const id = reportId(version);
-  const doc = state.docById.get(id);
+  const doc = state.docById.get(docKey(version));
   return {
     id,
     instrumentId: INSTRUMENT.id,
@@ -259,11 +271,151 @@ function summaryFor(version) {
 
 const allVersions = () => Array.from({ length: state.latestVersion }, (_, index) => index + 1);
 const summaries = () => allVersions().map(summaryFor).sort((a, b) => b.version - a.version);
-const detailFor = (version) => ({ report: summaryFor(version), doc: state.docById.get(reportId(version)) });
-const versionOfReportId = (id) => {
+const detailFor = (version) => ({ report: summaryFor(version), doc: state.docById.get(docKey(version)) });
+
+/** 旧 id 形态（`rpt-600519-vN`）：`grounding.spec.ts` 用它做深链，所以继续认。 */
+const versionOfLegacyId = (id) => {
   const match = /^rpt-600519-v(\d+)$/.exec(String(id));
   return match ? Number(match[1]) : null;
 };
+
+/** hex id → 版本号（认不出就是 null，绝不猜）。 */
+const versionOfHexId = (id) => allVersions().find((version) => reportId(version) === String(id)) ?? null;
+
+/** 两种 id 形态都认：hex 是对外的那一个，`rpt-…` 只为向后兼容（旧深链）。 */
+const versionOfReportId = (id) => versionOfLegacyId(id) ?? versionOfHexId(id);
+
+/* ── 报告库（★v14 U1 / §23.4.3 / AC-143）────────────────────────────────────── */
+
+/**
+ * 一条库条目：`web/lib/types.ts::ReportLibraryItem` 的形状。
+ *
+ * `report` 直接复用 `summaryFor()` —— 一份报告在库页与工作台里必须是**同一个 id**，
+ * 否则"点哪一版就开哪一版"（U-0b）在 fake 里就无法被证明。
+ */
+function libraryItem(version) {
+  const summary = summaryFor(version);
+  return {
+    report: summary,
+    instrument: {
+      id: INSTRUMENT.id,
+      symbol: INSTRUMENT.symbol,
+      name: INSTRUMENT.name,
+      market: INSTRUMENT.market,
+      currency: INSTRUMENT.currency,
+    },
+    docSha1: null,
+    integrity: 'ok',
+    deletedAt: null,
+  };
+}
+
+/** 排序 = `generated_at desc, id desc`（`report_library.py` 的 ORDER BY）。 */
+function libraryRows() {
+  return allVersions()
+    .map(libraryItem)
+    .sort((left, right) => {
+      if (left.report.generatedAt === right.report.generatedAt) {
+        return left.report.id < right.report.id ? 1 : -1;
+      }
+      return left.report.generatedAt < right.report.generatedAt ? 1 : -1;
+    });
+}
+
+/**
+ * 游标 = `"{generated_at}|{id}"`，**原样**（不编码）。
+ *
+ * ★v14 评审（R-5）：服务端的 `report_library.encode_cursor()` 返回的就是列文本原样
+ * （`2026-11-18T03:23:57Z|<32 hex>`），`|` 由**客户端**的 `URLSearchParams` 编码成 `%7C`。
+ * 第一版 fake 在这里先 `encodeURIComponent()` 了一次，于是它只在"再解码一次"的情况下才
+ * 认得出游标（真服务端不会这样）——那种不保真的夹具会让"前端多编一次码"这种真缺陷
+ * 在 e2e 里保持绿色。这里与真服务端同形，进来时仍然容错解码（`%7C` 与 `|` 都认）。
+ */
+const libraryCursor = (item) => `${item.report.generatedAt}|${item.report.id}`;
+
+/** 与服务端/前端**同一个**正则：三段式、秒级、`Z` 结尾、32 位小写 hex。 */
+const LIBRARY_CURSOR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\|([0-9a-f]{32})$/;
+
+/** 解不开就当作"第一页"（与 `decodeCursor()` 返回 `null` 的语义一致），绝不猜一个时间。 */
+function parseLibraryCursor(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  let decoded = String(raw);
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    return null;
+  }
+  return LIBRARY_CURSOR_RE.test(decoded) ? decoded.split('|') : null;
+}
+
+/** 五个 scope（`api/app/services/report_library.py::LIBRARY_SCOPES` 同序）。 */
+const LIBRARY_SCOPES = ['latest', 'all', 'starred', 'archived', 'trash'];
+
+/** 全库计数：**不含** `q` / `instrumentId` 的过滤（tab 徽章恒定，★P1-4）。 */
+function libraryCounts(rows) {
+  const counts = { latest: 0, all: rows.length, starred: 0, archived: 0, trash: 0 };
+  for (const row of rows) {
+    if (row.report.isLatest) counts.latest += 1;
+    if (row.report.pinned) counts.starred += 1;
+    if (row.report.archived) counts.archived += 1;
+    if (row.deletedAt) counts.trash += 1;
+  }
+  return counts;
+}
+
+function inLibraryScope(row, scope) {
+  if (scope === 'latest') return row.report.isLatest;
+  if (scope === 'starred') return row.report.pinned;
+  if (scope === 'archived') return row.report.archived;
+  if (scope === 'trash') return Boolean(row.deletedAt);
+  return true;
+}
+
+/**
+ * `GET /api/v1/reports`（AC-137 / AC-143）。
+ *
+ * 三个量别混（§23.4.3）：`counts` 是全库计数、`total` 是当前过滤命中数、
+ * `nextCursor` 只在"还有下一页"时非 null。
+ *
+ * **两页游标**：本 fake 只有两版真实文档（v1 / v2），所以第一页给全部命中 + 一个合法游标，
+ * 带 `before` 的第二页给空列表 + `nextCursor: null`。这样 `useInfiniteQuery` 的
+ * "取下一页 → 到底"整条路径都走得到，同时不必编造第三份**打不开**的版本来凑行数
+ * （`fake-api` 的第 3 条纪律：空列表就返回空列表）。
+ */
+function libraryResponse(query) {
+  const rawScope = query.get('scope') ?? 'latest';
+  const scope = LIBRARY_SCOPES.includes(rawScope) ? rawScope : 'latest';
+  const keyword = (query.get('q') ?? '').trim().toLowerCase();
+  const limit = Math.max(1, Number(query.get('limit') ?? 20) || 20);
+  const before = query.get('before');
+  const withCounts = query.get('withCounts') !== '0';
+
+  const rows = libraryRows();
+  const counts = withCounts ? libraryCounts(rows) : {};
+  const matched = rows
+    .filter((row) => inLibraryScope(row, scope))
+    .filter((row) =>
+      keyword === ''
+        ? true
+        : [row.instrument.symbol, row.instrument.name, row.report.title, row.report.headline]
+            .join(' ')
+            .toLowerCase()
+            .includes(keyword),
+    );
+
+  if (before !== null && parseLibraryCursor(before) !== null) {
+    return { items: [], nextCursor: null, total: matched.length, counts, active: [] };
+  }
+
+  const items = matched.slice(0, limit);
+  return {
+    items,
+    nextCursor: items.length > 0 ? libraryCursor(items[items.length - 1]) : null,
+    total: matched.length,
+    counts,
+    active: [],
+  };
+}
 
 /* ── 能力 ─────────────────────────────────────────────────────────────────── */
 
@@ -613,8 +765,8 @@ function numericOf(value) {
 function diffResponse(fromId, toId) {
   const fromVersion = versionOfReportId(fromId);
   const toVersion = versionOfReportId(toId);
-  const from = fromVersion ? state.docById.get(fromId) : null;
-  const to = toVersion ? state.docById.get(toId) : null;
+  const from = fromVersion ? state.docById.get(docKey(fromVersion)) : null;
+  const to = toVersion ? state.docById.get(docKey(toVersion)) : null;
   if (!from || !to) return null;
 
   const metricsDelta = [];
@@ -837,7 +989,7 @@ const routes = [
       send(ctx.res, 200, { items: [] });
       return;
     }
-    const items = ids.filter((id) => id === INSTRUMENT.id).map(() => INSTRUMENT);
+    const items = ids.filter((id) => isKnownInstrument(id)).map(() => INSTRUMENT);
     if (items.length === 0) {
       // RSC 靠这个 404 进入 `not-found`（workspace.spec 的"未知标的"用例）。
       sendError(ctx.res, 404, 'instrument_not_found', `找不到这个标的：${ids.join(',')}`, { ids });
@@ -887,6 +1039,23 @@ const routes = [
     );
   }],
 
+  ['GET', /^\/api\/v1\/reports\/?$/, (ctx) => send(ctx.res, 200, libraryResponse(ctx.query))],
+
+  /**
+   * 恢复一份软删的版本（U5 / AC-142）：`api.restoreReport()` 期望**一份 ReportSummary**
+   * （`web/lib/api.ts`），不是 `{ok:true}`。本 fake 没有软删的行（`scope=trash` 恒空），
+   * 所以恒 200 —— 不为"让按钮有反应"编造一条删除记录。
+   */
+  ['POST', /^\/api\/v1\/reports\/([^/]+)\/restore$/, (ctx) => {
+    const id = decodeURIComponent(ctx.params[0]);
+    const version = versionOfReportId(id);
+    if (!version) {
+      sendError(ctx.res, 404, 'report_not_found', '报告不存在', { reportId: id });
+      return;
+    }
+    send(ctx.res, 200, { ...summaryFor(version), id });
+  }],
+
   ['GET', /^\/api\/v1\/reports\/([^/]+)\/blocks$/, (ctx) =>
     send(ctx.res, 200, blocksResponse(decodeURIComponent(ctx.params[0]), ctx.query))],
 
@@ -915,7 +1084,7 @@ const routes = [
       sendError(ctx.res, 404, 'not_found', '报告不存在', { reportId: id });
       return;
     }
-    const doc = state.docById.get(id);
+    const doc = state.docById.get(docKey(version));
     const format = ctx.query.get('format') ?? 'html';
     const body =
       format === 'md'
@@ -930,6 +1099,10 @@ const routes = [
     ctx.res.end(body);
   }],
 
+  /**
+   * `GET /reports/{id}` —— hex（对外 id）与旧形态 `rpt-600519-vN`（`grounding.spec.ts` 的深链）
+   * 都认；`versionOfReportId()` 是这两种形态的唯一裁决处。
+   */
   ['GET', /^\/api\/v1\/reports\/([^/]+)$/, (ctx) => {
     const version = versionOfReportId(decodeURIComponent(ctx.params[0]));
     if (!version || version > state.latestVersion) {
@@ -1008,6 +1181,24 @@ const routes = [
     send(ctx.res, 200, citeAnswer(reportId(state.latestVersion), '（历史追问）'));
   }],
 ];
+
+/**
+ * 标的解析：`id`（`CN:600519.SH`）或**裸 symbol**（`600519.SH`）都认。
+ *
+ * 为什么要认 symbol：库页的行链接是 `libraryHref(symbol, reportId)` =
+ * `/{symbol}?report=…`（AC-143 / U-0b），而 `app/[symbol]/page.tsx` 把那个段落原样交给
+ * `api.instrument()` → `GET /instruments?ids=<symbol>`。
+ *
+ * ★已对齐后端（原记录为"已知偏差"，现已被实现节点补上）：真实后端
+ * `routers/instruments.py::list_instruments` 现在**同样**接受裸 symbol（`or_(id.in_(…),
+ * symbol.in_(…))`，与 `_load()` 的"Accept a bare symbol too, so links stay readable"
+ * 同一条宽容，见 spec「实施过程发现的方案缺陷」D-7）。所以本 fake 与真实后端在这一点上
+ * 不再有偏差：报告库的每一行都是可点开的。
+ */
+function isKnownInstrument(raw) {
+  const value = decodeURIComponent(String(raw));
+  return value === INSTRUMENT.id || value === INSTRUMENT.symbol;
+}
 
 function symbolHit() {
   return {

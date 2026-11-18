@@ -145,16 +145,16 @@ def test_revision_chain_points_at_0002() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
 
     # ★v7：head 已经是 0004；这条断言守的是**整条链**没有断点（0003 的父节点仍是 0002）。
-    assert script.get_current_head() == "0005_engine_probes"
+    assert script.get_current_head() == "0006_report_library"
     revision = script.get_revision("0003_cost_ledger")
     assert revision is not None
     assert revision.down_revision == "0002_ask_search_schedule"
     assert [rev.revision for rev in script.walk_revisions()][:5] == [
+        "0006_report_library",
         "0005_engine_probes",
         "0004_agent_diagnostics",
         "0003_cost_ledger",
         "0002_ask_search_schedule",
-        "0001_init",
     ]
 
 

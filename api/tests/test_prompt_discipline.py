@@ -97,7 +97,9 @@ def test_both_prompts_carry_a_version_marker(path: Path) -> None:
     """两个提示词都要有版本标记：指纹要能区分两版提示词（§20.4 的改动表）。"""
     match = report_validator.PROMPT_VERSION_RE.search(body(path))
     assert match is not None, f"{path.name} 缺少 `<!-- version: N -->`"
-    assert int(match.group(1)) == 7
+    # ★v14（P0-3）：7 → 8 = 提示词契约升了一版（新增 base_digest 段与它的硬指令），
+    # 不是 system 正文改了。两个 system 提示词必须一致。
+    assert int(match.group(1)) == 8
 
 
 def test_prompt_quality_matches_the_file_on_disk() -> None:
@@ -107,7 +109,9 @@ def test_prompt_quality_matches_the_file_on_disk() -> None:
     raw = RESEARCH.read_bytes()
     assert quality["sha1"] == hashlib.sha1(raw).hexdigest()[:12]
     assert quality["bytes"] == len(raw)
-    assert quality["version"] == 7
+    # ★v14：同上。`bytes` 那一条**保持原样**——它正是「quality.prompt 量的是 system
+    # 而不是 task」的证据（P0-3）。
+    assert quality["version"] == 8
 
 
 def test_two_prompts_have_different_fingerprints() -> None:
