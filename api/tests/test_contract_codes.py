@@ -18,7 +18,13 @@ import json
 from pathlib import Path
 
 from app.agent.failure import RUN_ERROR_CODES
-from app.schemas.capabilities import AragonAragonOut, CapabilitiesResponse, EngineCapabilityOut, EngineLimitsOut
+from app.schemas.capabilities import (
+    AragonAragonOut,
+    CapabilitiesResponse,
+    EngineCapabilityOut,
+    EngineLimitsOut,
+    RuntimeCapabilityOut,
+)
 from app.schemas.report import ReportQuality
 from app.services.report_validator import SalvageReport, ValidationOutcome
 
@@ -39,7 +45,10 @@ def test_run_error_codes_and_the_contract_are_the_same_set() -> None:
     """**集合相等**，不是子集。少一条 = 前端有一个码没有动作；多一条 = 契约落后。"""
     payload = contract()
     assert set(RUN_ERROR_CODES) == {row["code"] for row in payload["codes"]}
-    assert len(payload["codes"]) == 18, "v9 的码表是 18 条（V10-P1-7 实测）"
+    # ★v12（§22.5.3）：18 → 21，三个追加码
+    # （event_loop_unsupported / agent_timeout / output_truncated）。
+    # 既有 18 条的 severity / retryable 一个字都没改（下面那条逐值断言守着）。
+    assert len(payload["codes"]) == 21, "v12 的码表是 21 条（18 + 3 追加）"
 
 
 def test_severity_and_retryable_match_value_by_value() -> None:
@@ -102,7 +111,8 @@ def test_the_new_capabilities_fields_reach_the_wire_model() -> None:
     assert {"agentAttempts", "probeTtlSec", "retryLayersWarning"} <= limits_fields
     engine_fields = set(EngineCapabilityOut.model_fields)
     assert "lastProbe" in engine_fields
-    # 顶层形状不变（AC-104 的既有断言在 test_capabilities_api 里守着）。
+    # 顶层形状（AC-104 的既有断言在 test_capabilities_api 里守着）。
+    # ★v12（S1/S7）：`runtime` 是**新增**的第七个顶层对象，既有六个一个字没改。
     assert set(CapabilitiesResponse.model_fields) == {
         "aragon",
         "agentMode",
@@ -110,4 +120,32 @@ def test_the_new_capabilities_fields_reach_the_wire_model() -> None:
         "features",
         "limits",
         "engine",
+        "runtime",
     }
+    runtime_fields = set(RuntimeCapabilityOut.model_fields)
+    assert {"eventLoop", "loopOk", "loopReason", "hardDeadlineSec", "sessionSave", "sessionDirMb"} <= runtime_fields
+
+
+def test_the_three_new_codes_keep_their_hints_in_failure_py() -> None:
+    """★v12（C-36 / C-39）：新码的 hint 只能写在 `FailureSpec`，且三处字符串逐字相同。
+
+    三个同步点是 `failure.RUN_ERROR_CODES`（hint 真源）、`contracts/run_error_codes.json`
+    （跨语言契约）与 `web/lib/runErrors.ts`（动作表）。hint 写在 `errors.py` 等于写进一个
+    没人读的地方——前端拿到的 `hint` 会永远是 `null`（V11-P0-4）。
+    """
+    payload = contract()
+    codes = {row["code"] for row in payload["codes"]}
+    for code in ("event_loop_unsupported", "agent_timeout", "output_truncated"):
+        assert code in codes and code in RUN_ERROR_CODES
+        assert RUN_ERROR_CODES[code].hint, f"{code} 缺 hint"
+    # errors.py 里可以出现**码**（`EventLoopUnsupported.code`，这是本仓既有的错误类形态，
+    # 见 `RunConflict` / `MonthlyBudgetExceeded`），但**不许**出现 hint 文本——那会让
+    # "要不要去掉 --reload" 这句话存在两个地方（V11-P0-4 / C-39 的原意）。
+    errors_source = (CONTRACT.parents[1] / "api" / "app" / "errors.py").read_text(encoding="utf-8")
+    for fragment in ("去掉 --reload 后重启", "调大 ARAGON_MAX_DURATION_MS", "ARAGON_MAX_OUTPUT_TOKENS 提到"):
+        assert fragment not in errors_source, f"hint 的真源是 failure.FailureSpec，不是 errors.py（{fragment}）"
+    assert "event_loop_unsupported" not in errors_source or "class EventLoopUnsupported" in errors_source
+    # TS 侧三个码逐字存在。
+    ts_source = (CONTRACT.parents[1] / "web" / "lib" / "runErrors.ts").read_text(encoding="utf-8")
+    for code in ("event_loop_unsupported", "agent_timeout", "output_truncated", "stream_closed"):
+        assert f"{code}:" in ts_source, f"runErrors.ts 缺 {code}"

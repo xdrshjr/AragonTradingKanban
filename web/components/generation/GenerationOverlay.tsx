@@ -1,11 +1,12 @@
 'use client';
 
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RotateCw, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { copy, costSourceLabel, fill } from '@/lib/copy';
 import { durationLabel } from '@/lib/format';
-import { ACTION_LABELS, actionFor, primaryActionFor } from '@/lib/runErrors';
+import { ACTION_LABELS, WAIT_RETRY_SECONDS, actionFor, primaryActionFor } from '@/lib/runErrors';
 import { useUiStore } from '@/lib/store';
 import type { RunStageId } from '@/lib/types';
 
@@ -60,18 +61,55 @@ export function GenerationOverlay({
   // (spec §6.3: clicking the running badge opens the progress overlay).
   const collapsed = useUiStore((state) => state.overlayCollapsed);
   const setCollapsed = useUiStore((state) => state.setOverlayCollapsed);
+  // ★v12（S6 / §22.3.7(a) / AC-123）：`wait` 的倒计时状态。它必须是 **state** 而不是
+  // 一次性 `setTimeout` 的副作用——用户要看见"还有 N 秒"，否则"点了没反应"只是从
+  // "没有动作"变成"看不出有没有动作"（S-9：界面上每个按钮都要真的做事）。
+  const [waitSecondsLeft, setWaitSecondsLeft] = useState<number | null>(null);
+  const waitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const visible = state.phase !== 'idle';
+
+  // 卸载即清：卡片可以随时被关掉，留下一个会去重试的定时器是最糟的残留。
+  // 这个 effect 必须在 early-return **之前**（hooks 顺序不能依赖 visible）。
+  useEffect(
+    () => () => {
+      if (waitTimerRef.current) clearTimeout(waitTimerRef.current);
+      if (waitTickRef.current) clearInterval(waitTickRef.current);
+    },
+    [],
+  );
+
   if (!visible) return null;
 
   /**
    * ★v9（K6）：六个动作 → 三次回调。表在 `lib/runErrors.ts`，这里只做分发。
    *
-   * `wait` / `none` 不出现按钮（`primaryActionFor()` 返回 null），所以这里永远拿不到
-   * 它们；若真的拿到，什么也不做比弹一个"再等等"的空动作诚实。
+   * ★v12 修订（V11-P1-6）：旧注释写着"`wait` / `none` 不出现按钮（`primaryActionFor()`
+   * 返回 null），所以这里永远拿不到它们"——**前半句是错的**。`primaryActionFor` 只对
+   * `primary:false` 与 `action === 'none'` 返回 null，而 `too_many_runs`（429）是
+   * `{action:'wait', primary:true}` ⇒ `'wait'` **确实会**走进这里并落空。那正是 E-99
+   * 那条"429 主按钮点了什么都不发生"的真实成因，也是本轮 S6 的「先红」判据。
    */
   const runAction = (action: string) => {
     if (action === 'retry') {
       onRetry();
+      return;
+    }
+    if (action === 'wait') {
+      // 不是"什么都不做"：8 秒后自动重试一次，并在按钮上显示倒计时。
+      // 不做**静默**重试——那等于把一次可解释的拦截变成一次神秘的重复请求。
+      if (waitSecondsLeft !== null) return;
+      setWaitSecondsLeft(WAIT_RETRY_SECONDS);
+      waitTickRef.current = setInterval(() => {
+        setWaitSecondsLeft((left) => (left === null ? null : left <= 1 ? 0 : left - 1));
+      }, 1000);
+      waitTimerRef.current = setTimeout(() => {
+        if (waitTickRef.current) clearInterval(waitTickRef.current);
+        waitTickRef.current = null;
+        waitTimerRef.current = null;
+        setWaitSecondsLeft(null);
+        onRetry();
+      }, WAIT_RETRY_SECONDS * 1000);
       return;
     }
     if (action === 'checkKey' || action === 'openSettings') {
@@ -294,10 +332,20 @@ export function GenerationOverlay({
                     variant="secondary"
                     data-testid="error-primary-action"
                     data-action={primaryAction}
+                    data-waiting={primaryAction === 'wait' && waitSecondsLeft !== null ? 'true' : undefined}
+                    // ★v12（AC-123）：倒计时期间禁用，避免连点排队出三次 429。
+                    disabled={primaryAction === 'wait' && waitSecondsLeft !== null}
                     onClick={() => runAction(primaryAction)}
                   >
-                    {ACTION_LABELS[primaryAction]}
+                    {primaryAction === 'wait' && waitSecondsLeft !== null
+                      ? `${waitSecondsLeft}s`
+                      : ACTION_LABELS[primaryAction]}
                   </Button>
+                ) : null}
+                {primaryAction === 'wait' && waitSecondsLeft !== null ? (
+                  <span data-testid="error-wait-announce" aria-live="polite" className="text-[10.5px] text-[var(--text-tertiary)]">
+                    {`${waitSecondsLeft} 秒后自动重试`}
+                  </span>
                 ) : null}
                 {showLogAction ? (
                   <Button

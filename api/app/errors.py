@@ -186,6 +186,22 @@ class StructuredResultUnsupported(Unavailable):
     message = "生成引擎缺少结构化结果能力（submit_result / ajv）"
 
 
+class EventLoopUnsupported(Unavailable):
+    """★v12（S1 / §22.5.3）：本进程的事件循环 spawn 不了子进程（Windows 上的 `--reload`）。
+
+    503 而不是 500：这是"这台机器现在做不了这件事"，不是"我们写错了"。同步路径
+    （`RunManager.start()` 第 0 步）直接抛它，用户点下去立刻看到原因，而不是等 10 秒
+    拿到一个 `internal`（E-89）。
+
+    ★v12（C-39）：**这里不写 hint**。hint 的唯一真源是
+    `agent/failure.py::FailureSpec.hint`（`hint_for()` 是读取入口）；写在这里的字符串
+    没有任何读取者，前端拿到的 `hint` 会一直是 `null`。
+    """
+
+    code = "event_loop_unsupported"
+    message = "当前进程的事件循环不支持启动子进程"
+
+
 class ProbeDisabled(Unavailable):
     """`AGENT_PROBE_ENABLED=0`。与 `agent_mock_mode` 分开：原因不同，动作也不同。"""
 

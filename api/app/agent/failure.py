@@ -1,6 +1,6 @@
 """Run 级失败分类学 —— 一张表、一个 hint、一个指纹（spec §20.3.4 / §20.5.4，H3 / M20）。
 
-这个模块只放**表与纯函数**：`RUN_ERROR_CODES`（15 条）、`EXIT_MAP`、`STDERR_REFINE`、
+这个模块只放**表与纯函数**：`RUN_ERROR_CODES`（★v12 起 21 条）、`EXIT_MAP`、`STDERR_REFINE`、
 `CLI_ERROR_CODE_MAP`、`failure_fingerprint()`。它**不 import 任何 runner**——真正的
 分类入口是 `aragon_runner._classify_failure(observed, exit_code, stderr_path)`，因为它
 需要看 runner 的 `observed`（`result` 行与 `retry` 观测都在那里）。
@@ -153,6 +153,41 @@ RUN_ERROR_CODES: dict[str, FailureSpec] = {
         severity="internal",
         hint="服务重启导致本次生成中断。重新生成一次即可。",
     ),
+    # ── ★v12（§22.5.3）：三个追加码。语义**只追加**，既有 18 条一个字都没改。 ────
+    # ★v12 修订（V11-P0-4）：hint 的**唯一真源是这里**（`FailureSpec.hint`，读取入口
+    # `hint_for()`）。写进 `errors.py` 等于写进一个没人读的地方——前端拿到的 `hint`
+    # 会一直是 `null`，而界面会留一个空洞（C-39：`grep event_loop_unsupported api/app/errors.py` 必须为空）。
+    "event_loop_unsupported": FailureSpec(
+        code="event_loop_unsupported",
+        # 重试没有意义：同一进程里循环类型不会自己变。
+        retryable=False,
+        severity="config",
+        hint=(
+            "当前进程的事件循环不支持启动子进程（Windows 上通常是 --reload 造成的）："
+            "去掉 --reload 后重启 API，或用 npm run dev 的默认参数重来。"
+        ),
+        # 同步路径（`RunManager.start()` 第 0 步）会直接抛它 —— 503 是"这台机器现在
+        # 做不了这件事"，不是 500"我们写错了"。
+        http_status=503,
+    ),
+    "agent_timeout": FailureSpec(
+        code="agent_timeout",
+        retryable=True,
+        severity="engine",
+        hint=(
+            "引擎超过硬截止仍未结束。把 ARAGON_MAX_DURATION_MS 调大，"
+            "或点『查看日志』看这次到底做到哪一步。"
+        ),
+    ),
+    "output_truncated": FailureSpec(
+        code="output_truncated",
+        retryable=True,
+        severity="engine",
+        hint=(
+            "这次输出被 max-token 上限截断：把 ARAGON_MAX_OUTPUT_TOKENS 提到 60000，"
+            "或把资料里 K 线的行数减半。"
+        ),
+    ),
 }
 
 #: 非 agent 的 run 级码（数据层）。同样需要 hint，否则用户只能看到代码。
@@ -261,6 +296,13 @@ STOP_REASON_MAP: dict[str, str] = {
     "max_turns": "budget_exceeded",
     "aborted": "cancelled",
     "end_turn": "",
+    # ★v12（§22.5.3 / AC-120）：**输出被 max-token 截断**是另一件事，不是"轮次烧完"。
+    # `--max-tokens 40000` 是我们自己定的预算（`config.aragon_max_output_tokens`），一次真实
+    # 生成平均要 20k–34k 输出 token，报告越长越接近——所以这个码在真机上一定会出现。
+    # 把它并进 `budget_exceeded`（hint 指向 `ARAGON_MAX_TURNS`）会让用户去调一个不是
+    # 瓶颈的数字（S-5：截断必须能指向那个预算）。
+    "length": "output_truncated",
+    "max_tokens": "output_truncated",
 }
 
 #: ★v9（K3 / §21.3.5）：runner 层**唯一**允许重试的码。明确不重试的理由：

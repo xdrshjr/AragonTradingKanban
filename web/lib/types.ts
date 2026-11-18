@@ -362,6 +362,18 @@ export interface ReportQuality {
    * 三个计数器互不重叠：未知块归 `prunedBlocks`，这里只数 salvage 自己丢的东西。
    */
   salvage?: QualitySalvage | null;
+  /**
+   * ★v12（S3 / §22.6.3）：**格式收敛**记录。`undefined` = 没收敛，或这是老报告
+   * （v1–v12 的 `quality` 按纪律**不回填**）。读法写死为 `(q.clamp ?? {count: 0})`。
+   */
+  clamp?: QualityClamp | null;
+}
+
+/** `quality.clamp` —— 与 `report_validator.clamp_doc()` 的落地计数同形（★v12 S3）。 */
+export interface QualityClamp {
+  count: number;
+  /** 被截短的字段路径，如 `["summary", "heading|段落"]`。 */
+  fields: string[];
 }
 
 /** `quality.salvage` —— 与 `report_validator.SalvageReport.as_payload()` 同形。 */
@@ -370,6 +382,12 @@ export interface QualitySalvage {
   droppedKeys: number;
   droppedSections: number;
   droppedBlocks: number;
+  /** ★v12（S3 / V11-P2-2）：被裁掉的未知块数。过去 `as_payload()` 漏发它 ⇒ 写进了一个前端读不到的地方。 */
+  prunedBlocks?: number;
+  /** ★v12（S3）：抢救过程中顺便收敛了几处超长字段（与 `dropped*` 不重叠：那些是丢了，这个是被截短）。 */
+  clamped?: number;
+  /** ★v12（S4）：从模型正文还原的方式（`json` / `json_repaired`）。缺省 ⇒ 没走 L1.5。 */
+  how?: string | null;
   reasons: string[];
 }
 
@@ -713,6 +731,16 @@ export interface AragonCapability {
   /** 探针的唯一真源：这个端点**此刻**是通的吗。 */
   verified?: boolean;
   verifiedAt?: string | null;
+  /**
+   * ★v12（S1 / AC-112）：本进程能不能 spawn 子进程。
+   *
+   * 它与 `runtime.loopOk` 是**同一个** `preflight.spawn_capability()` 的两个消费点，
+   * 所以 `loopOk === false` ⟺ `degradedReason === 'event_loop_unsupported'`。
+   * `fullyCapable` **不在 wire 上**（那只是 `degradedReason === null` 的另一种写法，
+   * 多发一个就是第二个真源）。
+   */
+  loopOk?: boolean;
+  loopReason?: string | null;
   errors: string[];
 }
 
@@ -748,6 +776,29 @@ export interface Capabilities {
   limits: Record<string, unknown>;
   /** ★v6 G4: a new top-level object (model/provider stay in `aragon`). */
   engine?: EngineCapability | null;
+  /**
+   * ★v12（S1 / S7 / §22.5.1）：**进程级事实**——"这个进程现在能做什么"。
+   *
+   * 为什么与 `aragon` 分开：两者可以矛盾（引擎完全正常，但这个 `--reload` 起的进程
+   * spawn 不了子进程）。混在一起会让"降级原因"读起来自相矛盾。
+   */
+  runtime?: RuntimeCapability | null;
+}
+
+/** `capabilities.runtime` —— 与 `api/app/schemas/capabilities.py::RuntimeCapabilityOut` 同形。 */
+export interface RuntimeCapability {
+  /** 实际运行中的事件循环类名（诊断用，如 `_WindowsSelectorEventLoop`）。 */
+  eventLoop?: string | null;
+  /** 本进程能不能 spawn 子进程。`false` ⇒ 任何生成都做不成（唯一判据是 `preflight.spawn_capability()`）。 */
+  loopOk: boolean;
+  /** 不能时的机器前缀：`event_loop_selector:…` / `event_loop_policy:…`。 */
+  loopReason?: string | null;
+  /** `ARAGON_MAX_DURATION_MS/1000 + agent_hard_deadline_grace_sec`。 */
+  hardDeadlineSec: number;
+  /** 由 `agent_attempts` 派生（`>1` ⇒ `retry_only`，`=1` ⇒ `off`），**不是配置项**。 */
+  sessionSave: 'retry_only' | 'off' | string;
+  /** CLI 会话目录体积（MB，只读测量）。超阈值只提示，永不自动删。 */
+  sessionDirMb?: number | null;
 }
 
 export interface WatchlistEntry {

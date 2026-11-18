@@ -15,6 +15,8 @@ first three is violated:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -50,6 +52,12 @@ from .services.run_manager import get_manager
 from .services.scheduler_ticker import get_ticker
 
 logger = get_logger("main")
+
+#: ★v12（§22.3.3 第 2 层）：独立于 `SCHEDULER_ENABLED` 的活性清扫周期。
+#: 用 60 秒而不是 ticker 的 30 秒：这是**对账**，不是调度，没有必要跟调度同频
+#: （V11-P2-9 把两处的数字统一成"30 秒 tick，截止 = max_duration + grace"；
+#: 清扫周期单列，因为它与 tick 是两件事）。
+STALE_SWEEP_SECONDS = 60
 
 #: Paths that must stay reachable without a bearer token. SSE uses `?token=`
 #: instead of a header because `EventSource` cannot set one (★P1-3).
@@ -93,12 +101,48 @@ def run_migrations() -> None:
     command.upgrade(config, "head")
 
 
+async def _sweep_loop() -> None:
+    """★v12（S2 第 2 层）：每 `STALE_SWEEP_SECONDS` 秒对账一次"还在 running 但没人管"的 run。
+
+    为什么是常驻任务而不是挂在 ticker 上（V11-P1-4）：`SCHEDULER_ENABLED=0` 时 ticker
+    根本不启动（`lifespan` 里那两行就是全部真相），而"关掉定时刷新"恰恰是最需要自愈的
+    配置。这也是为什么这里**不**用 `asyncio.create_task` 再包一层：`sweep_stale_runs()`
+    是同步函数（只碰 DB），直接调、异常直接落日志，而不是丢进一个没人 await 的 Task。
+    """
+    while True:
+        try:
+            await asyncio.sleep(STALE_SWEEP_SECONDS)
+            swept = get_manager().sweep_stale_runs()
+            if swept:
+                logger.warning("活性清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
+        except asyncio.CancelledError:  # pragma: no cover - shutdown
+            raise
+        except Exception:  # pragma: no cover - 一次对账失败不该杀死清扫
+            logger.exception("活性清扫失败")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
 
     assert_single_worker()
+
+    # ★v12（S1 / §22.3.2(b)）：启动即自证"这个进程能不能 spawn 子进程"。
+    # **不 raise**（S-2）：一个起不来的服务比一个"能看不能生成"的服务更糟——既有报告
+    # 仍然可读可检索，只是新的生成会被 `RunManager.start()` 第 0 步拒绝并说清原因。
+    from .agent.preflight import check_aragon, running_loop_name, spawn_capability
+
+    # ★评审修正（E-114）：**先把"本进程在哪个 loop 上跑"记下来**，再判能力。
+    # `lifespan` 是 async 的，这里的 `get_running_loop()` 就是 serve loop 的真身；
+    # 之后同步路由（`/capabilities` 在 threadpool 里跑，自己没有 running loop）问
+    # `spawn_capability()` 时才有东西可查。顺序不能反：反过来那一次判定仍会落到
+    # "看 asyncio 策略"的分支上，而 uvicorn 换的是工厂、不是策略（E-114）。
+    loop_name = running_loop_name()
+    loop_ok, loop_reason = spawn_capability()
+    if not loop_ok:
+        # 不是 warning 级别的问题：这个进程**不可能**完成任何一次生成。
+        logger.error("startup: 子进程不可用 (%s)；生成将被拒绝，请去掉 --reload", loop_reason)
 
     try:
         run_migrations()
@@ -111,6 +155,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         recovered = get_manager().recover_interrupted(session)
         if recovered:
             logger.warning("启动恢复：%s 个中断的 run 已标记 failed(interrupted)", recovered)
+        # ★v12（S2 第 2 层 / V11-P1-4）：**先同步清扫一次**。`recover_interrupted()` 把
+        # 所有 ACTIVE 行都收了，它盖得住的只有"重启前那个进程已死"这一种；真正需要
+        # 清扫的是"进程还活着、但某个 run 的协程已经不在了"（`create_version()` 撞
+        # SQLITE_BUSY 之后停在 running 就是这种）。两件事分开做，而不是指望一个函数。
+        swept = get_manager().sweep_stale_runs()
+        if swept:
+            logger.warning("启动清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
         get_manager().cleanup_workspaces(session)
         # ★V4-P1-5: an ask left `queued`/`running` by a killed process would otherwise
         # keep its SSE stream polling forever and make cancel a silent no-op.
@@ -121,8 +172,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ask_service.cleanup_asks(session)
     finally:
         session.close()
-
-    from .agent.preflight import check_aragon
 
     capability = check_aragon()
     # ★V4-P1-8: say out loud whether this build can index at all, so a missing
@@ -139,17 +188,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("scheduler disabled (SCHEDULER_ENABLED=0)")
 
+    # ★v12（S2 第 2 层 / V11-P1-4）：活性清扫**不看 `SCHEDULER_ENABLED`**。
+    # 过去把它挂在 `scheduler_ticker` 上，而该开关为 0 时 ticker 根本不启动
+    # （`main.py` 的那两行就是全部真相）⇒ 最需要自愈的部署恰恰整层消失。
+    # 这里挂一个独立的 60 秒常驻任务：同一个死协程，另一种来源。
+    sweeper = asyncio.create_task(_sweep_loop(), name="stale-sweeper")
+
     logger.info(
-        "startup complete version=%s agent_mode=%s aragon=%s capable=%s",
+        "startup complete version=%s agent_mode=%s aragon=%s capable=%s loop=%s loopOk=%s",
         __version__,
         settings.agent_mode,
         capability.cli or "unavailable",
         capability.fullyCapable,
+        # ★评审修正（E-114）：`loop` 打**循环类名**（诊断要看的就是这个），`loopOk` 单独一位
+        # ——过去把 `loopReason or "ok"` 塞进 `loop=`，读起来像"循环没事"，而"这个进程不能
+        # spawn"这条事实反而没有位置。
+        loop_name or "unknown",
+        capability.loopOk,
     )
     yield
 
     # Shutdown order matters: stop the trigger source first, then kill children, so
     # no new run is created while we are sweeping (§18.9 M10 exit criterion).
+    sweeper.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await sweeper
     await get_ticker().stop()
     manager = get_manager()
     for run_id in list(manager._tasks):  # noqa: SLF001 - deliberate shutdown sweep

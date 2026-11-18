@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "_comment": "★v9（K6/K7 / AC-104）：前后端码表的**唯一跨语言真源**。pytest 断言 `set(RUN_ERROR_CODES) == codes`（18 条，集合相等不是子集），vitest 断言 `RUN_ERROR_ACTIONS ⊇ codes` 且 `HTTP_ERROR_ACTIONS ⊇ httpCodes`。任何一侧新增码而另一侧漏改，测试直接红。历史上这套码表已漂移两次（v7 的 V8-P1-3、`run_conflict` 静默）。",
+  "version": 2,
+  "_comment": "★v12（§22.5.3 / AC-104 / AC-124）：前后端码表的**唯一跨语言真源**。pytest 断言 `set(RUN_ERROR_CODES) == codes`（21 条，集合相等不是子集），vitest 断言 `RUN_ERROR_ACTIONS ⊇ codes` 且 `HTTP_ERROR_ACTIONS ⊇ httpCodes`，并对**每一行**逐字段断言 `action`。v12 只追加三个 run 码（event_loop_unsupported / agent_timeout / output_truncated）与两条 httpCodes（too_many_runs / run_conflict，它们早已在 runErrors.ts 里，夹具落后了整整两轮），既有 18 条的 severity / retryable / action 一个字都没改。",
   "codes": [
     { "code": "provider_auth", "severity": "config", "retryable": false, "action": "checkKey" },
     { "code": "provider_unavailable", "severity": "transient", "retryable": true, "action": "wait" },
@@ -19,14 +19,19 @@
     { "code": "interrupted", "severity": "internal", "retryable": true, "action": "retry" },
     { "code": "internal", "severity": "internal", "retryable": true, "action": "retry" },
     { "code": "data_provider_unavailable", "severity": "transient", "retryable": false, "action": "wait" },
-    { "code": "instrument_not_found", "severity": "user", "retryable": false, "action": "none" }
+    { "code": "instrument_not_found", "severity": "user", "retryable": false, "action": "none" },
+    { "code": "event_loop_unsupported", "severity": "config", "retryable": false, "action": "openSettings" },
+    { "code": "agent_timeout", "severity": "engine", "retryable": true, "action": "retry" },
+    { "code": "output_truncated", "severity": "engine", "retryable": true, "action": "retry" }
   ],
   "httpCodes": [
     { "code": "monthly_budget_exceeded", "status": 402, "action": "openSettings" },
     { "code": "probe_in_progress", "status": 409, "action": "wait" },
     { "code": "probe_busy", "status": 409, "action": "wait" },
     { "code": "probe_disabled", "status": 503, "action": "openSettings" },
-    { "code": "agent_mock_mode", "status": 503, "action": "openSettings" }
+    { "code": "agent_mock_mode", "status": 503, "action": "openSettings" },
+    { "code": "too_many_runs", "status": 429, "action": "wait" },
+    { "code": "run_conflict", "status": 409, "action": "none" }
   ],
   "sseEvents": [
     "run.stage",
@@ -36,6 +41,7 @@
     "run.log",
     "run.retry",
     "run.done",
-    "run.error"
+    "run.error",
+    "ping"
   ]
 }

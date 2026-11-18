@@ -11,6 +11,8 @@ from __future__ import annotations
 import copy
 import json
 
+import pytest
+
 from app.services import numeric_claims as nc
 
 
@@ -801,7 +803,10 @@ def test_ac6_payload_carries_rules_and_input_fingerprints() -> None:
     first = nc.grounding_report(doc, snapshot)
     second = nc.grounding_report(copy.deepcopy(doc), copy.deepcopy(snapshot))
 
-    assert first.rules == nc.RULES_VERSION == "claims-v3"
+    # ★v12（S5）：口径升到 `claims-v4`（TTM/前高/布林带三类命名派生量 + 区间破折号 +
+    # 近似推算层 + 一位小数的舍入豁免）。**升版本号本身就是纪律**：落库值不带 rules
+    # 或 rules 不同 ⇒ 界面不给可比百分比（§22.6.3 / S-11）。
+    assert first.rules == nc.RULES_VERSION == "claims-v4"
     assert len(first.doc_hash) == 12 and len(first.snapshot_hash) == 12
     # ① 同一输入 → 同一指纹，且判词逐字相同
     assert first.doc_hash == second.doc_hash
@@ -815,3 +820,247 @@ def test_ac6_payload_carries_rules_and_input_fingerprints() -> None:
     assert payload["rules"] == first.rules
     assert payload["docHash"] == first.doc_hash
     assert payload["snapshotHash"] == first.snapshot_hash
+
+
+# ── ★v12 S5：区间破折号 / 中文月日 / 三类派生量 / 近似推算 ───────────────────
+
+
+def test_ac122_a_range_dash_is_not_a_minus_sign() -> None:
+    """AC-122 的前半句：`1,296.22–1,509.76` 只产出**两个正数** claim。
+
+    实测（E-112）：`目标价区间 1,296.22–1,509.76 元` 会被抽成 `1,296.22` + `-1,509.76`，
+    而第二个数**必然**未接地（与语料差 98.44%）——两端的数本来都在快照里。
+    """
+    doc = _doc({"type": "paragraph", "text": "目标价区间 1,296.22–1,509.76 元。"})
+    raws = [claim.raw for claim in _by_class(doc, "fact")]
+    assert raws == ["1,296.22", "1,509.76"], raws
+    assert all(float(claim.canonical) >= 0 for claim in _by_class(doc, "fact"))
+
+
+def test_ac122_the_ascii_hyphen_is_equally_affected() -> None:
+    """★v12 修订（V11-P1-7）：ASCII 连字符同样中招，所以不能只处理 `–` / `−`。"""
+    doc = _doc({"type": "paragraph", "text": "目标价区间 1,296.22-1,509.76 元。"})
+    assert [claim.raw for claim in _by_class(doc, "fact")] == ["1,296.22", "1,509.76"]
+
+@pytest.mark.parametrize("separator", [*nc.RANGE_DASHES, nc.RANGE_WORD, "-"])
+def test_ac122_every_separator_is_handled(separator: str) -> None:
+    """★评审修正（E-114）：AC-122 要求**参数化覆盖六种分隔符**，而上一版只验了两种。
+
+    这条用例直接遍历生产常量（`RANGE_DASHES` + `RANGE_WORD` + ASCII `-`），于是
+    "哪些字符算区间分隔符"只有**一份**声明：往常量里加一个字符，这条用例立刻多跑一条；
+    在归一化里漏折一个字符，它立刻红。上一版的实际情况是常量写五个、生产代码折三个、
+    用例测两个——三份清单，没有任何断言在管它们是否一致。
+
+    每种分隔符都断言同一件事：两个**正数**，没有负号。
+    """
+    text = f"目标价区间 1,296.22{separator}1,509.76 元。"
+    raws = [claim.raw for claim in _by_class(_doc({"type": "paragraph", "text": text}), "fact")]
+    assert raws == ["1,296.22", "1,509.76"], f"分隔符 {separator!r} 产出 {raws}"
+    assert all(not raw.startswith("-") for raw in raws), f"分隔符 {separator!r} 造出了负号"
+
+
+def test_a_real_negative_number_keeps_its_sign() -> None:
+    """区间的守卫**不能**顺手把真正的负数也掰成正数。
+
+    `最大回撤 −18.2%` 里破折号前面不是数字，所以 `_is_range_separator()` 第 1 条就挡住了；
+    它的符号是身份的一部分（A2）。
+    """
+    doc = _doc({"type": "paragraph", "text": "最大回撤 −18.2%，较上月 -3.4%。"})
+    raws = [claim.raw for claim in _by_class(doc, "fact")]
+    assert "-18.2" in raws, raws
+    # `-3.4pp` 归 identifier 是**设计**（`NON_MEASURE_RE` 的 `Npp` 分支：单位不是快照字段），
+    # 这里用百分号写法，避免把两条不同判据混在一起。
+    assert "-3.4" in raws, raws
+
+
+def test_a_range_with_a_negative_left_endpoint_keeps_the_right_one_positive() -> None:
+    """★评审修正（评审节点 I-125）：左端点是负数，**不改变**破折号的性质。
+
+    上一版多了一条"左侧数字本身不带符号"的判据，于是 `-1,000–2,000` 被读成
+    `['-1,000', '-2,000']` —— 右端点凭空多了一个负号，而它在那个句子里是正的。
+    这正是本条守卫要消灭的那一类**假缺口**（与 E-112 的 `-1,509.76` 同源）：
+    快照里只有 `2,000`，而报告被记成"编造了 -2,000"。
+
+    反向的边界同时钉住：`-10–-5` 两端都是负数，靠"破折号右邻不是数字"这一条保住符号。
+    """
+    for separator in ("–", "-"):
+        text = f"回撤区间 -1,000{separator}2,000 元。"
+        raws = [claim.raw for claim in _by_class(_doc({"type": "paragraph", "text": text}), "fact")]
+        assert raws == ["-1,000", "2,000"], f"分隔符 {separator!r} 产出 {raws}"
+    both_negative = _doc({"type": "paragraph", "text": "区间 -10–-5 元。"})
+    assert [claim.raw for claim in _by_class(both_negative, "fact")] == ["-10", "-5"]
+
+
+def test_ac122_chinese_month_day_is_still_clean() -> None:
+    """AC-122 的后半句**改成回归**用例：中文月日今天已经零 fact claim。
+
+    `NON_MEASURE_RE` 的 `\d{1,4}\s*(?:日|年|周|月)` 早已覆盖，`DATE_LIKE_RE` 也覆盖
+    `2025 年 3 月 14 日`。所以本轮**不动**它，只用一条回归钉住（E-112 的实测）。
+    """
+    doc = _doc({"type": "paragraph", "text": "11 月 2 日披露，2025 年 3 月 14 日复牌。"})
+    assert _by_class(doc, "fact") == [], [c.raw for c in _by_class(doc, "fact")]
+    assert len(_by_class(doc, "identifier")) >= 2
+
+
+def test_ac135_the_three_new_derived_prefixes_exist() -> None:
+    """AC-135：`ttm:` / `extreme:` / `bollinger:` 三类**新增**必须真的产出条目。"""
+    snapshot = {
+        "asOf": "2026-02-10T01:00:00Z",
+        "quote": {"last": 1672.0},
+        "technicals": {"bollUpper": 1700.0, "bollLower": 1600.0, "ma60": 1598.4},
+        "priceSeries": {"close": [1650.0 + index for index in range(10)]},
+        # 真实快照是**季度与年度交错**的（实测 E-119）：`_YOY_LAG = 4` 只有在
+        # "9M26 的下四条是 9M25"这种排布下才成立。
+        "financials": [
+            {"period": "20260930", "revenue": 133.0e9, "netProfit": 64.0e9},
+            {"period": "20260630", "revenue": 92.0e9, "netProfit": 44.0e9},
+            {"period": "20260331", "revenue": 54.0e9, "netProfit": 27.0e9},
+            {"period": "20251231", "revenue": 172.0e9, "netProfit": 82.0e9},
+            {"period": "20250930", "revenue": 130.0e9, "netProfit": 63.0e9},
+        ],
+    }
+    derived = nc.derived_values(
+        snapshot,
+        # `upside` / `scenarioUpside` 读的是**本文档**的两处投影（目标价与情景价），
+        # 快照里没有它们（那是模型的判断，属 projection 类），所以必须给一份 doc。
+        {
+            "rating": {"targetPrice": 1800.0},
+            "sections": [
+                {
+                    "id": "valuation",
+                    "title": "估值",
+                    "blocks": [
+                        {
+                            "type": "scenario",
+                            "scenarios": [
+                                {"name": "bull", "targetPrice": 1900.0, "probability": 0.3, "assumptions": "乐观"},
+                                {"name": "base", "targetPrice": 1800.0, "probability": 0.5, "assumptions": "中性"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    prefixes = {key.split(":")[0] for key in derived}
+    assert "ttm" in prefixes, sorted(prefixes)
+    assert "extreme" in prefixes, sorted(prefixes)
+    assert "bollinger" in prefixes, sorted(prefixes)
+    # 防"补 5 类"时手滑删掉已有的三类（V11-P2-5）。
+    assert {"distanceMa", "upside", "scenarioUpside"} <= prefixes, sorted(prefixes)
+
+
+def test_the_ttm_formula_matches_a_hand_calculation() -> None:
+    """TTM = 最新累计 + 上年全年 − 上年同期累计（手算一遍，签名与口径一起钉住）。
+
+    实测（E-119）：v12 的 `TTM 营收 1,744.3 亿元` 就是
+    `133.28 + 172.05 − 130.90 = 174.43` 十亿元。这条用例把公式本身固化成断言。
+    """
+    snapshot = {
+        "financials": [
+            {"period": "20260930", "revenue": 133_283_652_508.95},
+            {"period": "20260630", "revenue": 92_278_072_083.21},
+            {"period": "20260331", "revenue": 54_702_912_385.23},
+            {"period": "20251231", "revenue": 172_054_171_890.91},
+            {"period": "20250930", "revenue": 130_903_889_634.88},
+        ]
+    }
+    derived = nc.derived_values(snapshot, {})
+    ttm = derived["ttm:revenue@20260930"]
+    assert ttm.unit == "亿元"
+    assert round(ttm.value, 1) == 1744.3, ttm.value
+
+
+def test_ttm_needs_all_three_inputs() -> None:
+    """目录宁可漏，也不能给一个编造的换算背书：缺"上年全年"就一条都不生成。"""
+    snapshot = {
+        "financials": [
+            {"period": "20260930", "revenue": 133.0e9},
+            {"period": "20260630", "revenue": 92.0e9},
+            {"period": "20260331", "revenue": 54.0e9},
+            {"period": "20250930", "revenue": 130.0e9},
+        ]
+    }
+    assert not [key for key in nc.derived_values(snapshot, {}) if key.startswith("ttm:")]
+
+
+def test_extreme_uses_the_close_series_not_the_day_high() -> None:
+    """前高/前低用**收盘序列**的窗口极值（`quote.dayHigh/dayLow` 只是当日高低）。"""
+    snapshot = {
+        "quote": {"last": 100.0},
+        "priceSeries": {"close": [90.0, 110.0, 95.0]},
+    }
+    derived = nc.derived_values(snapshot, {})
+    # (100 - 110)/110*100 ≈ -9.09%
+    assert round(derived["extreme:high60@quote.last"].value, 2) == -9.09
+    assert round(derived["level:high60@quote.last"].value, 2) == 110.0
+
+
+def test_approx_layer_rescues_a_rounding_gap_but_not_a_fabrication() -> None:
+    """AC-121 后半句：≤1% 的口径差能被**命名**，编造值不能。
+
+    四道门槛（相对差 ≤1% / ≥3 位有效数字 / 单位一致 / 取最接近）里任何一条不过就继续
+    算缺口——`match_derived()` 的半单位容差一个字都没动（R-59）。
+    """
+    derived = nc.derived_values(
+        {
+            "quote": {"last": 100.0},
+            "technicals": {"ma60": 90.0},  # distanceMa = (90-100)/100*100 = -10.0%
+            "performance": {"ret1y": 12.3, "volAnnualized": 25.0},
+        },
+        {},
+    )
+    # 口径差 0.5%：模型按盘中价算成 -10.1%
+    close_claim = nc.Claim(block_id="b", path="p", raw="-10.1", canonical="-10.1", cls="fact", context="距 MA60 -10.1%")
+    assert nc.match_derived(close_claim, derived) is None, "精确层不该认这条（差 1%）"
+    assert nc.match_derived_approx(close_claim, derived) is not None, "近似层应当命名它"
+    # 编造值（差 30%）两边都不认
+    fake = nc.Claim(block_id="b", path="p", raw="-7.0", canonical="-7.0", cls="fact", context="距 MA60 -7.0%")
+    assert nc.match_derived(fake, derived) is None
+    assert nc.match_derived_approx(fake, derived) is None
+
+
+def test_approx_layer_requires_three_significant_digits() -> None:
+    """一位有效数字（`5` / `9`）不享受 1% 的宽容——那是 R-E8 的原始理由。"""
+    derived = {"x": nc.DerivedValue(id="x", value=5.0, unit="倍", note="测试")}
+    one_digit = nc.Claim(block_id="b", path="p", raw="5", canonical="5", cls="fact", context="信心度 5 倍")
+    assert nc.match_derived_approx(one_digit, derived) is None
+    # `_significant_digits("5.02")` = 3；用 `5.0` 会是 2（"50".lstrip("0")），测不到这条判据。
+    three_digits = nc.Claim(block_id="b", path="p", raw="5.02", canonical="5.02", cls="fact", context="比值 5.02 倍")
+    assert nc.match_derived_approx(three_digits, derived) is not None
+
+
+def test_approx_layer_requires_a_matching_unit() -> None:
+    """单位不一致就不认：`6 个月` 撞上一个 `6.0 倍` 的公式是纯粹的巧合。"""
+    derived = {"x": nc.DerivedValue(id="x", value=6.0, unit="倍", note="测试")}
+    months = nc.Claim(
+        block_id="b", path="p", raw="6.05", canonical="6.05", cls="fact", context="未来 6.05 个月的催化剂"
+    )
+    assert nc.match_derived_approx(months, derived) is None
+    times = nc.Claim(block_id="b", path="p", raw="6.05", canonical="6.05", cls="fact", context="降幅 6.05 倍")
+    assert nc.match_derived_approx(times, derived) is not None
+
+
+def test_approx_claims_are_counted_separately() -> None:
+    """`approxClaims` 与 `derivedClaims` 分开计数：界面上这两句话的硬程度不同。"""
+    payload = nc.GroundingReport().as_payload()
+    assert "approxClaims" in payload
+    assert payload["approxClaims"] == 0
+    assert payload["derivedClaims"] == 0
+
+
+def test_a_one_decimal_rounding_is_not_a_fabrication() -> None:
+    """★v12 落地修正（I-118）：`-0.2`（一位有效数字但**带小数**）不该被 0.1% 门槛挡掉。
+
+    实测 v12 的 `营业收入 ... 归母 -0.2%` 正是 `yoy:financials[0].netProfit = -0.2465`
+    保留一位小数的样子。半单位容差 `[-0.25, -0.15)` 已经是**定义明确**的舍入区间，
+    再叠一个 0.1% 的相对门槛就把一个诚实的舍入判成了编造。
+    那条门槛的原意只针对**整数**的一位数（`3` / `5` / `9`，它们多是计数与档位）。
+    """
+    derived = {"yoy:x": nc.DerivedValue(id="yoy:x", value=-0.2465, unit="%", note="同比")}
+    one_decimal = nc.Claim(block_id="b", path="p", raw="-0.2", canonical="-0.2", cls="fact", context="归母 -0.2%")
+    assert nc.match_derived(one_decimal, derived) is not None, "带小数的一位数是确定的舍入"
+    integer_claim = nc.Claim(block_id="b", path="p", raw="3", canonical="3", cls="fact", context="信心度 3")
+    # 相对差 = 0.004/3.004 ≈ 0.13% > 0.1% 的门槛 ⇒ 必须被拒（3.002 只差 0.07%，测不出来）。
+    integer_derived = {"y": nc.DerivedValue(id="y", value=3.004, unit="倍", note="测试")}
+    assert nc.match_derived(integer_claim, integer_derived) is None, "整数的一位数仍要 0.1% 的相对门槛"

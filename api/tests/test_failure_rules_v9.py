@@ -178,6 +178,11 @@ def test_stop_reason_map_is_data_not_branches() -> None:
         "max_turns": "budget_exceeded",
         "aborted": "cancelled",
         "end_turn": "",
+        # ★v12（§22.5.3 / AC-120）：**输出被 max-token 截断**是另一件事，不是"轮次烧完"。
+        # `max_turns` 的 hint 指向 `ARAGON_MAX_TURNS`，而截断的 hint 必须指向
+        # `ARAGON_MAX_OUTPUT_TOKENS` —— 两件事混在一起会让用户去调一个不是瓶颈的数字。
+        "length": "output_truncated",
+        "max_tokens": "output_truncated",
     }
 
 

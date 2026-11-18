@@ -90,7 +90,31 @@ def test_missing_cli_switches_to_mock(capability_client) -> None:
 def test_capabilities_shape_is_stable(capability_client) -> None:
     body = capability_client()
     # ★v6：新增顶层 `engine` 对象（V6-P1-3：它是**新增**的，不是给既有对象加字段）。
-    assert set(body) == {"aragon", "agentMode", "dataProviders", "features", "limits", "engine"}
+    # ★v12（S1/S7 / §22.5.1）：新增顶层 `runtime`（进程级事实：能不能 spawn / 硬截止 /
+    # 会话策略 / 会话目录体积）。放在顶层而不是塞进 `aragon`：`aragon` 回答"引擎是谁、
+    # 装没装对"，`runtime` 回答"**这个进程**现在能做什么"，两者可以互相矛盾
+    # （引擎完全正常，但 `--reload` 起的这个进程 spawn 不了子进程）。
+    assert set(body) == {
+        "aragon",
+        "agentMode",
+        "dataProviders",
+        "features",
+        "limits",
+        "engine",
+        "runtime",
+    }
+    # ★v12（AC-112）：`loopOk` 必须真的在 wire 上——pydantic 会静默丢弃没声明的键，
+    # 这是同一个坑的第四次（v6 engine、v7 quality.cost、v9 aragon.verified）。
+    assert set(body["runtime"]) == {
+        "eventLoop",
+        "loopOk",
+        "loopReason",
+        "hardDeadlineSec",
+        "sessionSave",
+        "sessionDirMb",
+    }
+    assert body["runtime"]["loopOk"] is True
+    assert body["runtime"]["sessionSave"] in ("retry_only", "off")
     assert {"available", "version", "versionOk", "provider", "model", "ajv"} <= set(body["aragon"])
     # ★v7（V8-P1-2）：`baseUrl` 归 `aragon`（"引擎是谁"），不归 `engine`（"指纹与预算"）。
     assert "baseUrl" in body["aragon"]
@@ -200,4 +224,114 @@ def test_limits_expose_the_prompt_budget(capability_client) -> None:
     body = capability_client()
     assert body["limits"]["maxPromptBytes"] == get_settings().aragon_max_prompt_bytes
     assert body["limits"]["maxPromptBytes"] > 0
+
+
+def test_schema_bytes_and_sha1_come_from_the_real_file(capability_client) -> None:
+    """AC-129（★v12 / V11-P2-6）：`/capabilities` 里任何声称 schema 字节的地方都必须是**真源**。
+
+    为什么要盯这么一个数字：上一轮的 spec 把 `19,295 B` 写进了记录，而那是
+    `read_text` + `write_text` 的 **CRLF 副本**；真源是 **18,392 B / sha1 `7a93509904b4`**。
+    一个字节数漂移意味着「预算闸门在量一份不存在的文件」，而闸门又是
+    「这份报告能不能被生成」的判据。
+
+    三条断言，一条比一条强：
+    1. 两个字段存在（它们不在的话，界面上那一行就会是空的）；
+    2. `schemaSha1` 与 `report_validator.schema_sha1()` **相等**（同一份实现，不是两份副本）；
+    3. 数值就是今天的真源：**18,392 B**、sha1 前缀 `7a93509904b4`。schema 真的变了而
+       这条没跟着改，它就会红——那正是我们要的：“口径变了必须说出来”。
+    """
+    from app.services import report_validator
+
+    body = capability_client()
+    engine = body["engine"]
+    schema = engine["schema"]
+    assert schema is not None, "schema 度量不应降级为 null（真源文件在仓库里）"
+    assert engine["schemaSha1"] == report_validator.schema_sha1()
+
+    source = (get_settings().schemas_dir / "report_doc.schema.json").read_bytes()
+    assert schema["bytes"] == len(source), f"应报 {len(source)} B，实报 {schema['bytes']} B"
+    # 真源的今天（E-118）：不是「一个大致合理的数」，而是一份可重算的快照。
+    assert len(source) == 18_392
+    assert report_validator.schema_sha1() == "7a93509904b4"
+
+
+def test_aragon_payload_carries_the_loop_facts(capability_client) -> None:
+    """★评审修正（E-114）：`aragon.loopOk` / `loopReason` 必须真的到 wire 上。
+
+    这是同一型事故的**第五次**（v6 的 `engine`、v7 的 `quality.cost`、v9 的
+    `aragon.verified`、v11 的 `loopOk` 半次）：`preflight.as_payload()` 里加了键，
+    但 `schemas/capabilities.py::AragonAragonOut` 没声明 ⇒ pydantic **静默丢弃**。
+
+    实测（本机 `/capabilities`，修之前）：
+
+        {"available": true, "degradedReason": null, "keySource": "env",
+         "cli": null, "verified": false, "loopOk": null, "loopReason": null}
+
+    `loopOk` 根本不在响应里。后果不是"难看"：`EndpointBadge` 的第四态
+    （`loop_blocked`）判据是 `aragon.loopOk === false`，所以在一个
+    `--reload` 起的进程上，徽标会显示"正常"而每一次生成都被拒（R-54 的缓解失效）。
+    """
+    body = capability_client()
+    aragon = body["aragon"]
+    assert "loopOk" in aragon, "aragon.loopOk 被响应模型丢掉了（as_payload 里有、schema 里没有）"
+    assert "loopReason" in aragon
+    assert aragon["loopOk"] is True  # 这条用例跑在 Proactor 上（Windows）或非 win32 恒真
+    assert aragon["loopReason"] is None
+
+
+def test_the_sync_route_judges_the_serving_loop_not_the_policy(monkeypatch) -> None:
+    """★评审修正（E-114）：同步路由问"能不能 spawn"时，答案来自**本进程的 serve loop**。
+
+    为什么这条必须有：`uvicorn` 换的是 **loop factory**，不是 asyncio 策略。
+    `uvicorn/loops/asyncio.py::asyncio_loop_factory(use_subprocess=True)` 直接返回
+    `asyncio.SelectorEventLoop`，全程没有 `set_event_loop_policy()`。而 `/capabilities`
+    是同步路由（跑在 threadpool 里，**没有** running loop），旧实现此时"看策略"⇒
+    默认策略是 `WindowsProactorEventLoopPolicy` ⇒ 报 `loopOk=True`。
+
+    于是在一个**注定每一次生成都失败**的进程上，`runtime.loopOk` 与
+    `aragon.degradedReason` 双双说"没事"（AC-112 的等价关系成立，但两个都错）。
+    修法：`lifespan` 启动时用 `running_loop_name()` 把 serve loop 记下来，
+    `spawn_capability()` 在没有 running loop 时先看它。
+
+    这条用例用**假 loop** 断言那个优先级：记下一个"不能 spawn"的 loop 之后，
+    即使 asyncio 策略是 Proactor，判据也必须说 `False`。
+    """
+    from app.agent import preflight
+
+    reset_cache()
+    monkeypatch.setattr(preflight.sys, "platform", "win32")
+
+    # ① 先记下一个 Selector 形态的 serve loop（等价于 `--reload` 起的那个进程）。
+    class _WindowsSelectorEventLoop:
+        pass
+
+    monkeypatch.setattr(preflight.asyncio, "get_running_loop", lambda: _WindowsSelectorEventLoop())
+    monkeypatch.setattr(preflight, "is_proactor_loop", lambda loop: type(loop).__name__ == "ProactorEventLoop")
+    assert preflight.running_loop_name() == "_WindowsSelectorEventLoop"
+
+    # ② 现在站在同步路由的位置上：没有 running loop，而策略"看起来"是好的。
+    def _no_loop() -> object:
+        raise RuntimeError("no running event loop")
+
+    class WindowsProactorEventLoopPolicy:
+        pass
+
+    monkeypatch.setattr(preflight.asyncio, "get_running_loop", _no_loop)
+    monkeypatch.setattr(preflight.asyncio, "get_event_loop_policy", lambda: WindowsProactorEventLoopPolicy())
+
+    capable, reason = preflight.spawn_capability()
+    assert capable is False, "同步路由不能只看策略——uvicorn 换的是工厂，不是策略"
+    assert reason == "event_loop_selector:_WindowsSelectorEventLoop"
+
+    # ③ 真值仍是 Proactor 时，同一个调用点必须说"可以"（不能矫枉过正）。
+    reset_cache()
+
+    class ProactorEventLoop:
+        pass
+
+    monkeypatch.setattr(preflight.asyncio, "get_running_loop", lambda: ProactorEventLoop())
+    assert preflight.running_loop_name() == "ProactorEventLoop"
+    monkeypatch.setattr(preflight.asyncio, "get_running_loop", _no_loop)
+    assert preflight.spawn_capability() == (True, None)
+    reset_cache()
 

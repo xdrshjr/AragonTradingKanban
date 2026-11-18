@@ -298,9 +298,36 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
 
   useEffect(() => teardown, [teardown]);
 
+  /**
+   * ★v12（S6 / §22.3.7(b) / AC-125）：看门狗触发后**对一次账**。
+   *
+   * 为什么不直接重连：`stream_closed` 的语义是"这条连接静默了 45 秒"，而它可能只是网关
+   * 把长连接吃了，服务端仍在跑这次生成（甚至已经跑完）。`GET /runs/{id}` 是唯一能回答
+   * "它现在到底在哪"的接口——`api.run()` 在此之前**全仓 0 调用**（写好了两年，从没人用过）。
+   *
+   * 三条纪律：
+   * 1. **只调一次**（AC-125）：看门狗自己保证只回调一次（`lib/sse.ts` 的 `closed` 短路），
+   *    这里不再加重试；
+   * 2. 已经成功就地把报告列表刷出来——否则用户会盯着"连接断了"而看不到已经生成好的报告；
+   * 3. 任何异常都吞掉：对账失败不该把一次"断流"升级成"两个错误"。
+   */
+  const reconcileRun = useCallback(
+    async (runId: string, instrumentId: string) => {
+      try {
+        const run = await api.run(runId);
+        if (run.status === 'succeeded') {
+          void queryClient.invalidateQueries({ queryKey: ['reports', instrumentId] });
+        }
+      } catch {
+        /* 对账失败：界面保持 stream_closed，用户手上的「继续查看」仍然有效 */
+      }
+    },
+    [queryClient],
+  );
+
   /** One wiring for both "I started it" and "I attached to an existing run". */
   const streamOptions = useCallback(
-    (instrumentId: string) => ({
+    (instrumentId: string, runId: string) => ({
       onEvent: (event: RunStreamEvent) => {
         dispatch({ type: 'event', event });
         if (event.type === 'run.done') {
@@ -318,8 +345,20 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
           dispatch({ type: 'exception', code: 'stream_closed', message: error.message });
         }
       },
+      /**
+       * ★v12（S6 / §22.3.7(c) / AC-125）：看门狗回调。
+       *
+       * 看门狗住在 `lib/sse.ts`（它握着 `EventSource` 与 `close()`，而本 hook 拿不到），
+       * 这里只接收结论。收到它就说明"连接静默超过 45 秒"——服务端的保活已经改成**真实**
+       * `ping` 帧（`event: ping` + `data: {}`），所以安静 45 秒只有两种可能：服务端真的没了，
+       * 或者中间设备把连接吃了。两者都不是"再等一等"能解决的（S-9：按钮必须真做事）。
+       */
+      onIdle: () => {
+        dispatch({ type: 'exception', code: 'stream_closed', message: copy.errors.streamClosed });
+        void reconcileRun(runId, instrumentId);
+      },
     }),
-    [onDone, onError, queryClient],
+    [onDone, onError, queryClient, reconcileRun],
   );
 
   const start = useCallback(
@@ -335,7 +374,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         );
         dispatch({ type: 'queued', runId: created.runId });
 
-        unsubscribeRef.current = subscribeToRun(created.runId, streamOptions(instrumentId));
+        unsubscribeRef.current = subscribeToRun(created.runId, streamOptions(instrumentId, created.runId));
       } catch (error) {
         if (error instanceof ApiError) {
           // A live run already exists for this symbol: attach to it rather than
@@ -344,7 +383,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
           if (error.code === 'run_conflict' && typeof error.detail.activeRunId === 'string') {
             const activeRunId = error.detail.activeRunId;
             dispatch({ type: 'queued', runId: activeRunId });
-            unsubscribeRef.current = subscribeToRun(activeRunId, streamOptions(instrumentId));
+            unsubscribeRef.current = subscribeToRun(activeRunId, streamOptions(instrumentId, activeRunId));
             // ★v9（K6 / §21.3.7）：**不再静默**。过去这里直接 `return`，用户不知道
             // 自己点的那次没有生效（虽然接管了进度）；现在两句一起说：接管了 + 这是
             // 别人的那一次。文案用 `copy.errors.runConflict`（它写了两年从没被用过）。

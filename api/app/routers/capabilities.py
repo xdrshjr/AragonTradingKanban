@@ -19,7 +19,7 @@ from ..agent import decide_mode, schema_budget
 from ..agent.aragon_runner import clamp_repair_turns
 from ..agent.cost_model import COST_SOURCES  # noqa: F401 - 文档性引用，说明三态来源
 from ..agent.fingerprint import current_fingerprint
-from ..agent.preflight import check_aragon
+from ..agent.preflight import check_aragon, running_loop_name, session_dir_size_mb, spawn_capability
 from ..agent.pricing import PRICE_VERSION
 from ..agent.runner_base import AgentError
 from ..config import get_settings
@@ -33,6 +33,7 @@ from ..schemas.capabilities import (
     EngineLimitsOut,
     EngineSchemaOut,
     FeaturesOut,
+    RuntimeCapabilityOut,
 )
 from ..services import (
     agent_probe,
@@ -156,6 +157,32 @@ def _aragon_payload(db: Session, capability) -> dict[str, object]:
     return payload
 
 
+def _runtime_payload(settings) -> RuntimeCapabilityOut:
+    """★v12（S1 / S7 / §22.5.1）：组装 `capabilities.runtime`。
+
+    三个纪律：
+
+    1. **不重新判定 `loopOk`**（C-33）。`spawn_capability()` 是唯一判据，`fullyCapable`、
+       `degradedReason`、这里三处读的是同一个函数——所以 `runtime.loopOk == false`
+       必然等价于 `aragon.degradedReason == "event_loop_unsupported"`（AC-112 断言的就是
+       这个等价关系，而不是一个根本不在 wire 上的 `fullyCapable`）。
+    2. `sessionSave` 由 `agent_attempts` **派生**，不开配置项（C-45）。
+    3. `sessionDirMb` 是**只读测量**，超阈值只提示不删除（R-61）。
+    """
+    loop_ok, _loop_reason = spawn_capability()
+    return RuntimeCapabilityOut(
+        eventLoop=running_loop_name(),
+        loopOk=loop_ok,
+        loopReason=_loop_reason,
+        hardDeadlineSec=int(
+            float(settings.aragon_max_duration_ms) / 1000.0
+            + max(0, int(settings.agent_hard_deadline_grace_sec))
+        ),
+        sessionSave="retry_only" if max(1, int(settings.agent_attempts)) > 1 else "off",
+        sessionDirMb=session_dir_size_mb(),
+    )
+
+
 @router.get("/capabilities", response_model=CapabilitiesResponse)
 def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
     settings = get_settings()
@@ -174,6 +201,8 @@ def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
         agentMode=mode,  # type: ignore[arg-type]
         dataProviders=providers,
         engine=engine,
+        # ★v12（§22.5.1）：进程级事实（能不能 spawn / 硬截止 / 会话保存策略 / 会话目录体积）。
+        runtime=_runtime_payload(settings),
         features=FeaturesOut(
             mock=True,
             exportHtml=True,

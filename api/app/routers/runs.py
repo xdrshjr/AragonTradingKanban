@@ -156,7 +156,21 @@ async def run_events(
         try:
             async for event in stream_events(manager, session, run.id, after):
                 if event is None:
-                    yield ": ping\n\n"
+                    # ★v12（S6 / §22.3.7(c) / AC-131）：保活必须发**真实帧**，不是注释帧。
+                    #
+                    # 注释帧 `: ping\n\n` 是合法 SSE，但浏览器**不会**把它交给
+                    # `EventSource.onmessage`（也不触发任何命名事件监听器）⇒ 前端无论怎么
+                    # 记 "最后一次收到帧的时刻"，一次安静的长模型调用（没有 tool 事件、
+                    # 没有 progress）都够不到那个心跳，于是看门狗必然在 45 秒后误判断流、
+                    # 主动重连——把"卡在 60%"换成"45 秒一次无谓重连"。这正是 V11-P1-5
+                    # 证伪的那一版。
+                    #
+                    # 发真实帧之后，"服务端活着但安静"与"服务端死了"才可区分：前者能收到
+                    # `ping`，后者连 TCP 都没有。事件名进 `contracts/run_error_codes.json`
+                    # 的 `sseEvents`（三向断言会红，所以前端也必须订阅它）。
+                    # 不带 `id:`——保活不是可重放的事件，给它一个 seq 会污染 `?after=`
+                    # 的续传语义。
+                    yield "event: ping\ndata: {}\n\n"
                     continue
                 if await request.is_disconnected():  # pragma: no cover - client gone
                     return

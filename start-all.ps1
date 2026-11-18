@@ -27,8 +27,14 @@
 .PARAMETER Restart
     先调用 stop-all.ps1 停掉已经在跑的服务，再重新启动（用于“改完配置重开”）。
 
+.PARAMETER Reload
+    API 带 --reload（热重载）。**默认关闭**：在 Windows 上热重载会把 uvicorn 的
+    事件循环换成 SelectorEventLoop，而它 spawn 不了子进程 ⇒ 每一次生成都会失败
+    （`capabilities.runtime.loopOk=false`）。只有在不打算生成报告时才建议打开。
+
 .PARAMETER NoReload
-    API 不带 --reload（关闭热重载：启动更快、进程树更简单）。
+    兼容别名：与默认行为等价（API 不带 --reload）。保留它是因为老脚本与批处理里
+    写着这个参数，改掉它的语义会静默破坏调用方。
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\start-all.ps1
@@ -41,6 +47,9 @@ param(
     [switch]$NoBrowser,
     [switch]$Mock,
     [switch]$Restart,
+    # ★v12（S1 / AC-113 / AC-136）：默认**不**热重载，要它必须显式 `-Reload`。
+    # `-NoReload` 保留为兼容别名（老脚本/批处理里写着它，改语义会静默破坏它们）。
+    [switch]$Reload,
     [switch]$NoReload
 )
 
@@ -586,7 +595,15 @@ if ($Restart) {
 Step '2/4 启动服务（后台运行，日志写 .run\logs）'
 
 $apiArgs = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "$ApiPort", '--workers', '1')
-if (-not $NoReload) { $apiArgs += '--reload' }
+# ★v12（S1 / AC-113 / AC-136）：判据从 `-not $NoReload` 翻成 `$Reload`。默认**不**加。
+# 理由（E-88/E-89）：uvicorn 在 `--reload` 下装 `SelectorEventLoop`，而 Windows 上
+# `asyncio.create_subprocess_exec` 在它上面直接抛 `NotImplementedError('')` ⇒ 每一次生成
+# 都在 research 阶段以 `internal` 结束（runs.7aa5aeaa）。热重载在这里是能力杀手，
+# 想付这个代价的人必须显式写 `-Reload`。
+if ($Reload) {
+    $apiArgs += '--reload'
+    WarnLine '已启用 -Reload：热重载会关掉子进程能力，生成将全部失败（见 README「Windows 上为什么不能热重载」）'
+}
 
 $results = @()
 $results += Ensure-Service `

@@ -28,7 +28,7 @@ const CONTRACT = JSON.parse(readFileSync(join(ROOT, 'contracts', 'run_error_code
 };
 
 describe('contracts/run_error_codes.json 双向一致（AC-104）', () => {
-  it('每一个 run 码都有动作（18 条，一个不漏）', () => {
+  it('每一个 run 码都有动作（21 条，一个不漏）', () => {
     const missing = CONTRACT.codes.map((row) => row.code).filter((code) => !(code in RUN_ERROR_ACTIONS));
     expect(missing).toEqual([]);
     expect(Object.keys(RUN_ERROR_ACTIONS).length).toBeGreaterThanOrEqual(CONTRACT.codes.length);
@@ -54,7 +54,9 @@ describe('contracts/run_error_codes.json 双向一致（AC-104）', () => {
     const head = source.slice(0, source.indexOf('.forEach(wire)'));
     const beforeType = head.slice(0, head.lastIndexOf('as RunStreamEventType'));
     const block = beforeType.slice(beforeType.lastIndexOf('['), beforeType.lastIndexOf(']') + 1);
-    const wired = [...block.matchAll(/'([a-z]+\.[a-z]+)'/g)].map((match) => match[1]);
+    // ★v12（S6 / AC-131）：保活帧叫 `ping`（没有命名空间），所以正则必须允许“没有点号”。
+    // 只匹配 `x.y` 会把 `ping` 悄悄漏掉，于是“服务端多一个事件名”这条断言对它失效。
+    const wired = [...block.matchAll(/'([a-z]+(?:\.[a-z]+)?)'/g)].map((match) => match[1]);
     expect(wired.length).toBeGreaterThan(0);
     expect([...wired].sort()).toEqual([...CONTRACT.sseEvents].sort());
   });

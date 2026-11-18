@@ -17,14 +17,17 @@ python -m uvicorn app.main:app --port 8000 --workers 1
 | `app/config.py` | 全部配置（`Settings`），SQLite 相对路径归一化为绝对路径 |
 | `app/db/session.py` | engine（**每连接** `PRAGMA foreign_keys=ON` / WAL / busy_timeout） |
 | `app/db/migrations/` | **schema 唯一真源**。`create_all` 只允许出现在 `tests/conftest.py` |
-| `app/agent/preflight.py` | `aragon info --json` 的能力预检（CLI/版本/ajv/submit_result/Key） |
+| `app/agent/preflight.py` | `aragon info --json` 的能力预检（CLI/版本/ajv/submit_result/Key）；`spawn_capability()` 是「本进程能不能 spawn 子进程」的**唯一**判据（Windows 要 Proactor loop，`--reload` 必坏），`fullyCapable` / `degradedReason` / `capabilities.runtime` 三处都读它；`session_dir_size_mb()` 只读量会话目录（60s 缓存）、`running_loop_name()` 只报类名、不另做判定 |
 | `app/agent/aragon_runner.py` | 子进程驱动：argv 拼装、NDJSON 行解析、进程树终止、`structured.value` 提取 |
 | `app/agent/mock_runner.py` | 无网络确定性生成（离线演示与 E2E 的基础） |
+| `app/agent/failure.py` | run 级失败分类学：一张码表 + `hint_for()`（`hint` 只写在 `FailureSpec` 里，写别处没人读）；`event_loop_unsupported` / `agent_timeout` / `output_truncated` 只追加，`STOP_REASON_MAP` 把 `length` / `max_tokens` 归到 `output_truncated`（截断 ≠ 轮次烧完），`max_turns` 仍是 `budget_exceeded` |
 | `app/services/snapshot.py` | 组装 run 工作区：`snapshot.json` / `bars.csv` / `fundamentals.md` / `sources.md` / `prompt.md` |
-| `app/services/report_validator.py` | 结构校验 + 修补 + **接地校验**（数字必须能在快照里找到）+ 未知块裁剪 |
+| `app/services/report_validator.py` | 结构校验 + 修补 + **接地校验**（数字必须能在快照里找到）+ 未知块裁剪；`clamp_doc()` 只收敛「长了/多了」的格式（按句边界截，记 `quality.clamp`、强制 `degraded`），`rescue_from_text()` 是 L1.5（从正文捞回 JSON，有界补括号），`SalvageReport.as_payload()` 发 `prunedBlocks` / `clamped` / `how` |
 | `app/services/report_service.py` | 版本化 CRUD：单 `is_latest` 指针、软删、pin/archive、版本裁剪 |
 | `app/services/exporter.py` | 自包含 HTML（内联 CSS + 手写 SVG）与 Markdown；零 `<script>` |
-| `app/services/run_manager.py` | 六阶段推进、事件写入与广播、取消、启动恢复、工作区清理 |
+| `app/services/run_manager.py` | 六阶段推进、事件写入与广播、取消、启动恢复、工作区清理；`hard_deadline_seconds()` 给 `runner.run()` 套一层 `asyncio.wait_for` 硬截止（超时 ⇒ `agent_timeout`，`--max-duration` 管不住卡死的 CLI），`sweep_stale_runs()` 是**同步**对账（跳过 `_tasks` 里还活着的 run，不抢活协程的活），`_cleanup_session()` 只删本 run 的 `sessions rm <id> --yes`、绝不用全局 `prune` |
+| `app/main.py` | 应用装配：单 worker 断言、启动即自证 `spawn_capability()`（不 raise）、迁移与启动恢复；`STALE_SWEEP_SECONDS`（60s）+ `_sweep_loop()` 是**独立于 `SCHEDULER_ENABLED`** 的常驻活性清扫 |
+| `app/routers/runs.py` | run 的创建 / 取消 / 事件流；SSE 保活发**真实帧** `event: ping` + `data: {}`（注释帧到不了 `EventSource`，前端看门狗必然假断流重连） |
 
 ## 数据库迁移
 

@@ -5,7 +5,14 @@ import { Activity, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react
 import { copy } from '@/lib/copy';
 import type { AragonCapability } from '@/lib/types';
 
-export type EndpointState = 'verified' | 'unverified' | 'failed';
+/**
+ * ★v12（S1 / AC-112）：新增第四态 `loop_blocked`。
+ *
+ * 三种旧态回答的是"端点通不通"，而第四态回答的是"这个进程能不能 spawn 子进程"——
+ * 后者即使端点完全正常也做不成任何一次生成（E-88/E-89），所以它不能并进 `failed`
+ * （那会让用户去查一个没坏的钥匙）。
+ */
+export type EndpointState = 'verified' | 'unverified' | 'failed' | 'loop_blocked';
 
 /**
  * 三态判据（**唯一**一处）：绿 = 已验证、灰 = 未验证（可以点一次自检）、红 = 凭证失败。
@@ -15,6 +22,8 @@ export type EndpointState = 'verified' | 'unverified' | 'failed';
  */
 export function endpointState(aragon: AragonCapability | null | undefined): EndpointState {
   if (!aragon) return 'unverified';
+  // ★v12（S1）：排在最前。连子进程都起不来时，"端点通不通"这个问题没有意义。
+  if (aragon.loopOk === false || aragon.degradedReason === 'event_loop_unsupported') return 'loop_blocked';
   if (aragon.verified) return 'verified';
   if (aragon.degradedReason === 'no_api_key' || aragon.keyPresent === false) return 'failed';
   return 'unverified';
@@ -42,9 +51,11 @@ export function EndpointBadge({ aragon, onOpenKeyDrawer }: EndpointBadgeProps) {
   const title =
     state === 'verified'
       ? `${copy.engine.verified}${aragon?.verifiedAt ? ` · ${aragon.verifiedAt}` : ''}`
-      : state === 'failed'
-        ? copy.engine.failed
-        : copy.engine.unverified;
+      : state === 'loop_blocked'
+        ? `${copy.capabilities.reason.event_loop_unsupported}${aragon?.loopReason ? ` · ${aragon.loopReason}` : ''}`
+        : state === 'failed'
+          ? copy.engine.failed
+          : copy.engine.unverified;
 
   return (
     <button
@@ -64,12 +75,14 @@ export function EndpointBadge({ aragon, onOpenKeyDrawer }: EndpointBadgeProps) {
       <span className="flex items-center gap-0.5">
         {state === 'verified' ? (
           <ShieldCheck className="size-3 text-[var(--pos)]" aria-hidden="true" />
-        ) : state === 'failed' ? (
+        ) : state === 'failed' || state === 'loop_blocked' ? (
           <ShieldAlert className="size-3 text-[var(--warn)]" aria-hidden="true" />
         ) : (
           <ShieldQuestion className="size-3" aria-hidden="true" />
         )}
-        <span>{copy.engine[state]}</span>
+        <span>
+          {state === 'loop_blocked' ? copy.engine.loopBlocked : copy.engine[state as 'verified' | 'unverified' | 'failed']}
+        </span>
       </span>
     </button>
   );

@@ -111,7 +111,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
 - 运行态（PID + 日志）写进 `.run\`（`/.run/` 已在 `.gitignore` 里，可随时删）。uvicorn 把 INFO 日志写 **stderr**，所以在 `.run\logs\api.err.log`；Next 在 `.run\logs\web.out.log`。
 - `start-all.ps1` 是幂等的且**认身份**：端口上跑着的确实是本项目服务（命令行对得上、`/api/v1/health` 返回 200）才复用；占端口的是别的东西时它报冲突并跳过，不会假装就绪。
 - `stop-all.ps1` 只收三类目标：`.run\*.pid` 里记录的进程（会核对进程名与启动时间，PID 被系统复用就跳过）、监听 :8000 / :3000 的进程、命令行可定位到本仓库的 `next dev`。结束前可先 `-DryRun` 看一眼。
-- 参数：`-NoBrowser` 不自动开浏览器 / `-Mock` 强制 `AGENT_MODE=mock`（只对新起的进程生效）/ `-Restart` 先停再起 / `-NoReload` API 不带 `--reload`。
+- 参数：`-NoBrowser` 不自动开浏览器 / `-Mock` 强制 `AGENT_MODE=mock`（只对新起的进程生效）/ `-Restart` 先停再起 / `-Reload` API 带 `--reload`（**默认关闭**，见下节；`-NoReload` 是兼容别名）。
 - 退出码：两个脚本都是 `0` 成功、`1` 有服务没就绪或端口没释放，可直接写进批处理判断。
 - 改了 `PY_API_PORT` 记得同步 `NEXT_PUBLIC_API_BASE`（脚本会告警，但不会替你改前端指向）。
 - 这两个 `.ps1` 是 Windows-only 的便捷入口，跨平台入口仍然是 `npm run dev`。
@@ -240,6 +240,52 @@ cd api
 python -m alembic upgrade head
 python -m alembic revision --autogenerate -m "change description"
 ```
+
+---
+
+## 本期包含（v12：让「可用稳健」在本机可被证伪）
+
+Iteration 6 问的是前五轮没问的那个问题：**这台机器上、用默认参数，生成到底起不起来？**
+答案是「起不来」——而它一直以「引擎不可用」的样子出现。
+
+| 能力 | 入口 | 关键设计 | 验收 |
+| --- | --- | --- | --- |
+| **执行环境自证（S1）** | 启动日志 + `GET /capabilities` | `spawn_capability()` 是**唯一**判据（同步纯函数，因为闸门在 `RunManager.start()` 第 0 步、`mkdir` 之前）；`fullyCapable` / `degradedReason` / `capabilities.runtime` 三处都读它；`--reload` 从两个默认启动入口去掉 | AC-110~AC-113 / AC-132 |
+| **墙钟兜底（S2）** | 自动 | `runner.run()` 外面套 `asyncio.wait_for`（截止 = `--max-duration` + 120s）；另有一个**不看 `SCHEDULER_ENABLED`** 的 60 秒活性清扫，把「永久 running」变成「一定结束」 | AC-114 / AC-115 / AC-130 |
+| **逐字段收敛（S3）** | 降级徽标的抽屉 | `clamp_doc()` 按**块型**分派上限（`paragraph 4000 / heading 120 / callout 1200 / quote 800`），在句边界截断、留痕到 `quality.clamp`、必降 `degraded`；601 字的 summary 不再是「整份消失」 | AC-117 / AC-118 |
+| **散文救援（S4，防御性）** | 降级徽标 | `structured=null` 时从模型正文里抠 JSON（有界补全括号）→ 走同一套抢救；`stop_reason=length` 归 `output_truncated`，不再伪装成「模型不听话」 | AC-119 / AC-120 / AC-134 |
+| **接地口径（S5）** | 可信度面板 + `scripts/grounding-explain.py` | 派生目录补 `ttm:` / `extreme:` / `bollinger:` 三类；区间破折号（`1,296.22–1,509.76`，含 ASCII 连字符）不再被读成负号 | AC-121 / AC-122 / AC-135 |
+| **前端动作确定性（S6）** | 失败卡片 | `wait` 真的等（8 秒后自动重试一次，带倒计时）；`stream_closed` 进码表；SSE 看门狗住在 `lib/sse.ts`，服务端改发**真实** `ping` 帧（`event: ping` + `data: {}`）⇒ 安静不等于断 | AC-123~AC-125 / AC-131 |
+| **重试不重付（S7）** | `engine.json` 的 `session` | attempt 1 带 `--session-id`、attempt 2 带 `--resume`（且不再喂 prompt）；run 结束后只删**本 run 自己**的会话（`aragon sessions rm <id> --yes`），**没有**全局 `prune` | AC-126 / AC-127 / AC-133 |
+
+### Windows 上为什么不能热重载（`--reload` = 能力杀手）
+
+`uvicorn` 的 `use_subprocess = bool(reload or workers > 1)`（`uvicorn/config.py:378-379`）。
+在 Windows 上它一旦为真，安装的事件循环就是 `_WindowsSelectorEventLoop`，而
+`asyncio.create_subprocess_exec` **在 Selector 循环上直接抛 `NotImplementedError('')`**。
+
+后果不是「偶发失败」，是**每一次生成都在 `research` 阶段以 `internal` 结束**（10 秒、token 全空）。
+库里那行 `runs.7aa5aeaa` 就是它：`stage=research / pct=20 / error_code=internal / error_message='NotImplementedError: '`。
+
+所以 `npm run dev` 与 `start-all.ps1` 默认都**不带** `--reload`：
+
+```text
+DEV_RELOAD=1 npm run dev          # 想热重载就显式付这个代价
+powershell -File .\start-all.ps1 -Reload
+```
+
+打开后 `GET /api/v1/capabilities` 的 `runtime.loopOk` 会是 `false`、`runtime.loopReason`
+是 `event_loop_selector:_WindowsSelectorEventLoop`，生成入口**同步**返回 `503 event_loop_unsupported`
+（不写 `runs` 行、不建工作区目录），界面给的是「去设置」而不是「查看日志」。
+服务本身不拒绝启动：既有报告仍然可读可检索，只是不能生成新报告。
+
+### 三个新错误码（run 级，18 → 21）
+
+| 码 | 触发 | hint 指向的动作 |
+| --- | --- | --- |
+| `event_loop_unsupported` | `spawn_capability()` 为假，或 spawn 抛 `NotImplementedError`（**按类型分支**，其余异常仍是 `aragon_unavailable`） | 去掉 `--reload` 后重启 |
+| `agent_timeout` | `asyncio.wait_for` 超时，或活性清扫到点 | 调大 `ARAGON_MAX_DURATION_MS`，或看日志 |
+| `output_truncated` | `stop_reason ∈ {length, max_tokens}`（`max_turns` 仍是 `budget_exceeded`，两件事不混） | 调大 `ARAGON_MAX_OUTPUT_TOKENS`，或减半资料 |
 
 ---
 

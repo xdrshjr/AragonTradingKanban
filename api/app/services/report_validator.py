@@ -58,6 +58,32 @@ SECTION_TITLES = {
 
 MAX_PROVISIONAL_TEXT = 4000
 
+#: ★v12（S3 / §22.3.4 / C-37）：格式收敛记录的**前缀**。`repairs` 里带这个前缀的条目
+#: 就是一次 clamp，`ValidationOutcome.quality.clamp` 与 `run.log{code:"clamp"}` 都从
+#: 这里派生——**一份记录，两处消费**，不写第二个真源。
+CLAMP_PREFIX = "收敛"
+
+#: ★v12（S3 / §22.3.4 / C-37）：`block.text` 的上限**按块型分派**。
+#: schema 里 `sections[].blocks[]` 是 `/$defs/block` 的 `anyOf`（12 个块型），
+#: `text` 的上限因块型而异（实测 E-105：paragraph 4000 / heading **120** /
+#: callout 1200 / quote 800）。所以「一刀切 4000」会让一个 400 字的 heading 仍然
+#: 整份判死（正是 E-93 那一类）。
+#:
+#: 这张表是**文档与断言的对象**，不是运行时真源——`clamp_doc()` 直接遍历 schema 自己
+#: 取上界（见 `_clamp_node`），所以 schema 改了它也不会漂移；
+#: `tests/test_clamp.py::test_block_text_limits_match_the_schema` 反向盯住这张表。
+BLOCK_TEXT_LIMITS: dict[str, int] = {
+    "paragraph": 4000,
+    "heading": 120,
+    "callout": 1200,
+    "quote": 800,
+}
+
+#: ★v12（S3）：句末标点，按「优先级从高到低」切句。截断**只能**落在这些位置之后，
+#: 否则「-1,509.76」会变成「-1.」，亲手制造一个未接地 claim（R-56）。
+_SENTENCE_END = ("。", "！", "？", "!", "?", "\n")
+_CLAUSE_END = ("；", ";", "，", ",")
+
 _schema_cache: dict[str, Any] = {}
 
 
@@ -166,6 +192,12 @@ class ValidationOutcome:
             payload["prompt"] = self.prompt
         if self.salvage is not None:
             payload["salvage"] = self.salvage.as_payload()
+        # ★v12（S3 / C-48）：`clamp` 与 `prunedBlocks` 同类——**派生**，不新增构造参数。
+        # 只在实际收敛过时出现：老报告没有这个键（§22.6.3 的"不回填"），前端按
+        # `(q.clamp ?? {count: 0})` 读，于是"没有这个键"不会渲染成"收敛了 0 处"的矛盾。
+        clamp = clamp_payload(self.repairs)
+        if clamp["count"]:
+            payload["clamp"] = clamp
         return payload
 
     @property
@@ -277,6 +309,219 @@ def fill_metrics_from_snapshot(doc: dict[str, Any], snapshot: dict[str, Any]) ->
     return True
 
 
+def _clamp_text(text: str, limit: int, *, min_length: int = 0) -> str:
+    """把过长文本按**句边界**收到 `limit` 以内，末尾补一个省略号。
+
+    ★v12 修订（V11-P2-4 的连带）：省略号**占一个字符**，所以先退到 `limit - 1` 再拼
+    `…`，否则「600 → 601」就是我们亲手制造的一次字数越界。三条硬约束（AC-118 断言）：
+
+    1. 结果长度 **≤ limit**；
+    2. 若真的切了，结果以 `…` 结尾；
+    3. **不切在数字中间**（R-56）：`-1,509.76` 切成 `-1.` 会凭空造出一个未接地 claim，
+       所以只在标点之后落刀；找不到合适的标点就退到「最后一个非数字边界」，再不行才硬切。
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    budget = max(min_length, limit - 1)  # 留一个字符给 `…`
+    head = text[:budget]
+    cut = -1
+    for marker in _SENTENCE_END + _CLAUSE_END:
+        search_from = len(head)
+        while True:
+            index = head.rfind(marker, 0, search_from)
+            if index < 0:
+                break
+            # ★v12：ASCII 逗号/句点在**数字之间**是千分位与小数点，不是句子边界。
+            # `1,509.76` 的逗号若被当成句末，截出来的就是 `1,` —— 一个凭空产生的、
+            # 必然未接地的数字（R-56 的原话："绝不切在数字中间"）。
+            if marker in (",", ".") and index > 0 and index + 1 < len(text):
+                before, after = text[index - 1], text[index + 1]
+                if before.isdigit() and (after.isdigit() or after in ".," ):
+                    search_from = index
+                    continue
+            if index + 1 > cut:
+                cut = index + 1
+            break
+    if cut <= 0:
+        # 没有可用的标点：退到「最后一个不是数字/小数点的位置」，避免切断一个数字。
+        cut = budget
+        while cut > max(min_length, 1) and (text[cut - 1].isdigit() or text[cut - 1] in ".,%"):
+            cut -= 1
+        if cut < min_length or cut <= 0:  # pragma: no cover - 极端夹具
+            cut = budget
+    trimmed = text[:cut].rstrip()
+    if not trimmed:  # pragma: no cover - 全是标点的夹具
+        trimmed = text[:budget]
+    return f"{trimmed}…"
+
+
+def _resolve_schema(node: Any, defs: dict[str, Any]) -> dict[str, Any]:
+    """跟随单层 `$ref`（本项目 schema 只有 `#/$defs/<name>` 这一种形态）。"""
+    seen = 0
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str) and seen < 8:
+        ref = node["$ref"]
+        if not ref.startswith("#/$defs/"):
+            return node
+        target = defs.get(ref.split("/")[-1])
+        if not isinstance(target, dict):
+            return node
+        # `$ref` 与兄弟键（若同时存在）合并：`{"$ref": ..., "maxItems": 8}` 的写法要都生效。
+        merged = dict(target)
+        merged.update({k: v for k, v in node.items() if k != "$ref"})
+        node = merged
+        seen += 1
+    return node if isinstance(node, dict) else {}
+
+
+def _pick_variant(node: dict[str, Any], value: Any, defs: dict[str, Any]) -> dict[str, Any] | None:
+    """在 `anyOf` 里挑**这一个值**所属的变体。
+
+    ★v12（C-37 的机制）：`sections[].blocks[]` 是 12 个块型的 `anyOf`，按 `type` 字段
+    分派。分派不出去（例如块没有 `type`）就返回 `None`，**不要**随便挑第一个——那会拿
+    paragraph 的 4000 去量一个 heading，正是设计草案被评审否掉的那一版。
+    """
+    variants = node.get("anyOf")
+    if not isinstance(variants, list):
+        return None
+    if isinstance(value, dict):
+        kind = value.get("type")
+        if isinstance(kind, str):
+            for variant in variants:
+                resolved = _resolve_schema(variant, defs)
+                spec = (resolved.get("properties") or {}).get("type") or {}
+                allowed = spec.get("enum")
+                if spec.get("const") == kind or (isinstance(allowed, list) and kind in allowed):
+                    return resolved
+    return None
+
+
+def _clamp_node(
+    value: Any,
+    node: Any,
+    defs: dict[str, Any],
+    path: str,
+    repairs: list[str],
+) -> Any:
+    """把**一个**值按它自己的 schema 节点收敛。返回收敛后的值（可能与入参同一对象）。
+
+    做四件事，全部只处理 schema **明说**的上界（S-4：格式问题 clamp，事实问题不动）：
+
+    * `maxLength` 且是 `str` → `_clamp_text()`（按句边界）；
+    * `maxItems` 且是 `list` → 截掉多余的条目；
+    * `maxProperties` 且是 `dict` → 丢掉**非必填**的多余键（表行的 12 键上限）；
+    * 否则递归（`properties` 逐个字段、`items` 逐个元素、`anyOf` 按 `type` 分派）。
+    """
+    node = _resolve_schema(node, defs)
+    if not node:
+        return value
+
+    variant = _pick_variant(node, value, defs)
+    if variant is not None:
+        return _clamp_node(value, variant, defs, path, repairs)
+
+    max_length = node.get("maxLength")
+    if isinstance(value, str) and isinstance(max_length, int):
+        min_length = node.get("minLength")
+        clamped = _clamp_text(value, max_length, min_length=min_length if isinstance(min_length, int) else 0)
+        if clamped != value:
+            repairs.append(f"{CLAMP_PREFIX} {path} {len(value)}→{len(clamped)}")
+            return clamped
+        return value
+
+    max_items = node.get("maxItems")
+    if isinstance(value, list) and isinstance(max_items, int) and len(value) > max_items:
+        repairs.append(f"{CLAMP_PREFIX} {path} {len(value)}→{max_items}")
+        drop = len(value) - max_items
+        item_node = node.get("items") or {}
+        kept = [
+            _clamp_node(item, item_node, defs, f"{path}[{index}]", repairs)
+            for index, item in enumerate(value[:max_items])
+        ]
+        for offset in range(max_items, max_items + drop):
+            repairs.append(f"{CLAMP_PREFIX} {path}[{offset}] 条目超出上限已丢弃")
+        return kept
+
+    if isinstance(value, list):
+        item_node = node.get("items") or {}
+        return [
+            _clamp_node(item, item_node, defs, f"{path}[{index}]", repairs)
+            for index, item in enumerate(value)
+        ]
+
+    if isinstance(value, dict):
+        max_properties = node.get("maxProperties")
+        properties = node.get("properties") or {}
+        required = set(node.get("required") or [])
+        working = value
+        if isinstance(max_properties, int) and len(working) > max_properties:
+            keep: dict[str, Any] = {}
+            for key, item in working.items():
+                if len(keep) < max_properties or key in required:
+                    keep[key] = item
+                else:
+                    repairs.append(f"{CLAMP_PREFIX} {path}.{key} 键数超出上限已丢弃")
+            working = keep
+        out: dict[str, Any] = {}
+        for key, item in working.items():
+            spec = properties.get(key)
+            if spec is None:
+                out[key] = item
+                continue
+            # ★v12：根层不要前导点（`summary` 而不是 `.summary`）——`quality.clamp.fields`
+            # 是给界面读的字段名，前导点会让"哪几个字段被截了"多出一个不存在的容器。
+            child = f"{path}.{key}" if path else key
+            out[key] = _clamp_node(item, spec, defs, child, repairs)
+        return out
+
+    return value
+
+
+def clamp_doc(doc: dict[str, Any], repairs: list[str]) -> list[str]:
+    """★v12（S3 / §22.3.4 / C-34）：把越界的**格式**收敛到 schema 说明的上界。
+
+    返回被收敛的字段路径列表（空 ⇒ 一个字都没动）。`repairs` 里追加的每条都以
+    `CLAMP_PREFIX` 开头，`ValidationOutcome.quality.clamp` 从它派生
+    （`_clamp_payload()`），所以"收敛了几处、哪几处"只有一份记录。
+
+    三条纪律（写在代码里，因为它们是验收点）：
+
+    1. **只收敛「长了」和「多了」，不猜内容**（S-4）。真事实问题（编造数字）由接地口径
+       负责，两者不重叠——clamp 不许借机改数；
+    2. **必须留痕**：每处收敛一行 `收敛 <path> <before>→<after>`，读者在「降级」抽屉里
+       能看到"摘要超长，已截断 1 处"，而不是永远不知道为什么黄；
+    3. **status 必须降级**：调用方据 `repairs` 里的前缀把 `status` 打到 `degraded`
+       （`validate_doc` 的 `clamped` 分支）。
+
+    为什么挂在 `normalize_doc()` 里（C-34）：它是**唯一**的修补入口，而 `salvage_doc()`
+    内部也调它——于是「问题只在长度上」的文档两条路（validate / salvage）都能救回来，
+    正是 E-93 的 B 分支那个洞。
+    """
+    schema = load_schema()
+    defs = schema.get("$defs") or {}
+    clamped = _clamp_node(doc, schema, defs, "", repairs)
+    if isinstance(clamped, dict):
+        doc.clear()
+        doc.update(clamped)
+    return [repair for repair in repairs if repair.startswith(CLAMP_PREFIX)]
+
+
+def clamp_payload(repairs: Iterable[str]) -> dict[str, Any]:
+    """从 `repairs` 派生 `quality.clamp = {count, fields}`（**唯一**派生点）。
+
+    `fields` 取每条的第二个词（`收敛 summary 601→600` → `summary`），并按「插入顺序去重」：
+    同一份文档里两个段落都超长时，读者要看的是"哪几个字段被截了"而不是重复两行。
+    """
+    fields: list[str] = []
+    for repair in repairs:
+        if not repair.startswith(CLAMP_PREFIX):
+            continue
+        parts = repair.split()
+        name = parts[1] if len(parts) > 1 else "unknown"
+        if name not in fields:
+            fields.append(name)
+    return {"count": len(fields), "fields": fields}
+
+
 def normalize_doc(
     doc: dict[str, Any],
     snapshot: dict[str, Any],
@@ -352,6 +597,11 @@ def normalize_doc(
         doc["risks"] = []
     if not isinstance(doc.get("keyMetrics"), list):
         doc["keyMetrics"] = []
+    # ★v12（S3 / C-34）：**最后**一个 pass —— 把越界的格式收敛到 schema 说明的上界。
+    # 放在最后是必须的：前面 11 个 pass 会补字段、补章节、补指标，任何一个都可能让文档
+    # 从"短"变"长"；先 clamp 再补等于白做。这也保证 `salvage_doc()` 走同一条路
+    # （它内部就调本函数），于是「只有长度不合规」的文档两条路都能救回来。
+    clamp_doc(doc, repairs)
     return doc, repairs, pruned, missing
 
 
@@ -426,11 +676,17 @@ def validate_doc(
     # AC-61: `ungroundedCount` and `grounding.factMissing` are the same number by
     # construction, not by coincidence — one field is read off the other.
     ungrounded = grounding.fact_missing
+    # ★v12（S3 / §22.3.4 纪律 3）：收敛过就必须降级。读者有权知道这份报告被截过——
+    # 悄悄截断会让"我们的上限"伪装成"模型的原话"，与 v5 §19 立下的"只标不改数"同源。
+    clamp = clamp_payload(repairs)
     if provisional:
         # A provisional document is a failure transcript, not an analysis:
         # grounding and the five-section rule do not apply to it.
         status = "provisional" if not errors else "degraded"
     elif errors:
+        status = "degraded"
+    elif clamp["count"]:
+        # ★v12（S3 / AC-117）：比 salvage 更高优先级的降级理由——它就是"这份被截过"。
         status = "degraded"
     elif salvage is not None and salvage.used:
         # ★v9（K5 / 裁决 K-11）：抢救过的报告**永远是 degraded**，不是 ready 也不是
@@ -497,6 +753,14 @@ class SalvageReport:
     #: 所以"裁了几个"这个数只有这里知道。它不是 salvage 的第四个计数器，而是**转交**
     #: 给 `quality.prunedBlocks` 的那个既有数的来源（两个计数器仍然不重叠）。
     prunedBlocks: int = 0
+    #: ★v12（S3 / §22.3.4 纪律 1）：`normalize_doc()` 里的 clamp 救回来几处**格式**越界。
+    #: 与上面三个计数器不重叠：那三个数"丢掉了什么"，这个数"截短了什么"——后者是有救的，
+    #: 前者是没有的，混在一起会让"丢了 3 处"变得不可解释。
+    clamped: int = 0
+    #: ★v12（S4 / §22.6.3）：从模型正文里还原出来的方式（`json` / `json_repaired`）。
+    #: `None` ⇒ 没走 L1.5。它是 `quality.salvage.how` 的唯一来源（"从正文还原"这句话的
+    #: 事实依据，不是前端猜的）。
+    how: str | None = None
     reasons: list[str] = field(default_factory=list)
 
     def as_payload(self) -> dict[str, Any]:
@@ -505,6 +769,12 @@ class SalvageReport:
             "droppedKeys": self.droppedKeys,
             "droppedSections": self.droppedSections,
             "droppedBlocks": self.droppedBlocks,
+            # ★v12 修订（V11-P2-2）：`as_payload()` 过去只发 5 个键，**漏了** `prunedBlocks`
+            # ——写进一个前端读不到的地方等于没写。本轮把 `prunedBlocks` / `clamped` /
+            # `how` 一起补上，`schemas/report.py::SalvageQuality` 同步声明（C-48 的同型守卫）。
+            "prunedBlocks": self.prunedBlocks,
+            "clamped": self.clamped,
+            **({"how": self.how} if self.how else {}),
             # 最多 5 条、去重、每条 ≤80 字符（前端要能展开，但不要把日志贴上去）。
             "reasons": self.reasons[:5],
         }
@@ -666,6 +936,9 @@ def salvage_doc(raw: Any, snapshot: dict[str, Any]) -> tuple[dict[str, Any] | No
     repaired, _repairs, _pruned, _missing = normalize_doc(
         copy.deepcopy(candidate), snapshot, provisional=False
     )
+    # ★v12（S3 / §22.3.4）：`normalize_doc()` 里的 clamp 救回来几处，只有这里知道。
+    # 不数出来，"抢救后仍不合 schema"与"抢救后截了 3 处"在界面上长得一模一样。
+    report.clamped = len(clamp_payload(_repairs)["fields"])
     try:
         jsonschema.validate(repaired, schema)
         ReportDoc.model_validate(repaired)
@@ -687,6 +960,154 @@ def salvage_doc(raw: Any, snapshot: dict[str, Any]) -> tuple[dict[str, Any] | No
         report.droppedBlocks,
     )
     return repaired, report
+
+
+def _drop_partial_string(candidate: str) -> str:
+    """去掉尾部那半截未闭合的字符串（截断最常发生在这里）。
+
+    返回"最后一个未闭合引号之前"的内容；没有半截字符串则原样返回。
+    """
+    in_string = False
+    escaped = False
+    last_open = -1
+    for position, char in enumerate(candidate):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            last_open = position
+    if not in_string or last_open < 0:
+        return candidate
+    return candidate[:last_open].rstrip().rstrip(",")
+
+
+def _pad_closers(candidate: str, *, max_pad: int) -> str | None:
+    """按未闭合括号栈补齐尾部的 `}` / `]`；需要的字符数超过 `max_pad` 就返回 `None`。"""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in candidate:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]" and stack:
+            stack.pop()
+    if not stack or len(stack) > max_pad:
+        return None
+    return candidate + "".join(reversed(stack))
+
+
+def _close_unbalanced(candidate: str, *, max_pad: int = 40, max_attempts: int = 8) -> dict[str, Any] | None:
+    """★v12（S4 / §22.3.5 L1.5(b)）：给被截断的 JSON 做**有界**尾补，补不成就放弃。
+
+    规则写死四条，因为"补结构"与"猜内容"之间只有一线：
+
+    1. **只补尾部**的 `}` / `]`，顺序由未闭合括号栈决定；
+    2. 补的字符总数 **≤ max_pad**（默认 40）：一次被 `--max-tokens` 截断的输出，缺口就是
+       几个闭合符；补 40 个还不行说明它是被拦腰切断的，那就该放弃；
+    3. 截断落在**字符串中间**时先丢掉那半截字符串，然后**再退到上一个边界**
+       （`,` / `{` / `[`）重试 —— 否则剩下的 `"disclaimer": ` 是个悬空键，永远补不回来
+       （实测 `payload[:-2]` 就是这样；★v12 的落地修正见 I-115）；
+    4. 补完**必须** `json.loads` 成功且是 dict，否则返回 `None`。
+
+    为什么值得做（S-6）：这些字节**已经付过钱**了。扔掉它们等于把同一段输出再买一次。
+    ★v12 修订（V11-P2-11）：本机 24 份 `result.json` 里 `text` 含 `{` 的有 **0** 份，
+    所以这是**防御性**能力，验收靠构造夹具（AC-134），不声称能救回真实生成的 33%。
+
+    `max_attempts` 有界是必须的：每次退边界都会变短，无界重试等于在长文里做二次指数搜索。
+    """
+    if not candidate or not candidate.lstrip().startswith(("{", "[")):
+        return None
+    trimmed = _drop_partial_string(candidate)
+    for _attempt in range(max_attempts):
+        padded = _pad_closers(trimmed, max_pad=max_pad)
+        if padded is not None:
+            try:
+                parsed = json.loads(padded)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return parsed
+        boundary = max(trimmed.rfind(","), trimmed.rfind("{"), trimmed.rfind("["))
+        if boundary <= 0:
+            return None
+        trimmed = trimmed[:boundary].rstrip()
+        if trimmed.endswith(","):
+            trimmed = trimmed[:-1]
+    return None
+
+
+def rescue_from_text(
+    text: str,
+    snapshot: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None, SalvageReport | None]:
+    """★v12（S4 / §22.3.5 L1.5）：从模型**正文**里把结构化报告捡回来。
+
+    返回 `(doc, how, report)`，`how ∈ {"json", "json_repaired"}`，`None` 表示救不回来
+    （调用方继续走原来的 `result_schema_unsatisfied` 路径，不合成假报告）。
+
+    三条守卫（R-58：绝不能从散文里抠出**别的** JSON，例如提示词回显）：
+
+    1. 候选必须含 `sections`（报告文档的骨架），否则不认；
+    2. 必须过 `salvage_doc()` 的 schema 校验（它内部还会再 `jsonschema.validate` 一次）；
+    3. `how` 必须落盘（`quality.salvage.how`），且抢救过的报告一定是 `degraded`。
+
+    顺序：先试"第一个 `{` 到最后一个 `}`"的整段（最可能是完整 JSON），再试有界尾补。
+    `json.loads` 成功一次就不再尝试更激进的补法——它更可信。
+    """
+    if not isinstance(text, str) or "{" not in text:
+        return None, None, None
+    start = text.find("{")
+    end = text.rfind("}")
+    candidates: list[tuple[str, str]] = []
+    if start >= 0 and end > start:
+        # ①整段（含最后一个 `}`）：完整 JSON 的正常形态。
+        candidates.append((text[start : end + 1], "json"))
+    if start >= 0:
+        # ②从第一个 `{` 到结尾：被截断的形态，交给有界尾补。
+        candidates.append((text[start:], "json_repaired"))
+    for candidate, how in candidates:
+        parsed: Any = None
+        if how == "json":
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                parsed = None
+        else:
+            parsed = _close_unbalanced(candidate)
+            if parsed is None:
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    how = "json"
+        if not isinstance(parsed, dict) or "sections" not in parsed:
+            continue
+        doc, report = salvage_doc(parsed, snapshot)
+        if doc is None:
+            continue
+        # 即使 salvage 一个字都没丢，这也是"从正文还原"——它必须可见，不能被当成正常产出。
+        report.how = how
+        report.used = True
+        report.reasons = list(dict.fromkeys([*report.reasons, f"从正文还原（{how}）"]))[:5]
+        return doc, how, report
+    return None, None, None
 
 
 def build_provisional_doc(

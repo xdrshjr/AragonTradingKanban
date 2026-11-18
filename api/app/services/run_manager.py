@@ -45,6 +45,23 @@ logger = get_logger("run_manager")
 MAX_CONCURRENT_RUNS = 2
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "timeout", "budget_exceeded")
 
+
+def hard_deadline_seconds() -> float:
+    """★v12（S2 / §22.3.3 第 1 层）：一次生成在 Python 侧的墙钟上限。
+
+    `--max-duration` 是**交给 CLI** 的预算，它管不住"CLI 卡死 / shim 留下不关管道的
+    孙子 / `taskkill` 失败"这三种情形（E-91/E-92）。所以在 `runner.run()` 外面再套一层
+    `asyncio.wait_for`，截止 = CLI 的预算 + `agent_hard_deadline_grace_sec`。
+
+    ★v12 修订（V11-P1-10 / C-45）：**不引入 `AGENT_HARD_DEADLINE_SEC` 配置项**。
+    一个可设的绝对秒数会与 `--max-duration` 形成第二个截止真源，而两个真源里更松的那个
+    永远赢——于是"调大 max-duration"变成唯一能解释的行为（与 V10-P1-6 的 `keySource`
+    是同一课）。这里只加"给 CLI 收尾的余量"。
+    """
+    settings = get_settings()
+    grace = max(0, int(settings.agent_hard_deadline_grace_sec))
+    return max(1.0, float(settings.aragon_max_duration_ms) / 1000.0 + grace)
+
 #: ★v7（H-9 / I-42）：没有 `AgentResult` 时临时报告携带的三态成本（"不知道"而不是"0"）。
 UNKNOWN_COST_PAYLOAD: dict[str, Any] = {
     "source": "unknown",
@@ -208,7 +225,33 @@ class RunManager:
           而 `RUN_RETENTION_DAYS` 只清理**有 run 行**的目录，等于永久垃圾；
         * 它是**同步**方法、没有 asyncio.Lock，"临界区"由事务 + `ux_runs_active`
           承担，所以闸门只读账本、不改任何锁结构（O-9）。
+
+        ★v12（S1 / V11-P0-2 / C-38）：**第 0 步**先问"这个进程能不能 spawn 子进程"。
+        位置不能更晚：`start()` 在写 `runs` 行**之前**就 `workspace.mkdir()`（下面几行），
+        `_pipeline()` 第一句又 mkdir 一次 ⇒ 闸门放进 `research`（`:369`）时工作区**必然
+        已经存在**，而 AC-111 要求"目录未创建、`runs` 表没有该行"。一次注定不可能的生成
+        不该在磁盘和账本上留下任何痕迹，用户也不该等 10 秒才看到一个 `internal`。
+
+        ★评审修正（评审节点 I-127）：**`AGENT_MODE=mock` 时这道闸门必须让路**。
+        mock 引擎一次子进程都不 spawn（`build_runner()` 的注释就写着"mock must never
+        spawn anything"），所以"事件循环不支持子进程"对它是**不成立的前提**。上一版无条件
+        拒绝，于是 `start-all.ps1 -Mock -Reload`（或 `.env` 里写 `AGENT_MODE=mock` 再
+        `DEV_RELOAD=1 npm run dev`）把整条**无需任何 CLI 的演示链路**也一并关掉了——
+        用户看到的是一句"这台机器起不来"，而它其实起得来。
+        注意 `auto` **不**豁免：那里 `loopOk` 已经是 `fullyCapable` 的一道门（§22.3.2(c)），
+        静默退回 mock 正是 v9 说的"最坏的失败形态：不是红，是绿"。
         """
+        if get_settings().agent_mode != "mock":
+            loop_ok, loop_reason = preflight.spawn_capability()
+            if not loop_ok:
+                # 同步错误，不是 run 行 + 后台失败：用户点下去立刻看到"这台机器起不来"。
+                from ..errors import EventLoopUnsupported
+
+                raise EventLoopUnsupported(
+                    f"当前进程的事件循环不支持启动子进程（{loop_reason}）："
+                    "去掉 --reload 后重启 API，或直接用 npm run dev 的默认参数。"
+                )
+
         active = report_service.active_run_for(session, instrument.id)
         if active is not None:
             from ..errors import RunConflict
@@ -306,6 +349,12 @@ class RunManager:
                 self._sessions.pop(run_id, None)
                 self._publish(run_id, None)
                 session.close()
+                # ★v12（S7 / §22.3.8 第 3 条）：run 终止后删掉**本 run 自己的**会话文件。
+                # 只删 `sanitize_session_id(run_id)` 精确匹配的那个 id；**没有**任何全局
+                # `prune`（C-40：实测 `prune --older-than 7 --dry-run` 会列出
+                # `smoke-threads-tenant-a/b`、`webuse-…` 这些别的项目的会话 9 条，而目录
+                # 今天已经 1545.71 MB 早过阈值 ⇒ 第一次 tick 就会删别人的东西）。
+                await self._cleanup_session(run_id)
 
     async def _pipeline(self, session: Session, run: Run, instrument: Instrument, *, force: bool) -> None:
         settings = get_settings()
@@ -380,6 +429,12 @@ class RunManager:
             instrument_name=instrument.name,
             max_turns=settings.aragon_max_turns,
             max_duration_ms=settings.aragon_max_duration_ms,
+            # ★评审修正（评审节点 I-131）：**这个调用点认领会话清理**，所以它才有资格
+            # 让 CLI 保存会话（`--session-id` + 重试时 `--resume`）。
+            # `ask_runner` / `probe` 不在这条 finally 里，它们保持 v11 的
+            # `--no-save-session`——否则每问一次就在会话目录里留一个永不回收的文件
+            # （那正是 S7 要治的病，见 R-61）。
+            keep_session=True,
         )
 
         try:
@@ -434,6 +489,7 @@ class RunManager:
                     "run.log",
                     {
                         "level": "warn",
+                        "code": "rescue",
                         "message": (
                             f"模型产出有 {salvage_report.total} 处格式不合法，已抢救后展示（"
                             f"{salvage_report.droppedKeys} 个多余字段 / "
@@ -445,6 +501,29 @@ class RunManager:
                 )
             else:
                 salvage_report.reasons = salvage_report.reasons or ["unsalvageable"]
+
+        # ── ★v12 S4（§22.3.5）：L1.5 —— 从模型正文里把已经付过钱的 JSON 捡回来 ────
+        # 顺序写死：先 L1（`result.result` 里的字符串，更便宜也更可信），后 L1.5。
+        # ★v12 修订（V11-P2-11）：这是**防御性**能力，本机 24 份 `result.json` 的 `text`
+        # 最长 413 字、花括号出现 0 次（E-115），所以它不是"33% 真实生成可救"的机制；
+        # 但一旦模型真的把完整 JSON 写在正文里，扔掉它等于把已经付出的 token 再付一次
+        # （S-6）。
+        if doc is None and result.text:
+            rescued, how, rescued_report = report_validator.rescue_from_text(result.text, bundle.snapshot)
+            if rescued is not None:
+                doc = rescued
+                salvage_report = rescued_report
+                self._record(
+                    session,
+                    run,
+                    "run.log",
+                    {
+                        "level": "warn",
+                        "code": "rescue",
+                        "message": f"结构化结果缺失，已从模型正文中还原（{how}）",
+                    },
+                    touch_run=False,
+                )
 
         if doc is None:
             code = result.error_code or "result_schema_unsatisfied"
@@ -480,7 +559,23 @@ class RunManager:
             pruned_blocks=salvage_report.prunedBlocks if salvage_report is not None else None,
         )
         for repair in outcome.repairs[:6]:
-            self._record(session, run, "run.log", {"level": "info", "message": f"结构修补：{repair}"}, touch_run=False)
+            # ★评审修正（评审节点 I-130）：前缀读 `report_validator.CLAMP_PREFIX`，
+            # 不写字面量 `"收敛"`。上一版在 `repairs` 的生产者（report_validator）与消费者
+            # （这里）各写了一遍同样的两个字，改一处就静默失配：`quality.clamp` 还在记账，
+            # 而 `run.log` 的 `code: "clamp"` 再也不出现，前端抽屉悄悄少一行。
+            is_clamp = repair.startswith(report_validator.CLAMP_PREFIX)
+            self._record(
+                session,
+                run,
+                "run.log",
+                {
+                    "level": "warn" if is_clamp else "info",
+                    "message": f"结构修补：{repair}",
+                    # ★v12（§22.5.2）：`clamp` 是结构化标记，前端按 `code` 决定是否展开抽屉。
+                    **({"code": "clamp"} if is_clamp else {}),
+                },
+                touch_run=False,
+            )
         if outcome.errors:
             self._finalize_failure(
                 session,
@@ -588,7 +683,15 @@ class RunManager:
         runner: Any,
         request: AgentRequest,
     ) -> AgentResult | None:
-        """Run the agent while a watcher turns a cancel request into a real kill."""
+        """Run the agent while a watcher turns a cancel request into a real kill.
+
+        ★v12（S2 / §22.3.3 第 1 层）：`runner.run()` 外面加一层墙钟硬截止。
+        今天 Python 侧**没有任何**截止时间——`while True`（`aragon_runner.py:703`）
+        只在 `waiter.done()` 或队列空时退出，真正的时间上限完全依赖交给 CLI 的
+        `--max-duration`。CLI 卡死、shim 留下不关管道的孙子、或 `taskkill` 失败
+        （E-91）时，run 会永远停在 `running`，SSE 只发 ping 永不 return
+        （`stream_events` 在非终态不退出）——前端永远转圈，还占掉一个并发名额。
+        """
 
         def on_event(event: AgentEvent) -> None:
             self._forward_agent_event(session, run, event)
@@ -610,8 +713,23 @@ class RunManager:
 
         cancel_task = asyncio.create_task(watch_cancel(), name=f"cancel-watch-{run.id}")
         self._cancels[run.id] = runner.cancel
+        deadline = hard_deadline_seconds()
         try:
-            result = await runner.run(request, on_event)
+            result = await asyncio.wait_for(runner.run(request, on_event), timeout=deadline)
+        except TimeoutError:
+            # 先收进程树，再报错：留下一个还在烧 token 的子进程比失败本身更糟。
+            # `cancel_task` 的收尾只写在 `finally` 里（★评审修正：这里原本又 cancel 一次，
+            # 同一个任务在两个地方收尾，读起来像"两个生命周期"，实际只有一条）。
+            await runner.cancel()
+            self._finalize_failure(
+                session,
+                run,
+                "agent_timeout",
+                f"引擎超过 {int(deadline)} 秒仍未结束（--max-duration={get_settings().aragon_max_duration_ms}ms）",
+                None,
+                deadline_sec=int(deadline),
+            )
+            return None
         except AgentError as exc:
             self._finalize_failure(session, run, exc.code, exc.message, None)
             return None
@@ -673,6 +791,7 @@ class RunManager:
         *,
         result: AgentResult | None = None,
         salvage: report_validator.SalvageReport | None = None,
+        deadline_sec: int | None = None,
     ) -> None:
         """★P1-10: persist a readable provisional report *before* recording the error."""
         session.rollback()
@@ -770,6 +889,9 @@ class RunManager:
                 "costSource": run.cost_source,
                 "costUsdEst": run.cost_usd_est,
                 "costUsd": run.cost_usd,
+                # ★v12（§22.5.2）：`agent_timeout` 时告诉用户"我们等了多久"。只在该码上
+                # 出现——给每条失败都塞一个 `deadlineSec` 会让它变成噪音。
+                **({"deadlineSec": int(deadline_sec)} if deadline_sec is not None else {}),
             },
         )
         logger.warning("run finished status=%s code=%s run=%s", status, code, run.id)
@@ -864,6 +986,121 @@ class RunManager:
             )
             logger.warning("recovered stale run id=%s -> failed(interrupted)", run.id)
         return len(stale)
+
+    def sweep_stale_runs(self) -> int:
+        """★v12（S2 第 2 层 / §22.3.3 / AC-115）：把"还在 running 但已经没人管"的 run 收掉。
+
+        **同步函数**（只碰 DB，无 `await`），所以三处调用点都能用它（C-41）：
+        ①`main.py::lifespan` 启动时跑一次；②`main.py::_sweep_loop` 每 60 秒跑一次
+        （**不看 `SCHEDULER_ENABLED`**）；③ticker 若想顺带跑，写成
+        `await asyncio.wait_for(asyncio.to_thread(manager.sweep_stale_runs), 5)`。
+
+        为什么第 1 层的 `wait_for` 不够：它只在 `research` 阶段有效。`persist` 里
+        `create_version()` 抛 `IntegrityError` 之后，如果 `_finalize_failure` 自己的
+        commit 撞 `SQLITE_BUSY`（`db/session.py` 只给 5000ms），行就会停在 `running`
+        ——这条路径上**没有任何协程还活着**，只有对账能收。
+
+        `if run.id in self._tasks: continue` 是误杀防线（R-62）：有活任务的 run 自己
+        的 `wait_for` 会收，清扫不许抢。
+        """
+        cutoff = datetime.now(UTC) - timedelta(seconds=hard_deadline_seconds())
+        # ★实施发现（I-116）：`report_service_session()` 必须**在 try 里面**建。
+        # 它过去在外面：连接池耗尽 / DB 文件被锁时这里抛出的异常不会被下面的 `except`
+        # 接住，而 `_sweep_loop` 是常驻任务——一次抛错就再也不会对账
+        # （`main.py` 的 `_sweep_loop` 会 catch，但那等于把"清扫"变成"偶尔清扫"）。
+        session: Session | None = None
+        try:
+            session = report_service_session()
+            rows = (
+                session.execute(
+                    select(Run).where(
+                        Run.status.in_(("queued", "running", "cancelling")),
+                        Run.started_at < cutoff.isoformat().replace("+00:00", "Z"),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            swept = 0
+            for run in list(rows):
+                if run.id in self._tasks:
+                    continue
+                self._finalize_failure(
+                    session,
+                    run,
+                    "agent_timeout",
+                    "清扫：超过硬截止仍在运行（进程活着，但已没有协程在管这次生成）",
+                    None,
+                    deadline_sec=int(hard_deadline_seconds()),
+                )
+                swept += 1
+            return swept
+        except Exception:  # pragma: no cover - 一次对账失败不该杀死清扫
+            logger.exception("sweep_stale_runs failed")
+            if session is not None:
+                session.rollback()
+            return 0
+        finally:
+            if session is not None:
+                session.close()
+
+    async def _cleanup_session(self, run_id: str) -> None:
+        """★v12（S7 / §22.3.8）：删掉**本 run 自己的** CLI 会话文件。永不抛。
+
+        命令形态是**实测过**的（Aragon CLIB 的 `aragon sessions --help` + 真跑，E-108）：
+
+        ```text
+        $ aragon sessions rm <id>
+        Refusing to delete without --yes.          ← exit 2（缺 --yes 就是这样，而且它
+                                                    过去被 try/except: log debug 吞掉）
+        $ aragon sessions prune --older-than 7d --dry-run
+        --older-than takes a non-negative number of days.   ← exit 2（只收天数，不是 7d）
+        ```
+
+        所以：`rm <id> --yes`。**绝不**用 `prune`——它是全局的，实测会列出
+        `smoke-threads-tenant-a/b`、`webuse-17d194d2-…` 这些**别的项目**的会话，删掉它们
+        是不可接受的副作用（R-61 / C-40）。
+
+        失败升为 `run.log(level=warn, code=session_cleanup_failed)`，不再是 debug：
+        静默失败正是这一节要消灭的东西（S-12）。
+        """
+        from ..agent.aragon_runner import cleanup_session
+
+        try:
+            ok, detail = await cleanup_session(run_id)
+        except asyncio.CancelledError:
+            # ★评审修正（E-114）：这条 finally 也会在**关停**时执行（`_run` 的
+            # `except CancelledError: … raise` 之后）。那里为了删一个会话文件去 spawn
+            # 一个子进程（最多等 15 秒）会拖住进程退出，而 run 的结论早已落库。
+            # 吞掉这一次取消不影响任何事实：`rm` 幂等，下次启动的清扫会照常进行。
+            return
+        except Exception as exc:  # pragma: no cover - cleanup 绝不影响 run 结论
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+        if ok:
+            return
+        if detail in ("no_binary", "absent"):
+            # 没有 CLI（mock 模式）或压根没有会话文件（单次尝试走 --no-save-session，
+            # 或第一次就没 spawn 起来）——两者都**不是失败**，不该落 warn（I-117）。
+            return
+        session = report_service_session()
+        try:
+            run = session.get(Run, run_id)
+            if run is not None:
+                self._record(
+                    session,
+                    run,
+                    "run.log",
+                    {
+                        "level": "warn",
+                        "code": "session_cleanup_failed",
+                        "message": f"清理本次生成的 CLI 会话失败（{detail}）",
+                    },
+                    touch_run=False,
+                )
+        except Exception:  # pragma: no cover - 日志都不该影响结论
+            logger.exception("session cleanup log failed run=%s", run_id)
+        finally:
+            session.close()
 
     def cleanup_workspaces(self, session: Session) -> int:
         """Drop run workspaces older than `RUN_RETENTION_DAYS` (§8.2)."""

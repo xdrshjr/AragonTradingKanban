@@ -160,6 +160,9 @@ export const copy = {
       submit_result_missing: 'CLI 缺少 submit_result 工具',
       no_api_key: '未配置模型 API Key',
       version_out_of_range: 'aragon 版本不在支持区间',
+      // ★v12（S1 / §22.3.2(c)）：排在最前的那条降级原因。它与 `aragon_unavailable`
+      // 的可操作方向相反——不是"去装 CLI"，而是"去掉 --reload 再重启"。
+      event_loop_unsupported: '事件循环不支持子进程（去掉 --reload 后重启）',
       unknown: '生成引擎不可用',
     } as Record<string, string>,
     synthetic: '部分数据来自合成数据源，仅用于演示',
@@ -173,6 +176,10 @@ export const copy = {
     verified: '已验证',
     unverified: '未验证',
     failed: '凭证失败',
+    // ★v12（S1 / AC-112）：第四态。它与"凭证失败"是两件事：钥匙没问题、端点也可能通，
+    // 但这个进程**spawn 不了子进程**（Windows 上的 `--reload`），所以任何生成都做不成。
+    // 混进"不可用"会让用户去查一个没坏的东西。
+    loopBlocked: '事件循环不支持',
     probing: '自检中…',
     probeButton: '跑一次引擎自检',
     /** ★v9（K6）：自检超过 15 秒仍没回来（实测 10.23 s，E-86），别让用户以为卡死。 */
@@ -218,6 +225,14 @@ export const copy = {
     sameCauseThrice: '这不是偶发失败：最近 {count} 次生成因同一原因失败',
     /** ★v7：`usage_error` 的人话标签（hint 由服务端下发）。 */
     usageRejected: '参数不被接受',
+    /**
+     * ★v12（S6 / AC-125）：SSE 看门狗判定"静默 45 秒"时的那句话。
+     *
+     * 它必须同时说清两件事：**连接断了**（不是生成失败了）与**还可以继续看**
+     * （那次生成可能仍在后台跑）。只说前半句会让人以为白花钱了，只说后半句会让人
+     * 以为一切正常。
+     */
+    streamClosed: '与服务端的连接断了，这次生成可能仍在后台进行——点『再次生成』旁的按钮会重新接上',
   },
 
   command: {
@@ -409,6 +424,20 @@ export const copy = {
     projections: '另有 {count} 个预测值（同业估值 / 目标价，不进核验）',
     identifiers: '另有 {count} 处是方法参数、日期或计数',
     derived: '其中 {count} 个为推算值（同比 / 轧差 / 空间等可命名推导）',
+    /**
+     * ★v12（S3 / §22.4.3）：格式收敛行。
+     *
+     * 它说的是一件**我们做过的事**（截短了模型的话），不是模型的错——所以措辞必须中性，
+     * 并且带上字段名，让读者能去那一节复核。
+     */
+    clamped: '这份报告有 {count} 处字段超过格式上限，已按句界截短（{fields}）',
+    /**
+     * ★v12（S4 / §22.4.3）：从正文还原行。
+     *
+     * `how` 由调用方翻译成人话（`正文` / `正文（补齐括号）`）。这句话必须写在脸上：
+     * 这份报告的 JSON 不是模型用 `submit_result` 交上来的，而是我们从它的正文里捡回来的。
+     */
+    rescued: '结构结果缺失，这份报告是从模型{how}中还原的',
     none: '所有数字都能在快照里找到依据',
     noData: '这份报告没有数字核验记录（早期版本）',
     /** ★A6：口径行。跨口径的版本只陈述口径，不并排比百分比。 */

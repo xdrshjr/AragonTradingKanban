@@ -6,7 +6,12 @@ import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { copy, fill } from '@/lib/copy';
 import { jumpHref, missingCounts, sampleCoverage, trustState, trustText, type TrustState } from '@/lib/grounding';
-import type { GroundingQuality, GroundingSample } from '@/lib/types';
+import type {
+  GroundingQuality,
+  GroundingSample,
+  QualityClamp,
+  QualitySalvage,
+} from '@/lib/types';
 
 /**
  * 报告头的数字可信度徽标（spec §19.3.2 / D2 / AC-50）。
@@ -28,6 +33,16 @@ import type { GroundingQuality, GroundingSample } from '@/lib/types';
 export interface TrustBadgeProps {
   /** 当前版本的 `report.quality.grounding`；`null`/`undefined` 时整块不渲染。 */
   quality?: GroundingQuality | null;
+  /**
+   * ★v12（S3/S4 / §22.4.3）：`quality.clamp` 与 `quality.salvage`。
+   *
+   * 为什么必须显示：clamp 是"我们截短了模型的话"，salvage 的 `how` 是"这份报告是从模型
+   * 正文里还原出来的"。两者都**降低了这份报告的可信度**，所以它们必须和"未接地 N 条"
+   * 出现在同一个抽屉里——而不是写进一个前端读不到的地方（V11-P2-2 的原话）。
+   * 老报告没有这两个键 ⇒ 不渲染那两行（不回填、不猜）。
+   */
+  clamp?: QualityClamp | null;
+  salvage?: QualitySalvage | null;
   /** 深链目标 (`?report=`) —— 样本按钮带上它，右键"在新标签打开"才不会丢版本。 */
   reportId: string;
   /** 点样本时回调：由 `ReportPanel` 负责滚动 + 高亮（组件自己不动 DOM）。 */
@@ -42,7 +57,7 @@ const TONE: Record<Exclude<TrustState['kind'], 'absent'>, string> = {
   missing: 'border-[var(--warn)]/40 text-[var(--warn)] bg-[var(--warn-weak)]',
 };
 
-export function TrustBadge({ quality, reportId, onJump }: TrustBadgeProps) {
+export function TrustBadge({ quality, reportId, onJump, clamp, salvage }: TrustBadgeProps) {
   const [open, setOpen] = useState(false);
   const state = trustState(quality);
 
@@ -88,6 +103,14 @@ export function TrustBadge({ quality, reportId, onJump }: TrustBadgeProps) {
   }
   if (quality.derivedClaims > 0) {
     notes.push(fill(copy.trust.derived, { count: quality.derivedClaims }));
+  }
+  // ★v12（S3）：格式收敛。**必须**在降级抽屉里出现——读者有权知道自己的报告被截过。
+  if (clamp && clamp.count > 0) {
+    notes.push(fill(copy.trust.clamped, { count: clamp.count, fields: clamp.fields.slice(0, 3).join('、') }));
+  }
+  // ★v12（S4）：从正文还原。`json_repaired` 意味着括号是**我们**补的，更要写在脸上。
+  if (salvage?.how) {
+    notes.push(fill(copy.trust.rescued, { how: salvage.how === 'json_repaired' ? '正文（补齐括号）' : '正文' }));
   }
 
   const expandable = samples.length > 0 || notes.length > 0;

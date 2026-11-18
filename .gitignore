@@ -48,3 +48,9 @@ Thumbs.db
 # agent-orchestration runtime (graph state, task prompts and reports):
 # tooling, not product. Kept on disk, never committed.
 .agentmesh/
+
+# deploy artifacts (build output + remote-only state)
+/web-dist/
+.deploy-backups/
+.backups/
+.aragon-home/

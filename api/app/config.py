@@ -134,6 +134,16 @@ class Settings(BaseSettings):
     #: `engine_probes` 的硬上限（只追加表，超过按 created_at 倒序保留最新的）。
     agent_probe_keep: int = 200
 
+    # ── ★v12（§22.3.3 / §22.3.8）：墙钟兜底与会话卫生 ─────────────────────
+    #: 硬截止 = `ARAGON_MAX_DURATION_MS` + 这个宽限（秒）。**不设"硬截止秒数"配置项**
+    #: （C-45 / V11-P1-10）：那会与 CLI 的 `--max-duration` 形成第二个截止真源，而两个
+    #: 真源里的那个更松的永远赢——于是"调大 max-duration"变成唯一能解释的行为。
+    #: 这里只加"多等一会儿"的余量，语义是"给 CLI 收尾的时间"，不是第二个上限。
+    agent_hard_deadline_grace_sec: int = 120
+    #: 会话目录体积的**只读**阈值（MB）。超了只在 `/capabilities.runtime.sessionDirMb`
+    #: 上报 + 界面提示"可清理"，**永不自动删**（R-61：全局 prune 实测会删别的项目的会话）。
+    agent_session_dir_max_mb: int = 256
+
     # ── Market data ──────────────────────────────────────────────────────
     data_providers: str = "akshare,yfinance,synthetic"
     allow_synthetic: bool = True

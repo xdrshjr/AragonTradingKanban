@@ -1,9 +1,9 @@
-# Aragon Research Terminal · 投研报告工作台 — 设计方案 v10
+# Aragon Research Terminal · 投研报告工作台 — 设计方案 v12
 
 > 特性 slug：`investment-research-report`
-> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ Subtask #1 设计评审（Iteration 3/3）修订 → Subtask #0 方案设计（Iteration 4/3）→ Subtask #1 设计评审（Iteration 4/3）修订 → **Subtask #0 方案设计（Iteration 5/3，本节点）**
+> 制定节点：Subtask #0 方案设计（Iteration 1/3）→ Subtask #1 设计评审（Iteration 1/3）修订 → Subtask #0 方案设计（Iteration 2/3）→ Subtask #1 设计评审（Iteration 2/3）修订 → Subtask #0 方案设计（Iteration 3/3）→ Subtask #1 设计评审（Iteration 3/3）修订 → Subtask #0 方案设计（Iteration 4/3）→ Subtask #1 设计评审（Iteration 4/3）修订 → Subtask #0 方案设计（Iteration 5/3）→ Subtask #1 设计评审（Iteration 5/3）修订 → **Subtask #0 方案设计（Iteration 6）** → **Subtask #1 设计评审（Iteration 6，本节点）**
 > 交付物：`web/`（Next.js 阅读器）+ `api/`（FastAPI + `aragon exec` 生成器）+ 工程脚手架
-> 文档状态：**v9 · Iteration 5 增量设计（Agent 接入面、引擎自检、归因 v2、重试权、解析抢救）**（v8 的 §20 主体保留；本节点新增 **§21**：Q-1~Q-4 四条可测定义、**K1~K7** 七条机制、**AC-90~AC-105**、**R-43~R-52**、裁决 **K-1~K-14**、实测证据 **E-65~E-74**；**未改动任何源码**）
+> 文档状态：**v12 · Iteration 6 设计评审修订（执行环境自证、墙钟兜底、逐字段收敛、散文救援、接地口径、前端动作确定性、重试不重付）**（评审新增 4 P0 + 12 P1 + 12 P2，全部就地修复；口径基线由「落库值」改为「今日重算值」；补 **AC-128~AC-136**、**C-37~C-48**、**R-64**、证据 **E-102~E-118**、纪律第 8 条；**零迁移、零新端点、未改动任何源码**）**（v9 的 §21 主体保留；本节点新增 **§22**：W-1~W-4 四条可测定义、**S1~S7** 七条机制、**AC-110~AC-127**、**R-54~R-63**、裁决 **S-1~S-10**、实测证据 **E-88~E-101**、里程碑 **M31–M37**；**零迁移、零新端点、未改动任何源码**）
 >
 > **版本号口径（避免误读）**：任务书的"bump 到 v2"以被评审文档为基准，而本图每个迭代的评审节点各推进一个主版本号（v1→v2→v3→v4→v5→v6→v7→**v8**）。本节点评审对象是 **v7**，因此本次提升为 **v8**。历史对应关系见 §0 的版本表。（顺带修掉一个陈旧标记：v7 节点把状态行写成了 v7，却没改文档标题，标题一直停在 v6——本轮一并归位。）
 >
@@ -22,6 +22,9 @@
 >
 > **v9 的第六条纪律（本轮新增）**
 > 6. **"某个配置项存在"与"某个配置项生效"是两件事，必须分开证。** 本轮 10 条实测里有 3 条推翻了"理所当然"的写法：`OPENAI_BASE_URL` 环境变量**不被采纳**（E-72）、`--retry-max` **管不住第二层重试**（E-69）、`error.code=stream_error` **同时**表示"网络断了"和"密钥错了"（E-70 vs E-71）。三者都不是笔误，是"照字面写就会在真实端点前面失效"的机制问题。所以本轮的写法是：**每个配置项都配一条"它到底有没有生效"的探针**，探针输出写进 §21.10.1 的证据表。
+>
+> **v11 的第七条纪律（本轮新增，来自 §22 的 E-88/E-89）**
+> 7. **"代码里写了 spawn"与"这台机器上 spawn 得起来"是两件事。** 前五轮把调用链、闸门、归因、重试、抢救全写齐了，却从没问过"运行这个进程的事件循环支不支持 `create_subprocess_exec`"——于是仓库自带的两个默认启动入口（`scripts/dev.mjs:83`、`start-all.ps1:589`）在 Windows 上把每一次生成都变成 `internal: NotImplementedError`，而 `runs` 表里那一行（`7aa5aeaa`，`stage=research` / `pct=20` / 10 秒 / token 全空）证明这件事**已经真实发生过**。所以本轮的第一条纪律是：**凡是"必须有外部进程才能成立"的能力，启动时就要自证一次，并把结论放进 `/capabilities`**，不允许等到第一次用户点击才暴露。
 
 ## 0. 文档版本与评审记录
 
@@ -37,11 +40,78 @@
 | v8 | 2026-02（Iteration 4） | Subtask #1 设计评审 | **评审修订，不重写 v7**。把 §20 的每条"现状/既有/本机能跑"断言拿本机实测复核（13 条新证据 E-52~E-64：6 次真实 `aragon exec` 探针 + 34 份历史 schema 的字节比对 + 真实 SQLite 的成本分布 + 依赖方向/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`assert_schema_identity` 被指定定义在 `services/snapshot.py` 却在 `agent/aragon_runner.py` 调用 —— `test_boundaries` 必红，且"两处各写一份"正是本轮要消灭的双源；迁移 `0004` 的 `down_revision="0003"` 与真实 revision id `"0003_cost_ledger"` 不符，`alembic upgrade head` 第一步即失败）与 **P1×7**（分类第 2a 条写在拿不到 `result` 的 `_classify_exit` 里、`capabilities.engine` 重新塞入 `provider/model` 推翻 V6-P1-3、`sse.ts` 只加类型联合收不到 `run.retry`、`ask_service` 的账本 `source` 被默认值错标成 unknown、202 体写成 `{runId, streamUrl}`、价格表静默改既有 `deepseek-chat` 价、`models/cost.py` 加 ORM CHECK 与"Alembic 是唯一 schema 真源"冲突），并补 **AC-85~AC-89**、**R-41~R-42**、裁决 **H-17~H-20**、纪律第 5 条与 11 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-19~C-24） |
 | v9 | 2026-02（Iteration 5） | Subtask #0 方案设计（**本节点**） | **增量设计，不重写 v1–v20**。需求：「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健」，并给出**真实第三方凭证**（`api.deepseek.com` + `deepseek-flash`）作为验收条件。做法：把"可用稳健"拆成四条**可被反驳**的定义 Q-1 接得上 / Q-2 证得了 / Q-3 说得清 / Q-4 丢得少，逐条用本机真实 `aragon exec` 反驳（10 条新证据 E-65~E-74：`aragon info`/`doctor` 的静态假绿、8.7 秒最小生成成功侧、坏端点 2 分钟被 CLI 第二层重试吃光、坏密钥与坏网络**同码不同病**、环境变量 `OPENAI_BASE_URL`/`OPENAI_API_KEY` **不被采纳**、`--max-tokens 40000` 不被拒）。新增 **§21**：**K1** 引擎接入面（`ARAGON_BASE_URL`/`ARAGON_API_KEY` 成为一等设置 → argv 唯一入口 → `redact_argv()` 密钥打码 → provider/端点形状预检）、**K2** 引擎自检探针（8.7s 真实最小生成 + 单飞 + TTL + `engine_probes` 只追加表 + `capabilities.aragon.verified`）、**K3** 失败归因 v2（`stopReason` 进分类、`stream_error` 按 message 细分 auth/网络、`result` 存在时不再短路重试证据）、**K4** 重试权收回（CLI 层 `--retry-max 0`、runner 层 2 次、`run.retry.layer`、预算守卫、usage 累加）、**K5** 解析抢救三档阶梯（repair → salvage → provisional，抢救必须降 `degraded` 且可见）、**K6** 前端动作表 + 端点徽标三态（把 `copy.errors` 里 5 条写了从未用的文案接上）、**K7** 记录（`engine.json` + 打码 `argv.json` + 探针表）。新增 **AC-90~AC-105**、**R-43~R-52**、里程碑 **M25–M30**、oracle **O-17~O-21**、裁决 **K-1~K-14**、迁移 **0005**、纪律第 6 条（"配置项存在"≠"配置项生效"，每个都要一条探针）。**本轮只写 `spec.md`，未改任何源码** | 待下游实现验证（本轮只出设计）→ 经 v10 评审为 **有条件通过** |
 | v10 | 2026-02（Iteration 5） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v9**。把 §21 的每条"现状 / 既有 / 本机能跑"断言拿本机实测复核（13 条新证据 E-75~E-87：4 次真实 `aragon exec` 探针 + 真实 `validate_doc` 跑 O-20 的文档 + `report_doc.schema.json` 的 `$defs` 必填项表 + 依赖方向/响应模型/迁移链/前端订阅清单的源码核对），就地修复 **P0×2**（`fullyCapable`/`degradedReason` 仍只认 `aragon info --json` 的 `hasApiKey` ⇒ 只填 `.env` 的机器上 `auto` 模式**静默返回 MockRunner**，Q-1 不可达且不报错；R-44「打码在 `build_argv()` 出口做一次」与 §21.3.2「`argv.json` 写 `redact_argv(argv)`」互斥，照 R-44 施工 ⇒ spawn 用 `***` 当密钥、每次生成 401 而 AC-90/91 全绿）与 **P1×9**（`schemas/capabilities.py::AragonAragonOut` 缺五个新字段 ⇒ `verified/verifiedAt` 进不了 wire；失败规则表不穷尽使 AC-99 的夹具无规则命中；O-20/AC-102 的 `droppedBlocks` 按现状算不出来且与 `quality.prunedBlocks` 重复计数；`AUTH_MARKERS` 的裸 `401` 重犯 v8 的 B-2 而 `provider_auth` 不重试；`provider_auth` 的 hint 仍指向 E-73 证明无效的 `OPENAI_API_KEY`；`keySource` 三处取值域不一致且被做成配置项；动作表少 4 个真实码多 1 个 HTTP 码；"比较可比性只需把 degraded 归入不可比"而 `compare_engine_quality` 没有 status 入参；探针没有可施工的 spawn 形态——第二 spawn 点、三参数无入口、`_classify_failure` 不可 import），并补 **AC-106~AC-109**、**O-22~O-23**、裁决 **K-15~K-16** 与 13 条 P2 口径修正。**未改任何源码** | **有条件通过**（条件 C-25~C-30） |
+| v11 | 2026-02（Iteration 6） | Subtask #0 方案设计（**本节点**） | **增量设计，不重写 v1–v21**。需求：「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健」（同一套真实 DeepSeek 凭证）。做法与前两轮相反：**不再 spawn 新探针，改为去读自己库里的产物**（24 个 `result.json`、14 份报告、6 份真实 `quality`、1032 个 CLI 会话文件），因为本轮的问题全都能从既有字节里读出来——14 条证据 E-88~E-101，其中 3 条推翻了"已经修好了"的假设：①仓库自带的两个默认启动入口都给 uvicorn 传 `--reload`（`scripts/dev.mjs:83`、`start-all.ps1:589`），而 uvicorn 的 `use_subprocess = bool(reload or workers>1)` 在 Windows 上装 Selector 循环，`create_subprocess_exec` 必抛 `NotImplementedError('')` ⇒ **默认参数下每次生成都在 `research` 以 `internal` 结束**（`runs.7aa5aeaa` 就是那一行）；②`validate_doc` 的判据是二值的，而 `normalize_doc` 不做任何长度收敛 ⇒ 601 字的 `summary`（schema 上限 600）让一份 99% 合格的报告整份消失，且 `salvage_doc` 走同一条校验所以也返回 `None`（**抢救阶梯在"文档存在但校验失败"上完全不可达**）；③6/6 真实报告的 `groundedRatio` 是 0.564~0.880、**全部低于 0.9 的降级线**（v12 现为 degraded），`derivedClaims` 恒 0，而 37 条未接地 claim 里 24 条与已有数字差 <1%、2 条是区间破折号被读成负号。新增 **§22**：**S1** 执行环境自证（`spawn_capability()` 唯一判据 + 启动自证 + `--reload` 默认关闭 + `kill_process_tree` 修三处）、**S2** 墙钟兜底（`wait_for` 硬截止 + 60 秒清扫，把"永久 running"变成"一定结束"）、**S3** 逐字段收敛（54 个有界字段的 clamp，先红后绿）、**S4** 散文救援（`rescue_from_text`，把 33% 的散文卡片救成降级报告）、**S5** 接地口径（派生目录补 5 类 + 区间/中文月日噪声 + 让 `derived` 分类真的触发，目标 ≥0.90）、**S6** 前端动作确定性（`wait` 真的等、`stream_closed` + 看门狗、契约断言 `action`）、**S7** 重试不重付（`--session-id`/`--resume` + 会话清理）。新增 **AC-110~AC-127**、**R-54~R-63**、里程碑 **M31–M37**、oracle **O-24~O-30**、裁决 **S-1~S-10**、条件 **C-31~C-36**、纪律第 7 条。**零迁移、零新端点、本轮只写 `spec.md`，未改任何源码** | 待下游实现验证（本轮只出设计）→ 经 v12 评审为 **有条件通过** |
+| v12 | 2026-02（Iteration 6） | Subtask #1 设计评审（**本节点**） | **评审修订，不重写 v11**。方法：把 §22 的每条「今天是什么样」拿**今天本机的代码与 CLI 重测一遍**，而不是读上一节的结论（13 条新证据 E-102~E-118：6 份 aragon 报告的 `grounding_report()` 重算 + `report_doc.schema.json` 的 67/56 条有界字段穷举 + `_claims_from_text()` 的 claim 路径实测 + `aragon sessions` 两条命令的真跑 + `uvicorn` 循环工厂 + 24 份 `result.json` 的 `text` 扫描 + `runErrors.test.ts` 的既有断言）。就地修复 **P0×4**：①W-3/E-95/E-97/AC-121 的基线全是**旧口径落库值**（重算后 6 份是 0.7057~**0.9453**、`derivedClaims` 85~**63** ⇒「6/6 全在 0.9 以下」与「derived 恒 0」双双不成立，且 AC-121 的后半句今天已经是绿的）；②AC-111 的「工作区目录不存在」与 `run_manager.py:234-235` 的 mkdir 顺序冲突；③`CLAMP_LIMITS` 的 `(scope, field)` 键抓不住 `heading.text=120`（12 个块是 `anyOf`，`text` 上限因块型而异）；④三个新码的 hint 被安排写进 `errors.py`，而真源是 `failure.py::FailureSpec.hint`。与 **P1×12**：`capability_degraded()` 不存在 / `fullyCapable` 不在 wire / 缺 `import asyncio`；`aragon sessions rm` 缺 `--yes`、`prune --older-than 7d` 是非法参数（两条都恒失败且被吞）；全局 prune 与 R-61 的「只删本 run 的 id」矛盾且会删别的租户；`sweep_stale_runs` 挂在 `SCHEDULER_ENABLED` 后面且用 `create_task`；S6 看门狗指错文件且假设 `: ping` 注释帧会喂 `lastEventAt`；「契约从不断言 `action`」是错的（`runErrors.test.ts:44-48` 已逐条断言）；区间守卫放错层（`canonical_number(token)` 看不到左邻字符）；中文月日**已经做完**；「唯一 spawn 点」不成立（`kill_process_tree:433` 另有一处）；`AGENT_HARD_DEADLINE_SEC` 不存在且会造第二个真源；spawn 异常统一映射会把 `aragon_unavailable` 吞掉；`agent_session_save` 是第二个真源。另修 12 条 P2（含「54 个有界字段」实为 67/56、「补 5 类派生量」里已有 2 类、schema 19,295 B 实为 18,392 B、散文救援在本机**零目标**）。补 **AC-128~AC-136**、**C-37~C-48**、**R-64**、纪律第 8 条。**未改任何源码** | **有条件通过**（条件 C-37~C-48） |
 
 > **v3 与 v2 的关系一句话**：v2 回答"怎么把它做出来并且做对"，v3 回答"做对之后，为什么它还不够像一个顶级产品"。两者不冲突——v3 的每一条新能力都建立 v2 的既有不变式之上（成本模型、单 worker、接地校验、依赖方向），并且**不豁免任何一条既有 AC**。
 >
 > **v5 与 v3 的关系一句话**：v3 回答"做对之后为什么还不够像顶级产品"，v5 回答"像顶级产品之后，凭什么让人敢拿它做判断"。v5 的三条主线（可回溯、单一投影真源、降级永不上抛）全部是 v2/v3 既有不变式的**加固与兑现**，没有一条引入新的架构层、新的第三方依赖或第二个并发真源。
 
+
+## 评审记录（Review Notes · Iteration 6）
+
+> 评审对象：`docs/plans/investment-research-report/spec.md` **v11**（§22，S1–S7）。
+> 评审方法与前五轮相同但落点不同：**每一条"今天是什么样"的断言，都用本机今天的代码/CLI 重新测一遍**，
+> 而不是读上一节自己写的结论。本轮的 **16 条 P0/P1** 里有 **9 条**属于同一类失效——
+> **"上一节点测过" ≠ "今天还是那样"**：v11 的基线是从 `reports.quality` 里**读出来的落库值**，
+> 而那些值是**旧口径**（`rules` / `docHash` 为 null）算的；用今天的 `claims-v3` 重算，同一批报告
+> 全部移位（见 V11-P0-1）。所以本轮的第八条纪律是：
+> **凡引用"今天的数字"，必须给出重算命令；引用落库值的，必须注明它由哪一版口径产生。**
+>
+> 证据 E-102~E-118 全部是本机只读实测，脚本在 `.run/probe/sec22_*.py`（已 gitignore），可重放。
+
+### P0（照字面施工会白跑，或修错了还以为修好）
+
+| ID | 位置 | 问题 | 实测证据 | 处置 |
+| --- | --- | --- | --- | --- |
+| **V11-P0-1** | §22.0.1 W-3 / §22.1 Q-7 / §22.10.1 E-95·E-97 / §22.3.6 验收表 / AC-121 | 「6/6 真实报告比值 0.564–0.880 全在降级线以下」「`derivedClaims` 恒 0」「AC-121 今天 0.624 / 0」**全部是旧口径的落库值**。同一份 `doc` + 同一份 `snapshot` 用今天的 `numeric_claims.RULES_VERSION=claims-v3` 重算：`0.7057 / 0.7875 / 0.8086 / 0.7704 / **0.9453** / 0.7921`，`derivedClaims` = `85 / 27 / 92 / 95 / 98 / **63**`。⇒ ①「6/6 全在 0.9 以下」不成立（v11 已 **0.9453 ≥ 0.90**）；②「`derivedClaims` 恒 0」不成立（今天 v12 已有 **63**）；③ AC-121 的第二条判据（`derivedClaims > 0`）**今天就是绿的**，违反硬约束 6 的「先红后绿」；④ 6 份里 v6/v7/v8/v10 的 `quality.grounding` 是**空对象 `{}`**（只有标量 `groundedRatio`），把它算成「6/6 可定位」是夸大 | `.run/probe/sec22_regrade.py`（只读，重算 6 份并打印每条）；`select json_extract(quality_json,'$.grounding')` 显示 v6/v7/v8/v10 = `{}`；E-102/E-103 | 全文改成**重算值**；目标从「≥0.90 且 derived>0」改为**可算的缺口数**（37 → ≤17）；并把真正还能红的判据提为验收主线（区间端点负号 2 条、差 <1% 的算术 24 条） |
+| **V11-P0-2** | §22.3.2(d) / AC-111 | 「Selector 策略下 run 在 **spawn 之前**以 `event_loop_unsupported` 结束，且 `workspace_path` 目录**不存在**」**不可实现**：`RunManager.start()` 在写 `runs` 行**之前**就 `workspace.mkdir(parents=True, exist_ok=True)`（`run_manager.py:234-235`），`_pipeline()` 第一句又是 `workspace.mkdir(..., exist_ok=True)`（`:312-313`）。闸门按设计放在 `research` 进门（`:369`）时，目录**必然已存在** | `read_file api/app/services/run_manager.py:188-263 / :310-320`（两处 mkdir）；E-104 | 闸门**提前到 `start()` 的 mkdir 之前**（`start()` 是同步方法 ⇒ `spawn_capability()` 必须同步可调用），AC 改为「工作区目录**未被创建**」并断言 `runs` 表**没有**该行 |
+| **V11-P0-3** | §22.3.4 `CLAMP_LIMITS` / AC-118 | `(scope, field)` 键与真实 schema 结构不匹配，且**抓不住真实越界**：12 个块在 schema 里是 `anyOf`，`text` 的上限**因块型而异**——`paragraph.text=4000`、`heading.text=**120**`、`callout.text=1200`、`quote.text=800`。§22.3.4 只写了 `("block","paragraph.text"): 4000`，一个 400 字的 `heading` 仍然整份判死（正是 E-93 那一类），而 AC-118 却宣称「54 个有界字段逐个越界都能收敛」 | `.run/probe/sec22_review.py` 打印 `block|0.text 4000` / `block|1.text 120` / `block|3.text 1200` / `block|7.text 800`；E-105 | `CLAMP_LIMITS` 改为**按 `block["type"]` 分派**的 12 条完整表；`(scope, field)` 的字符串键废弃 |
+| **V11-P0-4** | §22.4.1 `errors.py` 行 | 三个新码的 **hint 被安排写进 `api/app/errors.py`**，但 hint 的真源是 `agent/failure.py::FailureSpec.hint`（`failure.py:36-44`，读取入口 `hint_for()` `:323`）。写进 `errors.py` 等于写进一个没人读的地方 ⇒ 前端拿到的 `hint` 仍是 `null`，而 §22.4.2 的 `failure.py` 行只提「加码」不提 hint，两行合起来仍然漏了真源 | `read_file api/app/agent/failure.py:36-70`（`FailureSpec(code, retryable, severity, hint, http_status)`）；E-106 | 改成：**`failure.py` 加码 + 写 hint**（同一条 `FailureSpec`），`errors.py` 只加 AppError 子类（若确有 HTTP 语义） |
+
+### P1（机制与既有守卫冲突，照写会静默失效）
+
+| ID | 位置 | 问题 | 实测证据 | 处置 |
+| --- | --- | --- | --- | --- |
+| **V11-P1-1** | §22.3.2(a)(c) / AC-112 | 三处不可实现：①代码块 `return capability_degraded(reason=loop_reason, ...)` ——**这个函数不存在**，`check_aragon()` 的失败路径只有 `capability.errors.append(...)` + `return _remember(capability)`（`:407-409/:412-414/:478`）；②AC-112 要断言 `aragon.fullyCapable == false`，但 `fullyCapable` **不在 wire 上**（`as_payload():224-255` 只有 `degradedReason`）；③代码块用了 `asyncio.windows_events.ProactorEventLoop`，而 `preflight.py` 顶层**没有 import asyncio**（`:12-20`） | `read_file preflight.py:12-20 / :120-255 / :391-491`；E-107 | 改成「给 `AragonCapability` 加 `loopOk/loopReason` 字段 → `fullyCapable` 加一项 → `degradedReason` 加一个分支 → `as_payload()` 补两个字段」；AC-112 改成断言**同一个函数**的两个消费点（`runtime.loopOk` 与 `aragon.degradedReason == "event_loop_unsupported"`） |
+| **V11-P1-2** | §22.3.8 第 3、4 条 | 两条 `aragon sessions` 命令都是**无效参数**，实测：`prune --older-than 7d` → exit 2 `--older-than takes a non-negative number of days.`；`rm <id>` → exit 2 `Refusing to delete without --yes.`。而它们被 `try/except: log debug` 包着 ⇒ **恒定失败且静默**，会话目录不会变小 | `aragon sessions --help` / `aragon sessions prune --older-than 7d --dry-run` → rc=2；`aragon sessions prune --older-than 7 --dry-run` → rc=0（列 9 条）；`aragon sessions rm <id>` → rc=2；E-108 | 命令改成 `rm <id> --yes`（全局 `prune` 见 V11-P1-3：**删除**），并**把失败升为 `run.log(level=warn, code=session_cleanup_failed)`** 而不是 debug |
+| **V11-P1-3** | §22.3.8 第 4 条 vs R-61 | 自相矛盾：R-61 承诺「只删 `sanitize_session_id(run.id)` 精确匹配的 id」，第 4 条却让 ticker 跑 `prune --older-than N`——那是**全局**操作。实测 dry-run 列出的 9 条里有 `smoke-threads-tenant-a/b`、`webuse-17d194d2-…`、`3c64b53a-…-tenant-a`，明显属于**别的项目/租户**；而目录今天 **1545.71 MB > 阈值 256 MB** ⇒ 第一次 tick 就会照它删别人的会话 | `aragon sessions prune --older-than 7 --dry-run` 输出；`os.walk(~/.aragon-agent/sessions)` = `entries 1023 / 1545.71 MB`；E-108 | 删掉全局 prune。只保留「按本 run 的 session-id 精确 `rm --yes`」，另加**只读**的目录体积上报（`capabilities.runtime.sessionDirMb`），把清理决定交回用户 |
+| **V11-P1-4** | §22.3.3 第 2 层 / §22.5.4 | `sweep_stale_runs()` 挂在 `scheduler_ticker` 上，而 `SCHEDULER_ENABLED=0` 时 ticker **根本不启动**（`main.py:137-140`）⇒ S2 的第二层恰好在这台机器「关掉定时刷新」时整层消失。另外「由 ticker 用 `asyncio.create_task` 包一层 `wait_for(5s)`」与该文件的设计相反：`tick_once()` 是**单测入口且返回 int**（`scheduler_ticker.py:71-78`），fire-and-forget 既让 AC-115 无法确定性断言，又把异常丢进一个没人 await 的 Task | `read_file api/app/main.py:137-140`；`read_file api/app/services/scheduler_ticker.py:58-86`；E-109 | 改成 ①lifespan 里**先同步跑一次** `sweep_stale_runs()`，②再挂一个**独立于 `SCHEDULER_ENABLED`** 的 60 秒清扫任务（同 ticker 一个来源、不同开关），③`tick_once` 里用 `await asyncio.wait_for(self.sweep(), 5)` 内联，**不用** `create_task` |
+| **V11-P1-5** | §22.3.7(c) / §22.4.3 | 看门狗**指错文件且判据自相矛盾**：①`EventSource` 的生命周期完全封在 `web/lib/sse.ts::subscribeToRun()`（`:58-148`），`useGenerationStream.ts` 只拿到四个回调，**没有任何方式 `es.close()`**；②服务端保活是**注释帧** `: ping\n\n`（`routers/runs.py:158-160`，间隔 `poll_timeout=15.0`），注释帧**不会**触发 `EventSource.onmessage`（`wire()` 只订阅 8 个命名事件）⇒ 按「事件到达」记 `lastEventAt`，一次安静的长模型调用**必然**在 45 秒后触发看门狗并主动断流重连：把「卡在 60%」换成「45 秒一次无谓重连」 | `read_file web/lib/sse.ts:58-148`；`read_file api/app/routers/runs.py:154-166`；`read_file run_manager.py:920-946`；E-110 | 看门狗搬进 `lib/sse.ts`（它握着 `source` 与 `close()`）；**同时**要求服务端把保活改成 `event: ping` + `data: {}` 的真实帧（或复用 `run.progress`），否则阈值必须远大于最长的无事件间隔，并在文案里写明「安静不等于断」 |
+| **V11-P1-6** | §22.3.7(d) / AC-124 | 「契约夹具只断言超集、`action` **从未被任何用例断言**」**是错的**：`web/tests/runErrors.test.ts:44-48` 已经对 `codes + httpCodes` **逐条**断言 `actionFor(row.code).action === row.action`；`:34` 的 `>=` 是**额外**的第三处断言，不是唯一一处。真正缺的只有：`contracts/run_error_codes.json` 的 `httpCodes` 只有 **5 条**（缺 `too_many_runs` / `run_conflict`，而 `runErrors.ts:63-64` 有）。⇒ AC-124 今天**不是红的**，「先红后绿」不成立 | `read_file web/tests/runErrors.test.ts:30-48`；`read_file contracts/run_error_codes.json`；`read_file web/lib/runErrors.ts:57-65`；E-111 | AC-124 改成「夹具补 2 条 `httpCodes` 后逐条审计通过」，并另立一条**真正红**的判据：`primaryActionFor('too_many_runs') === 'wait'` 且 `runAction('wait')` 在推进 8 秒后调用过一次 `onRetry`（今天 `GenerationOverlay.tsx:72-84` 没有 `wait` 分支） |
+| **V11-P1-7** | §22.3.6(c) | 区间破折号的守卫**放错层**。实测 claim 路径：`目标价区间 1,296.22–1,509.76 元` → `('1,296.22','1296.22')` + `('-1,509.76','**-1509.76**')`；负号是在 `numbers_in_text_from_clean()` 的 `:934`（`replace("\u2213"/"\u2013","-")`）与 `NUMBER_RE` 的 `-?` 里产生的，而 `canonical_number(token)` 只拿到 token（`:334`），**看不到左邻字符** ⇒ 「破折号两侧都是数字」这条判据在那一层无法执行 | `.run/probe/sec22_claims.py`（四组输入的实际 claims）；`read_file numeric_claims.py:926-940 / :279-303`；E-112 | 守卫落在 `numbers_in_text_from_clean()`（它有 `text` + `finditer().start()`，可以看 `text[start-1]`）；ASCII 连字符同样中招（`1,296.22-1,509.76` 也产出 `-1509.76`），所以不能只处理 `–`/`−` |
+| **V11-P1-8** | §22.3.6(d) / AC-122 后半 | 「中文月日补齐」**已经做完了**，AC-122 的后半句今天就是绿的。实测 claim 路径：`11 月 2 日` → `[('11 月','','identifier'), ('2 日','','identifier')]`（**零 fact claim**）；`2025 年 3 月 14 日披露` → `[('2025 年 3 月 14 日','','identifier')]`。原因是 `NON_MEASURE_RE:147` 的 `\d{1,4}\s*(?:日|年|周|月)` 已在 `_strip_with_removals` 里生效（`:298-302`），`DATE_LIKE_RE:106/109` 早已覆盖带年份形态 | `.run/probe/sec22_claims.py`；`read_file numeric_claims.py:144-156`；E-112 | 从 S 层**删除**该项，降级为「补一条回归用例」；AC-122 只保留区间端点那半 |
+| **V11-P1-9** | §22.1 Q-5 / §22.3.2 开头 | 「项目里**唯一**的 spawn 点（`aragon_runner.py:660`）」不成立：同文件 `kill_process_tree()` 在 `:433` 另有一处 `asyncio.create_subprocess_exec("taskkill", ...)`，`preflight._run_info()` 用同步 `subprocess.run`。结论不变（Selector 下两处都抛 `NotImplementedError`，E-88 已实测），但这是 AC-116 的全部依据；写成「唯一」会让实现节点只改 `:660` 就以为闭合 | `read_file aragon_runner.py:420-460`；`.run/probe/e1_loop_notimplemented.py` 输出（默认 Proactor `spawned ok rc=128` / Selector `ESCALATES NotImplementedError: ''`）；E-113 | 改成「两处异步 spawn + 一处同步 `subprocess.run`」，并把 `kill_process_tree` 的修复单列（它是取消路径，不是生成路径） |
+| **V11-P1-10** | AC-114 / §22.4.1 | AC-114 要的 `AGENT_HARD_DEADLINE_SEC=3` **不存在也不该存在**：§22.3.3 与 §22.5.1 都把硬截止定义成 `--max-duration + grace`，§22.4.1 只加 `agent_hard_deadline_grace_sec`。一个可设的「硬截止秒数」会与 CLI 的 `--max-duration` 形成**第二个真源**（V10-P1-6 的 `keySource` 同一课） | `read_file api/app/config.py:79-110`（无 `agent_hard_deadline_sec`）；`aragon exec --help` 的 `--max-duration <ms>`；E-114 | AC-114 改成 monkeypatch `agent_hard_deadline_grace_sec=3`（与 §22.4.5 的 `test_hard_deadline.py` 写法一致） |
+| **V11-P1-11** | §22.3.2(e) | 异常映射被写反了：照字面把 `:669` 的捕获扩成 `(OSError, ValueError, NotImplementedError)` 并统一 `raise AgentError("event_loop_unsupported", …)`，则**任何** spawn 失败（`aragon.CMD` 找不到、`cwd` 不存在、argv 非法）都会被报成「事件循环不支持」，把 `aragon_unavailable`（唯一真正可操作的那条 hint）吞掉 | `read_file aragon_runner.py:659-671`；`read_file failure.py:50-56`（`aragon_unavailable` 的 hint 指向 `ARAGON_BIN`/PATH）；E-113 | 必须**按类型分支**：`type(exc) is NotImplementedError` → `event_loop_unsupported`；其余保持 `aragon_unavailable` |
+| **V11-P1-12** | §22.4.1 `agent_session_save` / §22.5.1 `sessionSave` | 这是**第二个真源**：§22.3.8 第 2 条已经把它派生自 `AGENT_ATTEMPTS`（`config.py:129`，默认 2）。再开一个配置项就会出现「`attempts=2` 但 `sessionSave=off`」这种自相矛盾的组合，而 `capabilities.runtime.sessionSave` 又要下发它 | `read_file api/app/config.py:126-131`；与 V10-P1-6 的裁决同型；E-114 | 删掉配置项，`sessionSave` 改为由 `agent_attempts > 1` **派生**的只读值 |
+
+### P2（记录在案，不阻塞，但下游不要照旧写）
+
+| ID | 位置 | 问题 | 证据 | 处置 |
+| --- | --- | --- | --- | --- |
+| V11-P2-1 | §22.4.4 / AC-113 | `start-all.ps1` 的参数块（`:40-45`）只有 `NoBrowser/Mock/Restart/NoReload`，**没有 `-Reload`**；`.\start-all.ps1 -Reload` 会 ParserError | `read_file start-all.ps1:40-45 / :586-590` | 文件表补「参数块加 `[switch]$Reload`」 |
+| V11-P2-2 | §22.3.4 纪律① | `SalvageReport.as_payload()`（`report_validator.py:502-510`）只输出 5 个键，**已经漏了 `prunedBlocks`**；新增 `clamped` 若不补 `as_payload`，前端抽屉那行字永远不会出现 | `read_file report_validator.py:477-520` | 明写「同时改 `as_payload()`」 |
+| V11-P2-3 | §22.4.5 | 漏了 `api/tests/test_contract_codes.py::test_every_quality_key_has_a_response_field`（`:77`）——`quality.clamp` 新增键后这条反射守卫会红 | `grep -n test_every_quality_key_has_a_response_field api/tests/test_contract_codes.py` | 测试表补一行 |
+| V11-P2-4 | §22.3.4 / E-94 / AC-118 | 「54 个有界字段」是口径数字：本机实测 `maxLength 45 / maxItems 17 / maxProperties 1 / maximum 2 / minimum 2 = **67**`（要求同节点带 `type` 则 **56**）。数字一变，参数化用例就脆 | `.run/probe/sec22_review.py`（`bounded_all=67 bounded_typed=56`） | AC-118 改成「遍历 schema 得到的**每一个** `maxLength/maxItems/maxProperties` 节点」 |
+| V11-P2-5 | §22.3.6(a) | 「目录补 5 类」里**已有 2 类**：实测 v12 的 `derived_values()` 有 **13 个前缀 51 条**，其中 `distanceMa`（MA5/MA20/MA60）与 `upside`/`scenarioUpside` 都在。真正缺的是 TTM 加总、前高/前低、布林带端点 | `.run/probe/sec22_derived.py`（`prefixes = {'yoy':12, 'singleQuarter':10, …, 'distanceMa':3, 'upside':1, 'scenarioUpside':3}`） | 改成「补 3 类」并点名 `ttm:` / `extreme:` / `bollinger:` |
+| V11-P2-6 | §22.12 | 「本轮 `schema.json` 仍是 **19,295 B**」与本节自己的结论冲突：真源实测 **18,392 B / sha1 `7a93509904b4` / depth 11 / nodes 658**；19,295 是 `read_text`+`write_text` 的 CRLF 副本（§20 已解释） | `.run/probe/sec22_review.py`（`bytes=18392 sha1=7a93509904b4 depth=11 nodes=658`） | 改成 18,392 B |
+| V11-P2-7 | §22.3.2(f) | `kill_process_tree(..., hard_pid: int \| None = None)` 是**新造参数**：今天签名是 `(process, *, label="-") -> None`（`:420`），改成返回 `bool` 即可满足 AC-116 | `read_file aragon_runner.py:415-460` | 删掉 `hard_pid`，只保留「返回 bool + 删早退 + 宽捕获」 |
+| V11-P2-8 | §22.3.4 `CLAMP_LIMITS` | `("scenarios","items")` / `("peers","items")` 的路径名不对：schema 是 `$defs/block/anyOf/10/properties/scenarios` 与 `anyOf/9/properties/peers`（无 `.items`） | `.run/probe/sec22_review.py` 的 `block\|10.scenarios` / `block\|9.peers` | 随 P0-3 一起改成按块型分派 |
+| V11-P2-9 | §22.2 S2 行 vs §22.3.3/R-62 | 一处写「60 秒活性清扫」，两处写「tick 30 秒 + 截止 = `--max-duration` + 120 秒」，数字不一致 | `read_file scheduler_ticker.py:33-45`（`scheduler_tick_seconds`） | 统一成「30 秒 tick，截止 = max_duration + grace」 |
+| V11-P2-10 | §22.10.1 E-100 | 「24 个 `result.json` → **12** 份成了报告」已漂移：今天实测 `result.json=24`、`report.json=**17**`、`prose_only=**4**`（四份都是 `stopReason=max_turns`、`text` 只有 29 字的一句拒绝话） | `.run/probe/sec22_counts.py` / `sec22_prose.py` | AC 不再引用该数字；散文救援的前提按 V11-P1-8 同法重写（见下） |
+| V11-P2-11 | §22.3.5 / S4 | **散文救援在本机没有目标**：24 份 `result.json` 的 `text` 最长 **413 字**、`{`/`}` 出现次数 **0**；能救的合法 JSON 全在 `result`（字符串），而 `_salvageable()`（`:292-307`）已经 `json.loads` 过它。四份散文卡片是 `stopReason=max_turns` 的**拒绝话术**，不是被截断的 JSON | `.run/probe/sec22_counts.py`（`text contains braces=0`、`max result.text length=413`）；`sec22_prose.py`（四份的 `stopReason=max_turns` / `text` 29 字） | S4 降为「**防御性**能力」：保留 `rescue_from_text`，但验收改为**构造夹具**（截断 JSON 的单元用例），不再声称「33% 真实生成可救」；`output_truncated` 仍保留（它对应 `max_turns` 是**另一个码**，见 P1-11） |
+| V11-P2-12 | §22.3.7(b) | 「`api.run()` 现在全仓无调用」✅ 属实（`web/lib/api.ts:256` 定义、全仓 0 调用），但「重连前先查状态」依赖 `GET /runs/{id}`——`routers/runs.py` 里 `_load()` 只被 `/events` 与 `/events-token` 用到，路由是否存在要写明 | `grep -rn "api\." web/lib/api.ts`；`read_file routers/runs.py:120-180` | 文件表点名 `GET /runs/{id}` 是否已存在；不存在则改「用 `/events?after=` 的 replay 自愈」，不加端点 |
+
+### oracle 断言（写完自检）
+
+| 编号 | 断言 | 结果 |
+| --- | --- | --- |
+| O-31 | 每条 P0/P1 都有一条**本机可重放**的命令或 `file:line` | ✅ E-102~E-118，脚本 `sec22_regrade/review/claims/missing/derived/counts/prose.py` |
+| O-32 | 「今天的数字」全部**重算**过，不引用落库值 | ✅ 6 份 aragon 报告逐份 `grounding_report(doc, snapshot)` 重算 |
+| O-33 | 每条被推翻的断言都在正文**就地改掉**，而不是只在评审表里记一笔 | ✅ 正文 47 处带 `★v12 修订（V11-…）` 标记 |
+| O-34 | 不改任何源码、不 `git commit` | ✅ `git status --porcelain` 只有 `spec.md`（+ 既有 `.gitignore`/`deploy/`） |
+| O-35 | 版本标记升为 **v12**，且 §0 版本表多一行 | ✅ 标题行 + §0 表末行 |
 
 ## 评审记录（Review Notes · Iteration 5）
 
@@ -7348,3 +7418,1448 @@ O-20 夹具恰好只含 `paragraph` 与未知块，所以它一直是绿的。
 
 `§21.7.3` 与 README 原来都还写着 240 / 238.5。数字仍然是"下次要抬，先说明还延后了什么"。
 
+
+---
+
+## 22. Iteration 6 增量设计：让「可用稳健」在真实机器上可被证伪（S1–S7）
+
+> 本节把本轮需求——**「继续完善，确保 Agent 和解析生成报告的 AI 能力可用稳健」**（附真实 DeepSeek
+> 凭证）——翻译成七条**能被反驳**的定义，然后逐条用本机实测反驳一遍。
+> 与前五轮的区别：§20 补的是「失败的证据链」，§21 补的是「AI 能力接得上」，本节补的是
+> **「接上以后，在这台机器上、用默认参数，到底还会不会白花钱」**。
+
+### 22.0 本轮的定位、硬约束与 oracle 断言
+
+#### 22.0.1 「可用稳健」在 v11 的四条可测定义（W-1 ~ W-4）
+
+| 编号 | 一句话定义 | 可反驳的判据 | 本轮的实测答案 |
+| --- | --- | --- | --- |
+| **W-1 起得来** | 用仓库**自带的默认启动参数**，生成链路必须在 Windows 上真的能 spawn 子进程 | 用 `npm run dev` 起服务 → 点一次生成 → run 到 `persist` 而不是停在 `research` | ❌ **不成立**：`--reload` 把事件循环换成 Selector，`create_subprocess_exec` 抛 `NotImplementedError`，run 在 20% 以 `internal` 结束（E-88/E-89） |
+| **W-2 救得回** | 模型交出一份「只有一处不合规」的文档时，用户拿到的是**降级报告**，不是一张临时卡片 | 把真实 v12 的 `summary` 改成 601 字 → 走今天的代码 → 报告是否仍然落库 | ❌ **不成立**：`validate_doc` 报 1 条错 → `_finalize_failure`；`salvage_doc` 对同一份返回 `None`（E-93） |
+| **W-3 说得清** | 报告上的「降级」徽标必须有区分度：真正可疑的报告才降级 | 用**今天的代码**把本机 6 份 `source=aragon` 报告逐份重算（同一份 `doc` + 同一份 `snapshot`） | ⚠️ **部分成立（★v12 修订 V11-P0-1）**：`0.7057 / 0.7875 / 0.8086 / 0.7704 / **0.9453** / 0.7921`——**一份（v11）已经过 0.9**，所以「6/6 全在降级线以下」是**旧口径的落库值**（`0.7656/0.8803/0.7036/0.7451/0.5635/0.6235`）造成的误判；`derivedClaims` 也不再是恒 0（今天 = `85/27/92/95/98/63`） |
+| **W-4 退得干净** | 任何失败/取消/超时，界面都必须有一个**真的会做事**的按钮，且进程不会残留 | 逐码点主按钮；把 `--max-duration` 调到 1 秒看是否一定收敛 | ❌ **不成立**：429 `too_many_runs` 的主按钮是「稍后重试」但点下去**什么都不发生**（E-98 关联 F-6）；Python 侧没有截止时间（E-92） |
+
+三条附带结论（本轮一并修）：
+
+- **W-2 的兄弟问题（★v12 修订 V11-P2-11）**：本机今天有 **3 份** `source=aragon-text` 的 provisional 卡片；
+  但 4 个 `result.json` 里「`structured=null` 且 `text` 非空」的样本，`stopReason` **全是 `max_turns`**、
+  `text` 只有 **29 字**的一句拒绝话术（`我只提交报告，非结构化提交或者不满足`），而 24 份 `result.json` 的 `text`
+  **最长 413 字、`{`/`}` 出现 0 次**（E-115）。⇒ 这些钱不是花在「写了一半的 JSON」上，是花在
+  「**轮次烧完了还没提交**」上——S4 的散文救援在本机**没有目标**（详见 §22.3.5 的 ★v12 修订）。
+- **W-3 的原因不是模型乱写（★v12 复核仍成立）**：v12 的 **37** 条「未接地」数字里有 **24 条（65%）**
+  与语料里的已有数字相差 **< 1%**（`.run/probe/sec22_missing.py` 逐条给出最近候选与差距：
+  `1,744.3 vs 1741.441 → 0.16%`、`10.1 vs 10.02 → 0.80%`、`48.6 vs 48.4 → 0.41%`、`1,500 vs 1509.76 → 0.65%` …），
+  另有 **6 条**是符号问题（其中 **2 条**确为区间端点：`-1,509.76`、`-1,480.00`），剩 **7 条**无邻。
+  也就是说：**24 + 6 = 30 条是「口径没给名字」，7 条是真的对不上**（E-112/E-116）。
+- **W-4 的代价**：起点预检串行跑 3 次 CLI（`info` 8.96s + `doctor` 5.18s + `models` 9.28s =
+  **23.4 秒**）阻塞 `lifespan()`；在 `--reload` 下每次改文件都重来一遍（E-90）。
+
+#### 22.0.1b ★v12 修订：这一节的基线必须**重算**
+
+> 评审节点实测（`.run/probe/sec22_regrade.py`，只读）：v11 引用的 `0.564–0.880` 与 `derivedClaims=0`
+> 是 **`reports.quality` 里的落库值**，而**落库值来自旧规则**——最直接的证据是那两份 `grounding`
+> 的**键集**：v11/v12 落库的 `grounding` 只有 8 个键（`factClaims / factMissing / totalMissing /
+> projectionClaims / derivedClaims / identifierClaims / skipped / samples`），**没有 `rules` / `docHash` /
+> `snapshotHash`**；而今天 `GroundingReport.as_payload()`（`numeric_claims.py:256-273`）一定带这三个键。
+> 同一份 `doc_json` + 同一份 `workspace/runs/<runId>/snapshot.json` 用 `claims-v3` 重算：
+
+| 报告 | 落库 ratio（旧口径） | **今日重算 ratio** | 落库 derived | **今日 derived** | 今日 fact(M/T) |
+| --- | --- | --- | --- | --- | --- |
+| v6 `ca994f5c` | 0.7656 | **0.7057** | —（`grounding={}`） | 85 | 333 / 98 |
+| v7 `6f7c4b97` | 0.8803 | **0.7875** | —（`grounding={}`） | 27 | 287 / 61 |
+| v8 `97867c59` | 0.7036 | **0.8086** | —（`grounding={}`） | 92 | 303 / 58 |
+| v10 `e6aa49b0` | 0.7451 | **0.7704** | —（`grounding={}`） | 95 | 318 / 73 |
+| v11 `ed01d950` | 0.5635 | **0.9453** | 0 | 98 | 256 / **14** |
+| v12 `ea48e803` | 0.6235 | **0.7921** | 0 | **63** | 178 / 37 |
+
+三条结论（下游必须按这个口径施工）：
+
+1. **「6/6 都在 0.9 以下」不成立**：v11 重算已是 **0.9453**。所以「降级徽标没有区分度」这个诊断**要换理由**——
+   今天真正的病是「**同一份报告在不同时间算出不同的比值，而且界面拿不到 `rules` 说明它们不可比**」，
+   不是「所有报告都黄」。`RULES_VERSION` 已经存在（`claims-v3`），缺的是**把旧值明确标成不可比**。
+2. **「`derivedClaims` 恒 0」不成立**：今天 v12 就有 **63** 条。`block.derived` 那条死分支（`numeric_claims.py:949-955`）
+   仍然该修（S-7 的理由不变），但它**不是** `derivedClaims` 为 0 的原因，因此**不能**把「derived 会触发」写成
+   S5 的验收判据（今天已经绿，违反硬约束 6）。
+3. **目标改成可算的缺口数**：v12 今天 `fact=178 / missing=37`。给 24 条算术命名 + 修 2 条区间符号 + 修 4 条
+   yoy 符号（**共 30 条**）⇒ `missing=7` ⇒ ratio **≈0.9607**。所以验收写「`missing ≤ 17`（等价于 ratio ≥ 0.90）**且** 37 条里
+   「最近候选差值 < 1% 的未命名数」= 0」，两条都可机器断言（AC-121 已按此改写）。
+
+#### 22.0.2 硬约束（写进代码之前先写死的六条）
+
+1. **本轮不新增迁移**（`alembic heads` 仍是 `0005_engine_probes`）。所有新事实都必须能装进
+   既有列：`reports.quality`（JSON）、`runs.structured_attempts`、`run_events.payload`、
+   工作区的 `engine.json`。理由：§21 刚加过一张表，连续两轮加表说明我们在拿 schema 当日志。
+2. **不新增端点**。只允许在 `GET /capabilities` 里加字段、在既有 SSE 帧里加字段。
+3. **不改既有错误码语义**。新增的码只允许**追加**，且必须同时改三处：`failure.RUN_ERROR_CODES`、
+   `contracts/run_error_codes.json`、`web/lib/runErrors.ts`（AC-104 的双向断言会自动红）。
+4. **不碰 `spec.md` 之外的文件**（本节点只产出设计）；下游实现节点**只许改 `api/` 与 `web/`**。
+5. **`build_argv()` 的返回值永远是真实 argv**（V10-P0-2 的裁决不许回退）；任何打码只发生在三个
+   落盘点。
+6. **每一条修复都必须有一条「先红后绿」的用例**：改之前用例必须失败，并把它失败时的输出贴进
+   实现节点的 findings（I-107 起）。
+
+#### 22.0.3 oracle 断言（写完自检，见 §22.10）
+
+| 编号 | 断言 | 结果 |
+| --- | --- | --- |
+| O-24 | 本节引用的每个 `file:line` 都真实存在且语义相符 | ✅ 13/13 复核（见 §22.10.1） |
+| O-25 | 每条 P0/P1 结论都有一条**本机可复现**的实测证据（命令 + 输出摘录） | ✅ E-88~E-100 |
+| O-26 | 至少有一条证据是「用真实凭证 + 真实 CLI」得到的，不是夹具 | ✅ E-89 用的是 `runs` 表里那次真实的失败行 |
+| O-27 | 「降级率」给的是**能算出来的目标值**，不是「会变好」 | ✅ 目标 ≥0.90，依据 E-97 的 24/37 |
+| O-28 | 新增错误码数量、契约文件同步点、受影响的用例数逐一点名 | ✅ §22.5.3 / §22.7.3 |
+| O-29 | 本节提出的每条修复都不违反 §21 的裁决 K-1~K-16 与 V10-P0-1/2 | ✅ §22.12 逐条对照 |
+| O-30 | 「零迁移」在写完后再核一遍 | ✅ `alembic heads` = `0005_engine_probes`（本节不改 schema） |
+
+### 22.1 概述：v10 之后仍然答不上的三个问题
+
+前五轮我们已经把**「引擎接上了吗」**（K1）、**「连通性怎么证」**（K2）、**「失败怎么归因」**
+（K3）、**「重试谁说了算」**（K4）、**「解析坏了怎么救」**（K5）写进了代码。问题是这些能力
+**全部建立在「子进程能起来」这个前提上**，而这个前提在本机默认启动参数下是不成立的。
+§22.1 的三个问题都来自「拿这台机器的真实产物去核对」：
+
+**Q-5：默认参数下，生成还能起来吗？**
+不能。`scripts/dev.mjs:83` 与 `start-all.ps1:589` 默认给 uvicorn 加 `--reload`；uvicorn 的
+`use_subprocess = bool(reload or workers > 1)`（`uvicorn/config.py:378-379`）在 Windows 上因此
+返回 `SelectorEventLoop`（`uvicorn/loops/asyncio.py`），而 `asyncio.create_subprocess_exec`
+在 Selector 循环上直接抛 `NotImplementedError`。★v12 修订（V11-P1-9）：异步 spawn 点**有两处**——
+生成路径 `api/app/agent/aragon_runner.py:660`（只捕 `(OSError, ValueError)`，`:669`）与**取消路径**
+`kill_process_tree()` 的 `taskkill`（`:433`，只捕 `OSError`，`:443`）；此外 `preflight._run_info()` 用的是同步
+`subprocess.run`（不受事件循环影响）。两处异步 spawn 在 Selector 上都会抛，所以结论不变，但**修复必须两处都改**，
+否则「生成起来了、取消却崩」。异常上抛到
+`run_manager.py:301` 的 `except Exception`，被记成 **`internal`**。
+证据就在自己的库里：`runs` 表 `7aa5aeaa` 行——`stage=research`、`pct=20`、`error_code=internal`、
+`error_message='NotImplementedError: '`、耗时 10 秒、token 全空（E-89）。
+前端拿到 `internal` 这个码，动作表给的是「查看日志」——而日志里只有一句没有上下文的异常类名。
+
+**Q-6：为什么花了钱却拿不到报告？**
+两种完全不同的浪费，现在都被记成同一句话。
+第一种是**「只有一处不合规」**：E-93 把真实 v12 的 `summary` 改成 601 字（schema 上限 600），
+`validate_doc` 报 1 条错 → `run_manager.py:484-493` 直接 `_finalize_failure`；
+而抢救阶梯的入口 `run_manager.py:427` 要求 `doc is None`，所以 **`salvage_doc` 在这条路上根本
+不会被调用**；即便调用了也没用——`salvage_doc` 内部同样先 `jsonschema.validate`，同一份文档
+它返回 `None`（E-93 的 B 分支）。
+第二种是**「话说了、结构没交」**：9 次真实生成里 3 次落成 `source=aragon-text` 的临时卡片
+（E-95）。这类 run 的 `result.json` 里 `text` 字段有内容、`structured` 为 `null`，今天的代码
+只把 4000 字散文塞进 provisional 文档（`report_validator.py:59` / `:706`），**从不尝试从散文里
+把 JSON 抠出来**。
+
+**Q-7：每份报告都说自己「降级」，这个提示还有意义吗？**
+没有——但★v12 修订（V11-P0-1）把理由换掉了。`quality.status` 的降级判据里 `groundedRatio < 0.9` 是一条硬线。
+落库的 6 份真实 aragon 报告是 0.564 / 0.624 / 0.704 / 0.745 / 0.766 / 0.880（看似一份都没过线），**但那是旧口径**：
+用今天的 `claims-v3` 重算同一批 `doc + snapshot` 得到 0.7057 / 0.7875 / 0.8086 / 0.7704 / **0.9453** / 0.7921——
+**v11 已经过线**。所以真正的病不是「所有报告都黄」，而是「**同一份报告换一版规则就换一个比值，而界面没有一处
+说明这两次不可比**」（`RULES_VERSION` 已存在，缺的是把它显示出来）。5 份 mock 是 0.950–0.989、创建时全绿（E-95/E-102）。读者于是学会无视那个黄条，而真正该被注意的那一份（0.564）也就
+一起被无视了。
+原因不在模型：`derived_values()` 的目录只覆盖了「快照里能写死公式的那几类」，实测 37 条未接地
+claim 里 24 条与已有数字相差 < 1%（E-97）；`numeric_claims.py:949-955` 的注释自己也承认
+`derived` 分类「在今天的合法文档上恒为 false」，所以 `derivedClaims` 永远 0（E-95 的表里一列
+全 0 就是它）。再叠上两个**符号噪声**（E-98）：「1,296.22–1,509.76」这种区间被读成
+`-1509.76`，「11 月 2 日」被读成 `11`。
+
+### 22.2 范围分层：S 层（本轮必做）/ T 层（明确不做）
+
+| 层 | 编号 | 内容 | 为什么现在做 |
+| --- | --- | --- | --- |
+| **S** | S1 | **执行环境自证**：启动即断言 Proactor + 能力面暴露 `eventLoop`；`--reload` 从默认启动参数里去掉；`kill_process_tree` 收窄异常并记录 | 默认参数下 100% 生成失败，且报成 `internal`（E-88/E-89/E-91） |
+| **S** | S2 | **墙钟兜底**：`runner.run()` 外面加 `asyncio.wait_for`（deadline = `--max-duration` + grace，★v12：**不引入独立配置项**）+ **30 秒 tick 上的活性清扫**（★v12：不依赖 `SCHEDULER_ENABLED`），把「永久 running」变成「一定结束」 | Python 侧无截止时间（E-92）；`kill_process_tree` 有早退分支（E-91） |
+| **S** | S3 | **逐字段收敛（clamp）**：`normalize_doc` 新增长度/条数收敛 pass，转成 `degraded` 报告而不是临时卡片 | 601 字 summary 即全灭（E-93）；schema 里 54 个有界字段（E-94） |
+| **S** | S4 | **散文救援（★v12 降级为「防御性能力」）**：`structured=null` 时从 `text` 里抠 JSON（括号补全）→ 走 salvage；成功则 `degraded` 而不是 provisional | ★v12 修订（V11-P2-11）：本机 24 份 `result.json` 的 `text` 最长 413 字、**`{`/`}` 出现 0 次**，4 份散文卡片全是 `stopReason=max_turns` 的拒绝话术 ⇒ 本机**零目标**，验收只能靠构造夹具（E-115） |
+| **S** | S5 | **接地口径修正**：派生量目录补齐 **3** 类（TTM 加总 / 前高前低 / 布林带顶点；均线距离与情景空间**已有**）+ 区间端点符号；目标 `v12 missing 37 → ≤17`（等价 ratio ≥ 0.90） | ★v12 修订（V11-P0-1/V11-P1-8）：重算基线是 0.7921/37 条缺口，不是 0.624/0 条；中文月日**已经做完**（E-112/E-116） |
+| **S** | S6 | **前端动作确定性**：`wait` 真的等、`stream_closed` 进表、SSE 看门狗、契约文件补 `too_many_runs` 并断言 `action` | 429 主按钮点了没反应（E-99）；契约只断言了「超集」（E-100） |
+| **S** | S7 | **重试不重付 + 会话卫生**：重试用 `--session-id`（`sanitize_session_id` 目前是死代码）+ `aragon sessions prune` | 单次生成 68,974–181,421 input tokens（E-100）；会话目录 1,543 MB（E-100） |
+| **T** | T1 | 不做「多进程/多 worker」：`assert_single_worker()` 是对的，改了会炸 SSE | 与 §18.3 一致 |
+| **T** | T2 | 不做 WebSocket 重写：SSE + 轮询兜底够用，改协议没有可测收益 | 成本 >> 收益 |
+| **T** | T3 | 不做「模型自评数字可信度」：让被审对象当审计员永远不是我们的方向 | §21 裁决 K-8 的延续 |
+| **T** | T4 | 不做任意二元算术的**穷举**匹配：`derived_values()` 的注释已实测 15.74% 随机假命中，只能「命名目录 + 有限模式」 | E-97 的 13 条无邻 claim 就是这条红线的代价 |
+| **T** | T5 | 不做 PDF / 向量检索 / 多用户 / 多币种 / i18n | §19.2 的 C 层继续有效 |
+| **T** | T6 | 不重构 `run_manager` 的六阶段：只在 `research` 与 `validate` 两处插钩子 | 范围纪律 |
+
+### 22.3 技术设计
+
+#### 22.3.1 分层、不变式与新增依赖方向
+
+```text
+web/  ──HTTP/SSE──▶  routers/  ──▶  services/run_manager.py  ──▶  agent/aragon_runner.py
+                          │                    │                        │
+                          │                    ├─▶ services/report_validator.py
+                          │                    │        └─▶ services/numeric_claims.py
+                          │                    └─▶ agent/fingerprint.py
+                          └─▶ schemas/capabilities.py  ◀── agent/preflight.py
+```
+
+新增/改动**只允许**沿这些箭头走，四条不变式：
+
+1. **`agent/` 不得 import `services/`**（`test_boundaries` 规则 4 仍然有效）。所以
+   `eventLoop` 的判定放在 `agent/preflight.py`，由 `routers/capabilities.py` 读出来，而不是
+   在 `services/` 里算。
+2. **「能不能 spawn」只有一个判据**：新的 `preflight.spawn_capability()`。`fullyCapable`、
+   `degradedReason`、`capabilities.runtime.loopOk` 全部读它，和 §21 的
+   `effective_key_source()` 同一个纪律（一个事实一份判定）。
+3. **`normalize_doc()` 仍然是唯一的修补入口**：clamp 是它内部的一个 pass，不新增第二个修补器；
+   `salvage_doc()` 复用同一个函数（它已经调用了 `normalize_doc`）。
+4. **接地判定仍然只有一份**：`grounding_report()`。S5 只改它的输入（派生目录、日期剥离、
+   区间符号），不改调用点。
+
+#### 22.3.2 关键代码路径 1：执行环境自证（S1）
+
+**现状（三个断点）**
+
+| 断点 | 位置 | 后果 |
+| --- | --- | --- |
+| 候选 1 | `scripts/dev.mjs:83` `['-m','uvicorn','app.main:app','--reload',…]` | `npm run dev` = Selector 循环 |
+| 候选 2 | `start-all.ps1:589` `if (-not $NoReload) { $apiArgs += '--reload' }` | 一键启动默认也是 Selector 循环 |
+| 未防御 | `api/app/main.py:97-148` `lifespan()` 只断言单 worker，**从不问循环类型** | 坏环境静默通过启动，第一次生成才炸 |
+| 窄捕获 | `aragon_runner.py:669` `except (OSError, ValueError)` | `NotImplementedError` 逃到 `internal` |
+| 窄捕获 | `aragon_runner.py:443` `except OSError`（同函数 `:428` 还有早退） | 取消路径同样会崩，且**残留 node 进程** |
+
+**设计**
+
+（a）`api/app/agent/preflight.py` 新增**纯函数**（不 spawn、不 IO，构造性可测）：
+
+```python
+import asyncio
+import asyncio.windows_events   # ★v12 修订（V11-P1-1③）：必须显式导入，
+                               # `asyncio.windows_events` 不在 `asyncio` 的 `__all__` 里，
+                               # 靠间接导入在打包/冻结构建下会 AttributeError
+import sys
+
+#: Windows 上 asyncio 只有 Proactor 能 spawn 子进程。
+#: uvicorn 0.52.3 的 use_subprocess = bool(reload or workers > 1)（uvicorn/config.py:377-379），
+#: 一旦为真它的 loop factory 就返回 asyncio.SelectorEventLoop（uvicorn/loops/asyncio.py:8-11，
+#: 实测：`--reload` / `--workers 2` → `_WindowsSelectorEventLoop`，`--workers 1` → `ProactorEventLoop`），
+#: create_subprocess_exec 在它上面抛 NotImplementedError('')（E-88）。
+#: ★v12 修订（V11-P1-1）：**同步纯函数**——因为它必须能在 `RunManager.start()`（同步方法）
+#: 里被调用（见 V11-P0-2：闸门要前移到 mkdir 之前）。
+def spawn_capability() -> tuple[bool, str | None]:
+    """(能不能 spawn, 不能时的机器可读原因)。非 win32 恒 (True, None)。"""
+    if sys.platform != "win32":
+        return True, None
+    try:                       # 只读查询：lifespan / 请求处理里都有运行中的 loop
+        loop = asyncio.get_running_loop()
+        return (True, None) if isinstance(loop, asyncio.windows_events.ProactorEventLoop) \
+            else (False, f"event_loop_selector:{type(loop).__name__}")
+    except RuntimeError:       # 无运行中的 loop（纯 CLI / 单测）
+        policy = type(asyncio.get_event_loop_policy()).__name__
+        return (True, None) if policy == "WindowsProactorEventLoopPolicy" \
+            else (False, f"event_loop_policy:{policy}")
+```
+
+两边 `reason` 前缀不同（`event_loop_selector:` / `event_loop_policy:`）是**故意的**：前者是
+「运行中的循环不对」，后者是「策略不对」，可操作方向不同（一个去 `--reload`，一个去查 `asyncio` 策略）。
+
+（b）`api/app/main.py::lifespan` 在 `assert_single_worker()` 之后、`run_migrations()` 之前插入：
+
+```python
+    assert_single_worker()
+    loop_ok, loop_reason = spawn_capability()
+    if not loop_ok:
+        # 不是 warning：这个进程不可能完成任何一次生成。
+        logger.error("startup: 子进程不可用 (%s)；生成将被拒绝，请去掉 --reload", loop_reason)
+```
+
+**注意：不 `raise`。** 一个起不来的服务比一个「能看不能生成」的服务更糟（现有报告仍然可读可检索）。
+正确的做法是让 `fullyCapable` 变假、由 UI 说清楚，并在生成入口立即拒绝——这就是（c）。
+
+（c）`fullyCapable` 多一道闸（与 §21 V10-P0-1 同型：判据必须在**唯一**处）：
+
+```python
+# ★v12 修订（V11-P1-1）：「return capability_degraded(...)」这个函数**不存在**。
+# 真实的形状是：AragonCapability 是 dataclass，fullyCapable / degradedReason 都是它的 **property**，
+# check_aragon() 的失败路径只有 `capability.errors.append(...)` + `return _remember(capability)`。
+# 所以第三道闸要**加字段**，而不是加一个返回语句：
+
+@dataclass(slots=True)
+class AragonCapability:
+    ...
+    #: ★本轮 S1：本进程能不能 spawn 子进程（进程级事实，不落库）
+    loopOk: bool = True
+    loopReason: str | None = None
+
+    @property
+    def fullyCapable(self) -> bool:
+        return (
+            self.available
+            and self.versionOk
+            and self.canStructured
+            and self.hasSubmitResult
+            and self.keySource != "none"
+            and self.loopOk                      # ← 第三道闸（唯一判据 spawn_capability()）
+        )
+
+    @property
+    def degradedReason(self) -> str | None:
+        if self.fullyCapable:
+            return None
+        if not self.loopOk:                      # ← 排在最前：它是"这台机器根本起不来"
+            return "event_loop_unsupported"
+        ...
+
+# check_aragon() 里（effective_key_source() 之后、_warn_only_checks() 之前）：
+    capability.loopOk, capability.loopReason = spawn_capability()
+    if not capability.loopOk:
+        capability.errors.append(f"子进程不可用: {capability.loopReason}（去掉 --reload 后重启）")
+
+# as_payload() 必须同时补两个键，否则 pydantic 的响应模型会静默丢弃
+# （这是同一个坑的第四次：v6 engine、v7 quality.cost、v9 aragon.verified）：
+    "loopOk": self.loopOk,
+    "loopReason": self.loopReason,
+```
+
+★v12 修订（V11-P1-1②）：`fullyCapable` **今天不在 wire 上**（`as_payload()` 只发 `degradedReason`），
+所以 AC-112 不能断言「`aragon.fullyCapable == false`」。**不新增该字段**（它只是 `degradedReason is None`
+的另一种写法，多发一个就是第二个真源），把 AC-112 改成断言「`runtime.loopOk == false` ⟺
+`aragon.degradedReason == "event_loop_unsupported"`」，两者由**同一个** `spawn_capability()` 供给。
+
+（d）新增 run 级错误码 **`event_loop_unsupported`**（见 §22.5.3）。★v12 修订（V11-P0-2）：
+闸门**不能**放在 `run_manager.py:369`（`research` 进门），因为那时工作区**已经被创建两次**了——
+`RunManager.start()` 在写 `runs` 行**之前**就 `workspace.mkdir(parents=True, exist_ok=True)`
+（`run_manager.py:234-235`），`_pipeline()` 第一句又是 `workspace.mkdir(..., exist_ok=True)`（`:312-313`）。
+放进去等于「先建目录、再拒绝」，而 AC-111 要求「目录不存在」。所以闸门必须**前移到 `start()` 的最前面**：
+
+```python
+# services/run_manager.py::RunManager.start()  —— 第 0 步，在 active_run_for() 之前
+    loop_ok, loop_reason = preflight.spawn_capability()
+    if not loop_ok:
+        # 连 run 行都不写：一次注定不可能的生成不该在账本上留下痕迹
+        from ..errors import AgentError
+        raise AgentError(
+            "event_loop_unsupported",
+            f"当前进程的事件循环不支持启动子进程（{loop_reason}）。"
+            "去掉 --reload 后重启 API，或直接用 npm run dev 的默认参数。",
+        )
+```
+
+`start()` 是**同步**方法（`session` 同步、无 await），所以 `spawn_capability()` 也必须是同步纯函数
+（§22.3.2 的 (a) 已按此写）。抛 `AgentError` 而不是写 run 行，意味着**路由器返回同步错误**——这正是
+用户最需要的形态：点下去立刻看到「这台机器起不来」，而不是等 10 秒再看到 `internal`。
+
+`_pipeline()` 里**仍然保留**同一判定作为第二道保险（`research` 进门处），但它只可能被
+「启动后才被改成 Selector」这种不存在的路径触发；它**不**负责 AC-111 的「目录不存在」。
+
+（e）`aragon_runner.py:669` 的捕获扩成 `(OSError, ValueError, NotImplementedError)`，但★v12 修订
+（V11-P1-11）**必须按类型分支**——照字面统一成 `event_loop_unsupported` 会把「找不到 `aragon.CMD`」
+「`cwd` 不存在」「argv 非法」全部报成「事件循环不支持」，把唯一真正可操作的 `aragon_unavailable`
+（hint：检查 `ARAGON_BIN` 与 PATH）吞掉：
+
+```python
+        except NotImplementedError as exc:
+            # 只有这一种：Selector 循环（--reload）。显式点名，因为它是本机默认参数的后果。
+            raise AgentError("event_loop_unsupported", "当前进程的事件循环不支持启动子进程（通常是 --reload 造成）") from exc
+        except (OSError, ValueError) as exc:
+            raise AgentError("aragon_unavailable", f"无法启动 aragon：{exc}") from exc
+```
+
+这样即使闸门被绕过（例如测试里直接 `AragonRunner().run()`），码也是对的。
+
+（f）`kill_process_tree()` 三处修正：
+
+★v12 修订（V11-P2-7）：**不加 `hard_pid`**。今天的签名是
+`async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label: str = "-") -> None:`
+（`aragon_runner.py:420`），把返回值从 `None` 改成 `bool` 就够满足 AC-116；`process.pid` 在
+`returncode is not None` 之后**依然可读**，不需要旁路参数。
+
+```python
+async def kill_process_tree(process, *, label="-") -> bool:
+    pid = process.pid if process is not None else None
+    if pid is None:
+        return True
+    ok = True
+    if sys.platform == "win32":
+        try:
+            killer = await asyncio.create_subprocess_exec("taskkill", "/T", "/F", "/PID", str(pid), ...)
+            await killer.wait()
+        except (OSError, NotImplementedError) as exc:   # ★S1：Selector 循环走这里
+            logger.warning("taskkill unavailable (%s), falling back to kill()", exc)
+            if process is not None and process.returncode is None:
+                process.kill()
+            else:
+                ok = False
+    ...
+    try:
+        await asyncio.wait_for(process.wait() if process else asyncio.sleep(0), timeout=CANCEL_GRACE_SEC)
+    except TimeoutError:
+        ok = False
+        logger.warning("cancel_timeout %s pid=%s", label, pid)
+    return ok            # ← 新增返回值，调用方把它写进 run 事件
+```
+
+**关键改动是 `:428` 的早退删掉**：`process.returncode is not None` 说明 **cmd shim 退了**，但
+`node` 孙子可能还在跑——那正是最需要 `taskkill /T` 的时刻。改判 `pid is None` 才早退。
+返回值由 `AragonRunner.cancel()` 写一条 `run.log`，并在失败时用 **`cancel_timeout`**
+（`spec.md` §7.3 已经写了这个码但从未实现）落一条 `run.error`。这样「进程残留」从「翻 uvicorn
+日志」变成「界面上一行字」。
+
+（g）启动参数：`scripts/dev.mjs:83` 去掉 `--reload`（改为 `--reload` 仅当 `DEV_RELOAD=1`），
+`start-all.ps1:589` 默认不加（改判据为 `if ($Reload)`）。★v12 修订（V11-P2-1）：该脚本的参数块
+（`start-all.ps1:40-45`）今天只有 `[switch]$NoBrowser,$Mock,$Restart,$NoReload`，**没有 `$Reload`**——
+先往参数块加 `[switch]$Reload`，否则 `.\start-all.ps1 -Reload` 直接 ParserError（而 AC-113 会要求它可用）。
+README §「三分钟启动」与 `-NoReload` 说明同步改写为「热重载在 Windows 上会关掉子进程能力，默认关闭」。
+
+**为什么不是「换个循环就行」**：`asyncio.set_event_loop_policy(WindowsProactorEventLoopPolicy)`
+放在 `main.py` 顶部**不生效**——uvicorn 在 import 之后才建循环（`config.setup_event_loop()`），
+策略会被覆盖。所以只有「去掉 `--reload`」+「启动自证」两条一起做才闭合。
+
+#### 22.3.3 关键代码路径 2：墙钟兜底与取消的确定性（S2）
+
+**现状**：`run_manager.py` 里唯一的 `asyncio.wait_for` 是 SSE 轮询（`:941`）。`runner.run()` 没有
+任何截止时间，`while True`（`aragon_runner.py:703`）只在 `waiter.done()` 或队列空时退出；真正
+的时间上限完全依赖交给 CLI 的 `--max-duration`（`config.py:80` → `aragon_runner.py:261`）。
+CLI 卡死、shim 留下不关管道的孙子、或 `taskkill` 失败（E-91）时，run 会停在 `running`，
+而 `stream_events()` 在非终态只发 ping 永不 return（`run_manager.py:937-946`）——前端永远转圈，
+并且占掉 `MAX_CONCURRENT_RUNS=2` 的一个名额（`report_management.py` 侧计数含 `queued/cancelling`）。
+
+**设计（两层，都不改 CLI 契约）**
+
+第 1 层，**每个 run 一个硬截止**：
+
+```python
+# services/run_manager.py 顶部
+HARD_DEADLINE_GRACE_SEC = 120        # 交给 CLI 的 --max-duration 之后再等 2 分钟
+
+async def _research(self, run, request, ...):
+    deadline = settings.aragon_max_duration_ms / 1000 + HARD_DEADLINE_GRACE_SEC
+    try:
+        result = await asyncio.wait_for(runner.run(request), timeout=deadline)
+    except TimeoutError:
+        await runner.cancel()                      # 先收进程树
+        raise AgentError(
+            "agent_timeout",
+            f"引擎超过 {int(deadline)} 秒仍未结束（--max-duration={settings.aragon_max_duration_ms}ms）",
+        ) from None
+```
+
+`agent_timeout` 是新增码（§22.5.3），它的 hint 写的是「把 ARAGON_MAX_DURATION_MS 调大，或点『看
+这次到底做到哪一步』」。**不能用 `budget_exceeded`**：那个码的含义是「CLI 自己报的预算到点」，
+两者的可操作方向相反（一个调大、一个缩减）。
+
+第 2 层，**30 秒 tick 上的活性清扫**（不是第二个调度器，是一次对账）。★v12 修订（V11-P1-4）：
+它**不能**依赖 `SCHEDULER_ENABLED`——`main.py:137-140` 在该开关为 0 时根本不启动 ticker，
+而「关掉定时刷新」正是最需要自愈的配置。落地形状：
+
+```python
+# main.py::lifespan —— 与 ticker 解耦
+    swept = get_manager().sweep_stale_runs()          # ① 启动时同步跑一次（替代/补强 recover_interrupted）
+    if swept:
+        logger.warning("启动清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
+    stale_sweeper = asyncio.create_task(_sweep_loop(), name="stale-sweeper")   # ② 常驻，不看 SCHEDULER_ENABLED
+# 关停时与 ticker 一起 cancel
+```
+
+`tick_once()` 里**不要**用 `asyncio.create_task`：它是单测入口且返回 `int`（`scheduler_ticker.py:71-78`），
+fire-and-forget 既让 AC-115 无法确定性断言，又把异常丢进一个没人 await 的 Task。若确实想在 tick 里顺带跑，
+写成 `await asyncio.wait_for(asyncio.to_thread(manager.sweep_stale_runs), 5)`（清扫只碰 DB，走线程）。
+
+```python
+# services/run_manager.py
+async def sweep_stale_runs(self) -> int:
+    """把 started_at + deadline 已过、且不在 _tasks 里的 run 标成 failed(agent_timeout)。"""
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.aragon_max_duration_ms/1000 + HARD_DEADLINE_GRACE_SEC)
+    rows = session.execute(select(Run).where(Run.status.in_(("queued","running","cancelling")),
+                                            Run.started_at < cutoff)).scalars().all()
+    for run in rows:
+        if run.id in self._tasks:          # 有活任务就别抢，它自己的 wait_for 会收
+            continue
+        self._finalize_failure(session, run, "agent_timeout", "清扫：超过硬截止仍在运行", None)
+```
+
+由 `scheduler_ticker`（已经每 30 秒 tick）顺带调用，**零新任务**。这就是「进程活着时也能自愈」——
+今天的恢复只在 `lifespan` 里跑一次（`main.py:111`）。
+
+**为什么第 2 层不是冗余**：第 1 层只在 `research` 阶段有效；`persist` 里 `create_version()` 抛
+`IntegrityError` 后如果 `_finalize_failure` 自己的 commit 撞 `SQLITE_BUSY`（`db/session.py:54`
+只给 5000ms），行就会停在 `running`。这种路径没有任何协程还活着，只有清扫能收。
+
+#### 22.3.4 关键代码路径 3：逐字段收敛（S3）
+
+**现状**：`normalize_doc()`（`report_validator.py:280-354`）只做**存在性**修补（补 schema 字段、
+补 instrument、补 asOf、补 disclaimer、补 sources、`ensure_sections`、`prune_unknown_blocks`、
+`fill_metrics_from_snapshot`、rating 归一）。它**不截断、不转类型、不裁条数**。
+而 `validate_doc()` 之后的判据是二值的：`if outcome.errors: _finalize_failure(...)`
+（`run_manager.py:484-493`）。schema 里有 **54 个**有界字段（E-94），任何一个越界 1 个单位，
+整份文档就没了。
+
+**设计**：在 `normalize_doc()` 的末尾（`:354` 之后、`return` 之前）插入 `clamp_doc()`：
+
+★v12 修订（V11-P0-3 / V11-P2-8）：`(scope, field)` 这种字符串键**抓不住真实越界**。
+`sections[].blocks[]` 在 schema 里是 `/$defs/block` 的 **`anyOf`（12 个块型）**，`text` 的上限
+**因块型而异**：实测 `block|0.text = 4000`（paragraph）、`block|1.text = **120**`（heading）、
+`block|3.text = 1200`（callout）、`block|7.text = 800`（quote）。按旧键只写 `paragraph.text: 4000`，
+一个 400 字的 `heading` 仍然整份判死（正是 E-93 那一类）。所以键改成 **按块型分派**：
+
+```python
+#: 只收敛「长了」和「多了」，不猜内容。每条收敛都记一次 repairs，绝不静默。
+#: 键 = schema 的**真实路径**，值 = 上限；`TEXT_LIMITS` 以块 `type` 为键。
+DOC_LIMITS: dict[str, int] = {          # 顶层与重复段（maxLength / maxItems）
+    "summary": 600, "headline": 160, "disclaimer": 300, "asOf": 40,
+    "sections": 8, "risks": 10, "keyMetrics": 12, "sources": 40,
+    "instrument.symbol": 24, "instrument.name": 64, "instrument.currency": 8,
+    "rating.horizon": 24, "risk.title": 80, "risk.trigger": 200, "risk.mitigant": 200,
+    "metric.label": 32, "metric.value": 32, "source.title": 200, "source.publisher": 80,
+    "source.publishedAt": 24, "source.url": 500, "source.retrievedAt": 24,
+    "section.id": 32, "section.title": 64, "section.blocks": 40,
+}
+#: ★关键：`text` 的上限按块型不同（12 个块型里 4 个有 text）
+TEXT_LIMITS: dict[str, int] = {
+    "paragraph": 4000, "heading": 120, "callout": 1200, "quote": 800,
+}
+COUNT_LIMITS: dict[str, int] = {        # 块内的条数上限，也按块型分派
+    "bullets.items": 20, "timeline.events": 12, "table.rows": 80, "table.columns": 10,
+    "chart.series": 6, "chart.series.data": 200, "scenarios.scenarios": 3,
+    "comparables.peers": 10, "callout.refs": 8,
+}
+```
+
+def clamp_doc(doc: dict[str, Any], repairs: list[str]) -> int:
+    """返回收敛次数。每一项：n = clamp_len(s)  ->  cuts["summary"] = 601->600"""
+    cuts = 0
+    for (scope, field), limit in CLAMP_LIMITS.items():
+        cuts += _clamp_scope(doc, scope, field, limit, repairs)
+    return cuts
+```
+
+三条纪律：
+
+1. **截断必须留痕**：`repairs.append("summary 601 -> 600")`；`ValidationOutcome.quality` 里新增
+   `clamp: {count, fields: ["summary"]}`。读者在「降级」徽标的解释抽屉里能看到「摘要超长，已截断
+   1 处」——而不是永远不知道。★v12 修订（V11-P2-2）：若把它同时记进 `SalvageReport`，**必须补
+   `SalvageReport.as_payload()`**（`report_validator.py:502-510` 今天只输出 5 个键，**已经漏了
+   `prunedBlocks`**）——不补就等于写进一个前端读不到的地方。
+2. **截断必须可读**：按**句子边界**切（`。！？\n` → 再退到 `，、`），退到不晚于上限的位置，
+   末尾加 `…`；绝不切在数字中间（否则「-1.2」变「-1.」又制造一个未接地 claim）。
+   ★v12 修订（V11-P2-4 的连带）：**省略号占一个字符**——先切到 `limit - 1` 再拼 `…`，并在用例里断言
+   「结果长度 ≤ limit **且** 以 `…` 结尾 **且** 通过 `jsonschema.validate`」。否则 600 → 601 又是一次
+   亲手制造的字数越界（`summary.minLength = 10` / `headline.minLength = 4` 同理，不能切到下限以下）。
+3. **status 必须降级**：`clamp.count > 0` 时 `status = "degraded"`，理由字符串是
+   `"clamped:summary"`。这是 W-2 的验收点：拿到的是降级报告，不是卡片。
+
+**`salvage_doc()` 复用同一函数**（`report_validator.py:543` 内部已调 `normalize_doc`，`:569-654`
+再做 7 步；把 clamp 加进 `normalize_doc` 即自动生效）。这样 E-93 的 B 分支（`salvage_doc` 对
+601 字 summary 返回 `None`）也随之修好——**一份文档只要问题只在长度上，两条路都能救回来**。
+
+**为什么 clamp 不会掩盖真实问题**：clamp 只处理 schema **明说**的上界，也就是「模型写得比我们
+允许的更长」，那是格式问题不是事实问题。真事实问题（数字编造）由 S5 的口径负责，两者不重叠。
+
+#### 22.3.5 关键代码路径 4：截断与散文救援（S4）
+
+★v12 修订（V11-P2-11）：**本机没有 S4 的目标**。24 份 `result.json` 实测：`text` 最长 **413 字**、
+`{`/`}` 出现 **0 次**；「`structured=null` 且 `text` 非空」的 4 份，`stopReason` **全是 `max_turns`**、
+`text` 只有 29 字的一句拒绝话术（`我只提交报告，非结构化提交或者不满足`）。也就是说：本机这四次失败
+**不是「JSON 写了一半被截断」，而是「轮次烧完了还没提交」**——前者对应 `output_truncated`，
+后者对应 `budget_exceeded`（`STOP_REASON_MAP` 今天已把 `max_turns` 映射到它）。
+⇒ S4 保留，但**降级为防御性能力**，验收改为**构造夹具**（截断 JSON 的单元用例），不再声称「33% 真实生成可救」。
+能救的合法 JSON 全在 `result`（字符串形式），而 `_salvageable()` 已经 `json.loads` 过它。
+
+**现状**：`_salvageable()`（`aragon_runner.py:292-307`）只做 `json.loads`，失败即 `None`。于是：
+
+| 真实情形 | 今天的结果 |
+| --- | --- |
+| 模型把 JSON 写到一半被 `--max-tokens 40000` 截断 | `json.loads` 抛错 → `salvageable_raw=None` → `result_schema_unsatisfied` → 临时卡片（★v12：本机 24 份 `result.json` 里**一例都没有**） |
+| 模型没交 `structured` 但把完整 JSON 放在 `text` 里 | 同上（从不看 `text`） |
+| 模型交了 `structured` 但少一个必填顶层字段 | 同 `result_schema_unsatisfied` |
+
+本机 9 次真实生成里 3 次落成 `aragon-text` 卡片（E-95），就是这个分支。
+
+**设计：三档救援阶梯（L0 → L1 → L1.5），每档都有独立的计数器**
+
+```text
+L0   CLI 自带 --result-repair-turns（已实现，:257）
+L1   现有 salvage_doc(raw, snapshot)（已实现，:428）—— 前提是 raw 是 dict
+L1.5 ★S4 新增 rescue_from_text()：
+       a) 从 result.text 里找第一个 '{' 与最后一个 '}'
+       b) 若括号不平衡，做**有界补全**：只补尾部的 } / ]，最多 40 个字符，
+          且补完必须能 json.loads 成功（否则放弃）
+       c) 再交给 salvage_doc()（它会 clamp + 逐块校验）
+一次都不重试、不重生成 —— 用的全是已经付过钱的字节
+```
+
+伪代码（放 `report_validator.py`，因为它是「结构」的唯一主人）：
+
+```python
+def rescue_from_text(text: str, snapshot: Mapping[str, Any],
+                     ) -> tuple[dict[str, Any] | None, str | None, SalvageReport | None]:
+    """返回 (doc, how, report)。how ∈ {"json","json_repaired"}。"""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None, None, None
+    candidate = text[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        parsed = _close_unbalanced(candidate)      # 只补尾部括号，≤40 字符
+        if parsed is None:
+            return None, None, None
+    if not isinstance(parsed, dict) or "sections" not in parsed:
+        return None, None, None
+    doc, report = salvage_doc(parsed, snapshot)
+    return doc, ("json" if parsed is candidate else "json_repaired"), report
+```
+
+接线点在 `run_manager.py:427` 之后（注意顺序：先 L1，后 L1.5，因为 L1 更便宜也更可信）：
+
+```python
+        if doc is None and isinstance(result.salvageable_raw, dict):
+            ...                                   # L1 原样保留
+        if doc is None and result.text:            # ★S4
+            doc, how, report = report_validator.rescue_from_text(result.text, bundle.snapshot)
+            if doc is not None:
+                salvage_report = report
+                self._record(session, run, "run.log", {"level": "warn",
+                    "message": f"结构化结果缺失，已从模型正文中还原（{how}）"}, touch_run=False)
+```
+
+**截断要能被命名，而不是伪装成「模型不听话」**：`_finalize` 里已经有 `stop_reason`
+（`:1006`）。新增一条判定：`stop_reason in ("length", "max_tokens")` 时错误码用
+**`output_truncated`**，hint 是「这次输出被 max-token 上限截断：把 `--max-tokens` 调大到
+60000，或把 `bars.csv` 的行数减半（资料读取预算见 §20.3.6）」。这条码今天不存在，而它对应的
+失败**在真机上一定会发生**（`--max-tokens 40000` 是 v8 定的常量，一次真实生成平均要 20k–34k
+输出 token，报告越长越接近）。
+
+#### 22.3.6 关键代码路径 5：接地口径修正（S5）
+
+**现状（三处噪声 + 一处结构性缺失）**
+
+| # | 现象 | 位置 | 实测 |
+| --- | --- | --- | --- |
+| 1 | 派生量目录没覆盖「TTM 加总 / 均线距离 / 前高 / 布林带端点」 | `numeric_claims.py:523` `derived_values()` | v12 的 1,744.3（TTM 营收）与语料里 1,741.4 差 0.16%；10.1（距 MA60）与 10.02 差 0.79%（E-97） |
+| 2 | `derived` 分类「在合法文档上恒为 false」 | `numeric_claims.py:949-955` | 6/6 真实报告 `derivedClaims = 0`（E-95） |
+| 3 | 区间破折号变成负号 | 数字抽取层（`numeric_claims` 的 NUMBER 正则 + 上下文符号） | `1,296.22–1,509.76` → `-1509.76`；`1,480.00` → `-1480.00`（E-98） |
+| 4 | 中文月日没剥干净 | 阶段 A 的 `DATE_LIKE_RE` | 「11 月 2 日」→ `11`（E-96 的第 13 条样本） |
+
+**设计：只做四件事，全部是「给已存在的数起名字」，不做穷举匹配**（T4 红线）
+
+（a）**目录补 3 类**（★v12 修订 V11-P2-5：实测 v12 的 `derived_values()` 已有 **13 个前缀 51 条**，
+其中 `distanceMa`（MA5/MA20/MA60）与 `upside` / `scenarioUpside` **已经存在**，所以「补 5 类」里有 2 类
+是重复劳动；真正缺的是下面 3 类。每类都写死字段路径，命中时 UI 能说出公式）：
+
+```python
+    # 1) TTM 加总：最近四个**单季**轧差之和（financials 里没有 TTM 字段时才有意义）  → ttm:<field>
+    # 2) 前高/前低：(last - high52w)/high52w*100                                   → extreme:high52w
+    # 3) 布林带端点：由 bars 的 rolling 均值 ± 2σ 得到，与 chart 画出来的同源        → bollinger:upper/lower
+    # —— 均线距离 distanceMa:ma*、情景空间 upside/scenarioUpside、pp、yoy、singleQuarter*、
+    #    magnitudeRatio、priceGap、closeChange、volReturn、scenarioCenter **均已存在，本轮不动**。
+```
+
+每类的 id 形如 `ttm:netProfit` / `distance:ma60` / `extreme:high52w` / `bollinger:upper`，
+`note` 填中文公式，与既有 `yoy:` / `singleQuarter:` 风格一致。
+
+（b）**`derived` 分类真的会触发**（修 `:949-955` 的结构性缺失）。★v12 修订（V11-P0-1③）：
+**这一项不再是验收判据**——今天的代码在同一份 v12 上已经产出 `derivedClaims = 63`（v11 = 98），
+「derived 恒 0」只是旧规则落库值的表象。这条修复保留（`block.derived` 走的是一个 schema 里不存在的
+字段，属 S-7 说的「靠不存在的字段分类」），但**不许**把「`derivedClaims > 0`」写成 AC——它今天就是绿的，
+违反硬约束 6 的「先红后绿」。
+`block.derived` 这条路是死的（schema `additionalProperties: false`），所以**换一个真源**：
+`extract_claims()` 为每个 claim 记录 `block_type` 与**上下文单位**，然后：
+
+```python
+    # 只要上下文里带 % 或 pp 且原文带正负号，就**不是**事实型水位值，而是变化量 →
+    # 先按 derived 记账（计入分母、单独计数），命中不了再落回 factMissing。
+    # 这不是放宽：图上的「推算」徽标是给读者看的，比「未接地」诚实得多。
+```
+
+（c）**区间符号归一**。★v12 修订（V11-P1-7）：**守卫不能放在 `canonical` 生成处**。
+实测 claim 路径（`.run/probe/sec22_claims.py`）：`目标价区间 1,296.22–1,509.76 元` →
+`('1,296.22','1296.22')` + `('-1,509.76','**-1509.76**')`；负号是在 `numbers_in_text_from_clean()`
+的 `:934`（`replace("\u2212","-").replace("\u2013","-")`）与 `NUMBER_RE` 的 `-?` 两步里产生的，
+而 `canonical_number(token)` 只拿到 token（`:334`）——**看不到左邻字符**，「破折号两侧都是数字」这条判据
+在那一层根本无法执行。守卫必须落在**有上下文**的那一层：
+
+```python
+# numeric_claims.py::numbers_in_text_from_clean()
+RANGE_DASHES = "\u2013\u2014~\uff5e\u81f3"      # – — ~ ～ 至
+# 「1,296.22–1,509.76」：破折号是区间分隔符，不是负号。
+# 判据（在 finditer 里有 match.start()，可以看 text[start-1]）：
+#   ①破折号两侧都是数字；②左侧数字之前没有 +/-；③右侧数取绝对值。
+# ★注意：ASCII 连字符同样中招（`1,296.22-1,509.76` 也产出 -1509.76），所以不能只处理 –/−。
+```
+
+实测这条能一次性消掉 2 条必然未接地的 claim（E-98），且不会引入假命中（区间端点本来就在快照里）。
+
+（d）**中文月日——已经做完了（★v12 修订 V11-P1-8，本项删除）**。实测 claim 路径：
+`11 月 2 日` → `[('11 月','','identifier'), ('2 日','','identifier')]`（**零 fact claim**）、
+`2025 年 3 月 14 日披露` → `[('2025 年 3 月 14 日','','identifier')]`。原因：`NON_MEASURE_RE:147` 的
+`\d{1,4}\s*(?:日|年|周|月)` 已在 `_strip_with_removals()` 里生效（`:298-302`），`DATE_LIKE_RE:106/109`
+早已覆盖 `2025 年 3 月 14 日` / `2025 年 3 月`。⇒ 本轮**不动** `DATE_LIKE_RE`，只补一条回归用例。
+
+**验收口径（写死，不做「会变好」）**：
+
+★v12 修订（V11-P0-1 / V11-P1-8）：**基线全部换成今天的重算值**，并把两条「今天已经绿」的判据删掉。
+
+| 指标 | 今天（`claims-v3` 重算） | 目标 | 判据 |
+| --- | --- | --- | --- |
+| v12 的未接地条数 `factMissing` | **37**（`fact=178`，ratio **0.7921**） | **≤ 17**（等价 ratio ≥ 0.90） | `pytest -k grounding_v12` |
+| 「最近候选差 < 1% 却未被命名」的条数 | **24** | **0** | 同一条用例（`.run/probe/sec22_missing.py` 的判据搬进测试） |
+| 区间端点被读成负号 | **2**（`-1,509.76` / `-1,480.00`） | **0** | `test_numeric_claims_range_sign` |
+| `derivedClaims` | **63**（v11 = 98） | 不变（**不设目标**：今天已经 > 0，设了就是假绿） | — |
+| 中文日期片段 | **0**（已由 `NON_MEASURE_RE` 覆盖） | 保持 0 | 回归用例 `test_numeric_claims_cn_date` |
+| `groundedRatio` 的假阳性上限 | 未测 | 抽样 20 条人工核对，错判 ≤ 2 条 | 人工 + `scripts/grounding_explain.py` 输出 |
+
+新增一个**只读诊断脚本** `api/scripts/grounding_explain.py <reportId>`：对每条未接地 claim 打印
+「最近的 5 个候选值 + 差距 + 是否在派生目录里」，就是 E-97 那张表的可重放版。它取代「猜为什么
+0.62」——这是本轮最重要的**工具箱**交付，而不是一次性分析。
+
+#### 22.3.7 关键代码路径 6：前端动作的确定性（S6）
+
+**现状（四处「看着有按钮，其实没有动作」）**
+
+| # | 现象 | 位置 |
+| --- | --- | --- |
+| 1 | 429 `too_many_runs` 的主按钮是「稍后重试」，`runAction()` 没有 `wait` 分支 → 点击无反应 | `web/lib/runErrors.ts:63`（`{action:'wait', primary:true}`）→ `GenerationOverlay.tsx:72-84`（只有 retry / checkKey / openSettings / openLog） |
+| 2 | SSE 重连耗尽产生的 `stream_closed` **不在 18 条码表里** → 兜底「查看日志」 | `useGenerationStream.ts:316-320`、`runErrors.ts:68` |
+| 3 | 服务端卡死时只发 `: ping` 注释帧，浏览器不触发 `onerror`，界面永远 `running`、`pct` 冻在 60% 左右 | `runs.py:154-165`、`run_manager.py:941`；前端 state 里没有 `lastEventAt` |
+| 4 | 契约夹具只断言「超集」：`HTTP_ERROR_ACTIONS ⊇ httpCodes`，且 `action` 字段**没有任何用例断言**；`too_many_runs` 连码都没进夹具 | `web/tests/runErrors.test.ts:38,45`、`contracts/run_error_codes.json`（httpCodes 5 条） |
+
+**设计**
+
+（a）`runAction()` 补 `wait`，并把它做成**真的会等**：
+
+```tsx
+  if (action === 'wait') {
+    // 不是「什么都不做」：等待 8 秒后自动重试一次，并在按钮上显示倒计时。
+    // 429 too_many_runs 走这里（provider_unavailable 是 primary:false，压根没有主按钮）。
+    onWaitRetry?.();          // AppShell 里：setTimeout(onRetry, 8000)
+    return;
+  }
+```
+
+★v12 修订（V11-P1-6 的连带）：`GenerationOverlay.tsx:66-71` 的注释写着「`wait` / `none` 不出现按钮
+（`primaryActionFor()` 返回 null），所以这里永远拿不到它们」——**前半句是错的**：`primaryActionFor`
+只对 `primary:false` 与 `action==='none'` 返回 null（`runErrors.ts:80-84`），而 `too_many_runs` 是
+`{action:'wait', primary:true}`（`runErrors.ts:63`）⇒ `'wait'` **确实会**走进 `runAction()` 并落空。
+这既是 E-99 那条缺口的真实成因，也要在本轮顺手把注释改对（否则下一个人会照着注释删掉这个分支）。
+
+配套：`ACTION_LABELS.wait = '稍后重试（8s）'`，点击后按钮进入 `disabled + 倒计时` 态，
+`aria-live="polite"` 播报「8 秒后自动重试」。**不做静默重试**——重试必须可见。
+
+（b）`stream_closed` 进码表（前端本地码，服务端不产出）：动作 `retry`（`primary: true`），
+hint「与服务端的连接断了，这次生成可能仍在后台进行——点『继续查看』会重新接上」。
+并新增 `GET /runs/{id}` 的调用点（`api.run()` 现在全仓无调用），重连时先查一次状态再决定。
+
+（c）**SSE 看门狗**。★v12 修订（V11-P1-5）：**位置上移一层、判据换一条**。
+
+- **位置**：`EventSource` 的生命周期完全封在 `web/lib/sse.ts::subscribeToRun()`（`:58-148`），
+  `useGenerationStream.ts` 只拿到 `onEvent/onOpen/onError/onReconnect` 四个回调，**没有任何方式
+  `es.close()`**。所以看门狗必须住在 `lib/sse.ts`（`subscribeToRun` 内部记录 `lastEventAt`、
+  自己 `close()`、并通过 `onIdle?()` 回调通知上层），而不是如 §22.4.3 所写放在 hook 里。
+- **判据**：服务端的保活是**注释帧** `: ping\n\n`（`routers/runs.py:158-160`，间隔 `poll_timeout=15.0`），
+  而注释帧**不会**触发 `EventSource.onmessage`（`wire()` 只订阅 8 个命名事件）⇒ 如果 `lastEventAt`
+  只在「事件到达」时更新，一次安静的长模型调用（无 tool 事件、无 progress）**必然**在 45 秒后触发
+  看门狗并主动断流重连——把「卡在 60%」换成「45 秒一次无谓重连」，比现状更糟。
+- **两条出路，必须选一条写死**：①服务端把保活改成**真实帧**（`event: ping` + `data: {}`，或直接复用
+  `run.progress` 的 30 秒心跳）——推荐，因为它同时让「服务端活着但安静」与「服务端死了」可区分；
+  ②不改服务端，则阈值必须远大于最长无事件间隔（`--max-duration` 量级），且文案必须写「安静不等于断」。
+  本节按①写（`sseEvents` 契约因此要加 `ping` 一项，AC-104 的三向断言会自动要求前端也订阅它）。
+
+（d）契约夹具补 `too_many_runs`（`status: 429`, `action: 'wait'`）与 `run_conflict`
+（`action: 'none'`）。★v12 修订（V11-P1-6）：**「升级成双向」这句话今天已经不成立**——
+`web/tests/runErrors.test.ts:44-48` 早已对 `codes + httpCodes` **逐条**断言
+`actionFor(row.code).action === row.action`，所以 v11 写的「夹具里 `action` 从未被断言」是错的，
+AC-124 也因此**不是**一条能「先红」的判据。本轮真正缺的只有一件事：夹具的 `httpCodes` 只有 **5 条**
+（缺 `too_many_runs` / `run_conflict`，而 `runErrors.ts:57-65` 有 7 条）⇒ 那 2 个码从未被上表覆盖。
+于是本条改成「夹具补齐 + 保留既有断言」，而**先红**的判据改由 §22.3.7(a) 提供（`wait` 分支）。
+
+```ts
+  // AC-118：夹具里的每个 (code, action) 都必须与 TS 表**逐字段**相等
+  for (const row of [...CONTRACT.codes, ...CONTRACT.httpCodes]) {
+    expect(actionFor(row.code).action).toBe(row.action);
+  }
+```
+
+这条断言今天就红（夹具 5 条里 `monthly_budget_exceeded` 的 action 与 TS 一致，但
+`too_many_runs` 缺码；更重要的是 **`action` 从未被断言**，所以第 1 条那个 bug 一直躺着）。
+
+#### 22.3.8 关键代码路径 7：重试不重付与会话卫生（S7）
+
+**现状**：`sanitize_session_id()`（`aragon_runner.py:107`）是死代码——`build_argv()` 从不发
+`--session-id`；同时 `:234` 永远加 `--no-save-session`。于是 attempt 2 是**从零重跑**，实测单次
+生成的 input token 是 68,974–181,421（E-100），重试一次就是双倍钱。另一头，CLI 自己的会话目录
+已经累积 **1023 个文件 / 1,543 MB**（E-100）。
+
+**设计（窄而有界）**
+
+★v12 修订（V11-P1-2 / V11-P1-3 / V11-P1-12）：v11 的 3) 与 4) **两条命令都是无效参数**，且 4) 与 R-61 互相矛盾。
+实测（本机，只读）：
+
+```text
+$ aragon sessions prune --older-than 7d --dry-run
+--older-than takes a non-negative number of days.          ← exit 2，必须写 7
+$ aragon sessions rm <id>
+Refusing to delete without --yes.                          ← exit 2，必须加 --yes
+$ aragon sessions prune --older-than 7 --dry-run
+Would remove smoke-threads-tenant-b / webuse-17d194d2-… / 3c64b53a-…-tenant-a …
+would remove 9 session(s).                                 ← 全是别的项目/租户的
+```
+
+而这两条命令在 v11 里被 `try/except: log debug` 包着 ⇒ **恒定失败且静默**（目录今天
+`entries 1023 / 1545.71 MB`，阈值 256 MB 早就过了，但什么都不会发生）。改正后的形状：
+
+```text
+1) 只有「本次 run 可能重试」时才允许保存会话：
+   attempt 1 带 --session-id <sanitize_session_id(run_id)>，不带 --no-save-session；
+   attempt 2 带 --resume <session-id>（同一 session），不再带 --prompt-file。
+2) sessionSave 由 AGENT_ATTEMPTS 派生（>1 ⇒ retry_only，=1 ⇒ off），**不开配置项**
+   （★v12：`agent_session_save` 会造第二个真源，同 V10-P1-6 的 keySource 教训）。
+3) run 终止（成功/失败/取消）后，在 run_manager 的 finally 里：
+   aragon sessions rm <session-id> --yes    ← 必须带 --yes
+   失败升为 run.log(level=warn, code=session_cleanup_failed)，**不再只是 debug**。
+4) ★删除全局 prune。**只允许删本 run 自己的 session-id**（R-61 的原话）；
+   目录体积只做**只读上报**（`capabilities.runtime.sessionDirMb`），清理决定交回用户。
+   理由：`prune` 是全局的，实测会列出 `smoke-threads-tenant-a/b`、`webuse-…` 这些
+   明显属于**别的项目**的会话——删掉别人的会话是不可接受的副作用。
+```
+
+`run.retry` 的 SSE 帧新增 `resumed: true|false`，`engine.json` 新增
+`session: {id, resumed}`，这样「这次是接着说的还是重来的」在证据链里也有。**这是 W-4 的
+成本侧验收点**：重试一次的 input token 应该只有首轮的 10%–25%（不是 100%）。
+
+风险与拒绝条件：`--resume` 在 CLI 侧要求会话存在，若第一次 attempt 崩在 spawn 之前，session
+不存在 → `--resume` 会 `usage_error`。所以规则是**只在 attempt 1 真的有 pid 且退出码非 0 时**才
+用 resume；否则回落成完整重跑（今天的路径）。这条回落在 `engine.json` 里写
+`session: {resumed: false, reason: "no_session"}`，不允许静默。
+
+#### 22.3.9 时序：一次「默认参数下生成失败 → 修好」的完整路径
+
+```text
+[T+0.0s] npm run dev
+         └─ dev.mjs 不带 --reload（S1-g）→ uvicorn 装 ProactorEventLoop
+[T+0.5s] lifespan: assert_single_worker() ok
+         spawn_capability() → (True, None)
+         run_migrations → 0005
+         check_aragon(): info(9.0s)+doctor(5.2s)+models(9.3s)  ← 23.4s（E-90）
+[T+24s]  /capabilities.runtime = {eventLoop:"ProactorEventLoop", loopOk:true, hardDeadlineSec:1020}
+[T+25s]  用户点「生成最新版本」→ POST /instruments/CN:600519.SH/reports
+         run_manager.start → queued → resolve → snapshot → prepare → research
+[T+25.5s] spawn: aragon.CMD --session-id r7aa5aeaa ... exec --result-schema ... --prompt-file ...
+[T+120s]  CLI 吐 result: structured=null / stopReason=end_turn / text 里有完整 JSON
+         ├─ L1: salvageable_raw=None
+         ├─ L1.5(S4): rescue_from_text → json ok → salvage_doc → clamp(S3) 修 1 处超长
+         └─ validate_doc: errors=0，status="degraded"，quality.clamp={count:1}, salvage.used=true
+[T+121s] persist → reports v13（degraded）
+         界面：报告可见 + 黄色「降级」徽标 + 抽屉里写明「摘要超长已截断 1 处 / 从正文还原」
+         而不是：一张「这不是一份可用的投研报告」的卡片 + 68,974 token 的账单
+```
+
+对照今天：同一个 T+0.0s 起的路径在 `spawn` 处抛 `NotImplementedError`，T+35s 结束，码 `internal`，
+界面上唯一可点的按钮是「查看日志」（E-89）。
+
+### 22.4 文件 / 模块变更计划
+
+> 全部路径已核对存在性（`api/app/`、`api/tests/`、`web/lib/`、`web/components/generation/`、
+> `scripts/`）。★ 标记为本轮新增文件；其余为修改。行号是**改动位置**，不是文件总行数。
+
+#### 22.4.1 后端 · 执行环境与生命周期（S1 / S2）
+
+| 文件 | 动作 | 意图（一行） |
+| --- | --- | --- |
+| `api/app/agent/preflight.py` | 改 | 新增 `spawn_capability() -> (bool, reason)`；`check_aragon()` 在 `effective_key_source()` 之后多一道 loop 闸（`:~430`） |
+| `api/app/main.py` | 改 | `lifespan` 里 `assert_single_worker()` 之后调用 `spawn_capability()` 并 `logger.error`（不 raise）；`:142-148` 的 startup 日志多打 `loop=` |
+| `api/app/agent/aragon_runner.py` | 改 | `:669` 捕获加 `NotImplementedError` → `AgentError("event_loop_unsupported")`；`kill_process_tree` 删 `:428` 早退、`:443` 加 `NotImplementedError`、返回 `bool`；`build_argv` 支持 `--session-id` / 按需省 `--no-save-session`（`:234`） |
+| `api/app/services/run_manager.py` | 改 | `research` 进门前 `spawn_capability` 闸；`runner.run()` 外套 `asyncio.wait_for`（硬截止）；新增 `sweep_stale_runs()`；`finally` 里 `aragon sessions rm` |
+| `api/app/services/scheduler_ticker.py` | 改 | tick 里顺带调 `manager.sweep_stale_runs()`；每 24h 调一次会话目录 prune |
+| `api/app/config.py` | 改 | 新增 `agent_hard_deadline_grace_sec=120`；`agent_session_dir_max_mb=256`（**只读阈值，用于上报，不触发删除**）；★v12 修订（V11-P1-12）：**不加 `agent_session_save`** —— 它由 `agent_attempts > 1` 派生（同 V10-P1-6 的 keySource 教训） |
+| `api/app/agent/failure.py` | 改 | ★v12 修订（V11-P0-4）：三个新 run 码的 **`FailureSpec`（含 `hint`）** 写在这里——hint 的真源是 `failure.py:36-44` 的 `FailureSpec.hint` 与读取入口 `hint_for()`（`:323`），**不是** `errors.py`；写进 `errors.py` 等于写进一个没人读的地方，前端拿到的 `hint` 仍是 `null` |
+
+#### 22.4.2 后端 · 解析与接地（S3 / S4 / S5）
+
+| 文件 | 动作 | 意图 |
+| --- | --- | --- |
+| `api/app/services/report_validator.py` | 改 | `normalize_doc()`（`:280-354`）末尾插入 `clamp_doc()`；新增 `CLAMP_LIMITS` / `clamp_doc()` / `_clamp_text()`（按句边界）；`SalvageReport` 增 `clamped` 计数；`ValidationOutcome.quality` 增 `clamp:{count,fields}`；新增 `rescue_from_text()` |
+| `api/app/services/numeric_claims.py` | 改 | `derived_values()`（`:523`）补 5 类派生量；`extract_claims()` 带 `block_type`+单位，实现真正的 `derived` 分类（修 `:949-955` 的死分支）；`canonical` 生成处加区间破折号守卫；`DATE_LIKE_RE` 补中文月日 |
+| `api/app/agent/failure.py` | 改 | `RUN_ERROR_CODES` 增 `event_loop_unsupported` / `agent_timeout` / `output_truncated`；`STOP_REASON_MAP` 增 `length`/`max_tokens` → `output_truncated` |
+| `api/app/schemas/capabilities.py` | 改 | 顶层新增 `runtime: {eventLoop, loopOk, loopReason, hardDeadlineSec, sessionSave}` |
+| `api/app/routers/capabilities.py` | 改 | 组装 `runtime`（读 `preflight.spawn_capability()`，不重复判定） |
+| `api/app/schemas/report.py` | 改 | `ReportQuality` 增 `clamp: {count:int, fields:list[str]} = {}`（反射守卫用例同步） |
+| `scripts/grounding-explain.py` ★ | 新 | 只读诊断：`python scripts/grounding-explain.py <reportId>` 打印每条未接地 claim 的最近 5 个候选值与差距（E-97 的可重放版） |
+
+#### 22.4.3 前端（S6）
+
+| 文件 | 动作 | 意图 |
+| --- | --- | --- |
+| `web/lib/runErrors.ts` | 改 | 加 `event_loop_unsupported` / `agent_timeout` / `output_truncated` / `stream_closed` 四条；`ACTION_LABELS.wait` 改「稍后重试（8s）」；`HTTP_ERROR_ACTIONS` 补 `too_many_runs`（已存在）与 `run_conflict`（已存在）的注释对齐夹具 |
+| `web/components/generation/GenerationOverlay.tsx` | 改 | `runAction()`（`:72-84`）补 `wait` 分支 + 倒计时禁用态；footer 的「再次生成」在 `instrument_not_found` 下不出（`:244-247`） |
+| `web/lib/sse.ts` | 改 | ★v12 修订（V11-P1-5）：**看门狗住在这里**——`subscribeToRun()` 内部记 `lastEventAt`、判 `> 阈值` 时自己 `close()` 并回调 `onIdle?()`。`useGenerationStream.ts` 拿不到 `EventSource`，放它那里写不出来 |
+| `web/components/generation/useGenerationStream.ts` | 改 | `stream_closed` 走 `retry`；接 `onIdle` → 派发 `stream_closed`；重连前用 `GET /runs/{id}` 回收状态（★v12：`api.run()` 今天全仓 0 调用，但 `routers/runs.py` 是否已有 `GET /runs/{id}` 要先确认，没有就用 `/events?after=` 的 replay 自愈，**不加端点**） |
+| `web/components/shell/AppShell.tsx` | 改 | 新增 `onWaitRetry`（8 秒后 `onRetry`，带 toast）；把 `api.run` 的回收结果喂回 store |
+| `web/lib/copy.ts` | 改 | 启用已有但无人用的 `errors.tooManyRuns` / `reconnect`；新增 3 条新码文案（与 `errors.py` 的 hint 一字不差） |
+| `web/lib/types.ts` | 改 | `Capabilities.runtime`、`ReportQuality.clamp` 类型 |
+| `web/components/report/TrustBadge.tsx` | 改 | 降级抽屉里多一行「格式收敛 N 处 / 从正文还原」 |
+
+#### 22.4.4 工程与文档
+
+| 文件 | 动作 | 意图 |
+| --- | --- | --- |
+| `scripts/dev.mjs` | 改 | `:83` 去掉 `--reload`（`DEV_RELOAD=1` 才加），启动日志打一行警告 |
+| `start-all.ps1` | 改 | `:589` 默认不加 `--reload`（`-Reload` 才加）；`-NoReload` 保留为兼容别名 |
+| `README.md` | 改 | 「三分钟启动」与 `-NoReload` 说明改写；新增「Windows 上为什么不能热重载」小节；错误码表补 3 条 |
+| `contracts/run_error_codes.json` | 改 | `codes` 18 → 21；`httpCodes` 5 → 7（补 `too_many_runs` / `run_conflict`）；每个码的 `action` 成为**被断言**的字段 |
+| `api/README.md` | 改 | 模块职责补 `clamp_doc` / `rescue_from_text` / `spawn_capability` |
+
+#### 22.4.5 测试（新增或扩展）
+
+| 文件 | 动作 | 覆盖 |
+| --- | --- | --- |
+| `api/tests/test_spawn_capability.py` ★ | 新 | Proactor/Selector 两种策略下 `spawn_capability()` 的真值；`main.py` 不 raise |
+| `api/tests/test_event_loop_guard.py` ★ | 新 | Selector 下生成在**进门前**失败、码是 `event_loop_unsupported`、工作区不建 |
+| `api/tests/test_hard_deadline.py` ★ | 新 | `--max-duration=1000` + 假引擎 hang → run 在 ~1120s 内变 `agent_timeout`（用 monkeypatch 把 grace 调成 1s） |
+| `api/tests/test_sweep_stale_runs.py` ★ | 新 | 手工造一行 `running` + 旧 `started_at` → tick 一次变 `failed(agent_timeout)` |
+| `api/tests/test_clamp.py` ★ | 新 | E-93 的 601 字 summary 夹具 → 报告落库、`status=degraded`、`quality.clamp.count=1`；54 个有界字段逐个越界 1 个单位都能收敛 |
+| `api/tests/test_rescue_from_text.py` ★ | 新 | 截断 JSON（尾部缺 `}]}`）→ `json_repaired` → 报告；纯散文 → `None` → 仍是 provisional |
+| `api/tests/test_salvage.py` | 改 | 增加「doc 非 None 但只有长度问题」的用例（今天会红） |
+| `api/tests/test_numeric_claims.py` | 改 | 区间破折号 / 中文月日 / 5 类派生量；`groundedRatio ≥ 0.90` 的 v12 快照用例 |
+| `api/tests/test_kill_process_tree.py` ★ | 新 | `returncode is not None` 时**仍然**调 `taskkill`（mock `create_subprocess_exec`） |
+| `api/tests/test_session_resume.py` ★ | 新 | attempt 1 成功保存会话 → attempt 2 argv 含 `--resume` 且不含 `--prompt-file`；无会话时回落 |
+| `api/tests/test_contract_codes.py` | 改 | 21 条集合相等；`output_truncated`/`agent_timeout`/`event_loop_unsupported` 三向同步；★v12 修订（V11-P2-3）：**必改** `test_every_quality_key_has_a_response_field`（`:77`）——`quality.clamp` 是新增键，`ReportQuality` 不加字段这条反射守卫就红 |
+| `web/tests/runErrors.test.ts` | 改 | 双向断言 `action`（AC-118）；`too_many_runs` 进夹具 |
+| `web/tests/run-actions.test.tsx` | 改 | `wait` 点击后 8 秒真的调 `onRetry`（假定时器） |
+| `web/tests/stream-watchdog.test.ts` ★ | 新 | 假 `EventSource` 不触发任何事件 + 只收到 ping 帧 → `subscribeToRun` 在阈值后 `close()` 并回调一次 `onIdle`；★v12：**必须含一条「服务端在发 ping 时不误判」的用例**（见 §22.3.7(c)） |
+| `web/tests/capabilities-runtime.test.tsx` ★ | 新 | `loopOk=false` 时端点徽标显示「事件循环不支持（去启用）」而不是「不可用」 |
+
+### 22.5 接口设计
+
+#### 22.5.1 `GET /api/v1/capabilities`（只加字段，不改既有键）
+
+```jsonc
+{
+  "aragon": { /* 一字不改，v9/v10 的 5 个字段继续是唯一真源 */ },
+  "runtime": {
+    "eventLoop": "ProactorEventLoop",       // 实际运行中的循环类名（诊断用）
+    "loopOk": true,                          // false ⇒ 本进程不能 spawn 子进程
+    "loopReason": null,                      // "event_loop_selector:_WindowsSelectorEventLoop"
+    "hardDeadlineSec": 1020,                 // max_duration/1000 + grace
+    "sessionSave": "retry_only",             // ★v12：由 agent_attempts 派生（>1 ⇒ retry_only；=1 ⇒ off），**不是配置项**
+    "sessionDirMb": 1543                     // 只读测量（本机实测 1545.71 MB / 1023 项），超阈值时 UI 提示「可清理」，**永不自动删**
+  }
+}
+```
+
+`fullyCapable` 现在由**三件事**同时决定：CLI 版本/ajv/submit_result（旧）、`effective_key_source()`
+（§21 K1）、`spawn_capability()`（本轮 S1）。三者都是「一个事实一份判定」，不重复计算。
+
+#### 22.5.2 SSE 增量（只加字段，不改事件名）
+
+| 事件 | 新增字段 | 说明 |
+| --- | --- | --- |
+| `run.retry` | `resumed: bool`、`sessionId: string \| null` | 这次重试是接着说的还是重来的（S7） |
+| `run.log` | `code?: "clamp" \| "rescue" \| "cancel_timeout"` | 结构化标记，前端按 `code` 决定是否展开抽屉 |
+| `run.error` | `deadlineSec?: int` | `agent_timeout` 时告诉用户等了多少秒 |
+
+#### 22.5.3 run 级错误码：18 → 21（追加，不改语义）
+
+| 新码 | 触发判据（唯一实现） | hint（服务端下发，前端一字不改地用） | 前端动作 |
+| --- | --- | --- | --- |
+| `event_loop_unsupported` | `spawn_capability()[0] == False`（在 `RunManager.start()` **第 0 步**），或 spawn 抛 `NotImplementedError`（**按类型分支**，其它异常仍是 `aragon_unavailable`，见 V11-P1-11） | 当前进程的事件循环不支持启动子进程：请去掉 `--reload`（或 `npm run dev` 用默认参数）后重启 API | `openSettings`（primary） |
+| `agent_timeout` | `asyncio.wait_for` 超时（deadline = `ARAGON_MAX_DURATION_MS` + `agent_hard_deadline_grace_sec`），或 `sweep_stale_runs` 清扫到 | 引擎超过 N 秒仍未结束。把 `ARAGON_MAX_DURATION_MS` 调大，或点『看这次做到哪一步』 | `retry`（primary）+ 次要「看日志」 |
+| `output_truncated` | `stop_reason ∈ {length, max_tokens}`（`STOP_REASON_MAP` 今天只有 `timeout/error/max_turns/aborted/end_turn` 五个键，确实缺这两个） | 这次输出被 max-token 上限截断：把 `ARAGON_MAX_OUTPUT_TOKENS`（`config.py:107`，默认 40000）提到 60000，或把 `bars.csv` 行数减半 | `retry`（primary） |
+
+★v12 补充：`max_turns` **不是** `output_truncated`。本机 4 份散文卡片的 `stopReason` 全是 `max_turns`
+（`STOP_REASON_MAP` 已把它映射到 `budget_exceeded`），而 hint 指向「调大 `ARAGON_MAX_TURNS`」——
+这两条不要混（一处是输出被截断，一处是轮次烧完）。
+
+**契约同步点（三处，缺一不可）**：`failure.RUN_ERROR_CODES`（18→21）、
+`contracts/run_error_codes.json`（`codes` 18→21，`httpCodes` 5→7）、
+`web/lib/runErrors.ts`（`RUN_ERROR_ACTIONS` 18→21，`HTTP_ERROR_ACTIONS` 保持 7）。
+`test_contract_codes.py` 与 `runErrors.test.ts` 各有一条集合相等断言，任何一处漏改即红。
+
+#### 22.5.4 内部契约（服务层函数签名，供下游逐行施工）
+
+```python
+# api/app/agent/preflight.py
+def spawn_capability() -> tuple[bool, str | None]: ...
+
+# api/app/services/report_validator.py
+CLAMP_LIMITS: dict[tuple[str, str], int]
+def clamp_doc(doc: dict[str, Any], repairs: list[str]) -> int: ...
+def rescue_from_text(text: str, snapshot: Mapping[str, Any],
+                     ) -> tuple[dict[str, Any] | None, str | None, SalvageReport | None]: ...
+
+# api/app/services/numeric_claims.py
+def derived_values(snapshot: Mapping[str, Any], doc: Mapping[str, Any] | None = None,
+                   ) -> dict[str, DerivedValue]: ...   # 签名不变，只补目录
+
+# api/app/services/run_manager.py
+# âv12 ä¿®è®¢ï¼V11-P1-4ï¼ï¼**åæ­¥**å½æ°ââå®åªç¢° DBï¼æ  awaitï¼â lifecycle å¯ç´æ¥è°ãticker å¯ to_threadãåæµå¯ç¡®å®æ§æ­è¨
+def sweep_stale_runs(self) -> int: ...
+
+# web/lib/runErrors.ts
+export function primaryActionFor(code: string | null | undefined): RunErrorAction | null
+```
+
+★v12 修订（V11-P1-4）：`sweep_stale_runs()` 改成**同步**（只碰 DB，无 await）。调用点两处、都不看
+`SCHEDULER_ENABLED`：①`main.py::lifespan` 里启动即跑一次；②一个常驻的 60 秒清扫任务
+（`asyncio.create_task(_sweep_loop())`，关停时与 ticker 一起 cancel）。ticker 里若仍要顺带跑，写成
+`await asyncio.wait_for(asyncio.to_thread(manager.sweep_stale_runs), 5)`——**不要**在 `tick_once()` 里
+再开一个没人 await 的 `create_task`（它会吞异常，并让 AC-115 变成时序赌局）。
+
+### 22.6 数据模型
+
+#### 22.6.1 零迁移（并给出为什么能成立）
+
+```text
+$ cd api && python -m alembic heads
+0005_engine_probes (head)
+```
+
+本轮所有新事实都装进**既有**列：
+
+| 新事实 | 落点 | 为什么不新建表/列 |
+| --- | --- | --- |
+| 格式收敛次数与字段名 | `reports.quality.clamp = {count, fields[]}` | `quality` 本来就是 JSON（§19.6.3 定的「版本演进不回填」），加键不需要 DDL |
+| 是否从正文还原 | `reports.quality.salvage.how = "json" \| "json_repaired"` | `salvage` 对象已在 v9 存在，加键即可 |
+| 硬截止秒数 | `run_events.payload.deadlineSec` + 工作区 `engine.json` | 事件是只追加的事实流，不需要列 |
+| 重试是否 resume | SSE `run.retry.resumed` + `engine.json.session` | 同上；`runs.structured_attempts` 已有尝试次数 |
+| 循环类型/loopOk | 不落库（进程级事实），只走 `/capabilities` | 它不是「关于某次生成」的事实 |
+| 会话目录体积 | 不落库（每次 `/capabilities` 现测，`os.scandir` 计数） | 落库就要维护，且是易变值 |
+
+**反例说明**：如果实现时发现必须在 `runs` 上加 `deadline_at`，那说明设计错了——截止时间可以
+由 `started_at + settings` 推出，不需要冗余列。这一条写在这里，是为了让下游没有「顺手加列」的空间。
+
+#### 22.6.2 内存形状（服务层契约）
+
+```python
+@dataclass(frozen=True)
+class SpawnCapability:
+    ok: bool
+    reason: str | None          # "event_loop_selector:_WindowsSelectorEventLoop" | None
+
+@dataclass
+class ClampResult:
+    count: int = 0
+    fields: list[str] = field(default_factory=list)      # ["summary", "valuation.paragraph"]
+
+@dataclass
+class RescueResult:
+    doc: dict[str, Any] | None
+    how: str | None             # "json" | "json_repaired"
+    report: SalvageReport | None
+```
+
+#### 22.6.3 `reports.quality` 的版本演进（追加式，不回填）
+
+```jsonc
+{
+  "source": "aragon",
+  "groundedRatio": 0.93,
+  "status": "degraded",
+  "grounding": { "factClaims": 170, "factMissing": 12, "derivedClaims": 31, /* … */ },
+  "salvage": { "used": true, "how": "json_repaired", "droppedKeys": 1, "droppedBlocks": 0 },
+  "clamp": { "count": 1, "fields": ["summary"] },        // ★S3 新增
+  "prunedBlocks": 0,
+  "engine": { /* v8 的 4 键指纹，一字不改 */ },
+  "cost": { /* 三态 */ },
+  "prompt": { "version": 7, "sha1": "…", "bytes": 3864 }
+}
+```
+
+三条纪律：① **不复写历史**——已经落库的 v1–v12 报告 `quality` 保持原样，`clamp` 缺省视为
+`{count:0}`，前端用 `(q.clamp ?? {count:0})` 读；② **状态判据只加不减**：`clamp.count > 0` 与
+`salvage.used` 都是降级理由，`status` 的三值域（`ready/degraded/provisional`）不变；
+③ **`groundedRatio` 的语义不变**（同一份公式、同一份分母），变的只是「哪些 claim 命中」——
+所以旧新报告仍然可比，`compare_engine_quality` 不需要结构改动。
+
+### 22.7 测试与验收标准
+
+#### 22.7.1 分层（沿用 §12.1 / §18.7.1 / §20.7.1 / §21.7.1）
+
+| 层 | 数量 | 本轮重点 |
+| --- | --- | --- |
+| 纯函数单测（无 IO） | 新增 ~34 条 | `spawn_capability`、`clamp_doc`、`rescue_from_text`、派生目录、区间符号、日期剥离 |
+| 服务层（真 SQLite，假引擎） | 新增 ~11 条 | 硬截止、清扫、会话 resume、sweep 与 ticker 的边界 |
+| 路由/契约 | 新增 4 条 | `/capabilities.runtime`、21 条码的三向相等、`action` 逐字段相等 |
+| 前端组件 | 新增 ~9 条 | `wait` 真的等、看门狗、`loopOk=false` 的徽标、`clamp` 抽屉文案 |
+| 真机（可选，`REAL_AGENT=1`） | 2 条 | 一次真实生成走完 `clamp`+`rescue`；一次 `--max-duration=5000` 的真实超时 |
+
+#### 22.7.2 验收标准（AC-110 ~ AC-127）
+
+| 编号 | 判据（可执行） | 归属 |
+| --- | --- | --- |
+| AC-110 | 在 `WindowsSelectorEventLoopPolicy` 下，`spawn_capability()` 返回 `(False, "event_loop_selector:_WindowsSelectorEventLoop")`；`ProactorEventLoop` 下返回 `(True, None)` | S1 |
+| AC-111 | Selector 策略下发起一次生成（★v12 修订 V11-P0-2：闸门在 `RunManager.start()` 第 0 步）：`POST /instruments/{id}/reports` 返回 **409/503 的 `event_loop_unsupported`**，`runs` 表**没有**该行，且 `settings.runs_dir/<id>` 目录**未创建** | S1 |
+| AC-112 | ★v12 修订（V11-P1-1②）：`GET /capabilities.runtime.loopOk == false` ⟺ `GET /capabilities.aragon.degradedReason == "event_loop_unsupported"`，两个字段由**同一个** `preflight.spawn_capability()` 供给（`fullyCapable` **不在 wire 上**，不能作为断言对象） | S1 |
+| AC-113 | `npm run dev` 与 `start-all.ps1` 的默认 argv **不含** `--reload`；`DEV_RELOAD=1` / `-Reload` 才含 | S1 |
+| AC-114 | 假引擎 `hang` 剧本 + **monkeypatch `agent_hard_deadline_grace_sec=3`**（★v12 修订 V11-P1-10：`AGENT_HARD_DEADLINE_SEC` 不存在，且可设的硬截止会与 `--max-duration` 形成第二个真源）：run 在 ≤5 秒内变 `failed(agent_timeout)`，且 `run.error.payload.deadlineSec` 存在 | S2 |
+| AC-115 | 手工插一行 `status=running`、`started_at` 早于截止的 run → `sweep_stale_runs()` 返回 1，该行变 `failed(agent_timeout)`；`_tasks` 里有活任务的 run **不被抢** | S2 |
+| AC-116 | `kill_process_tree` 在 `process.returncode is not None` 时**仍然**调用 `taskkill /T /F /PID`（mock 断言调用次数=1） | S2 |
+| AC-117 | E-93 的 601 字 summary 夹具：`validate_doc` 收敛后 `errors == []`，`quality.clamp == {count:1, fields:["summary"]}`，`status == "degraded"`，报告真的落库 | S3 |
+| AC-118 | ★v12 修订（V11-P0-3 / V11-P2-4）：用例**遍历 `report_doc.schema.json`** 自己收集每一个 `maxLength/maxItems/maxProperties` 节点（本机实测 67 条，要求同节点带 `type` 则 56 条——**不写死 54**），逐个越界 1 个单位；每一个都能收敛且 `errors == []`；收敛后长度 ≤ 上限、以「…」结尾、**且仍通过 `jsonschema.validate`**；另加一条专项：`heading.text` 越界（上限 **120**，不是 4000）必须被收敛 | S3 |
+| AC-119 | 截断 JSON（尾部缺 `}]}`）经 `rescue_from_text` 返回 `how == "json_repaired"`；纯散文返回 `None`（不回退成假报告） | S4 |
+| AC-120 | `stop_reason=length` 时错误码是 `output_truncated`，不是 `result_schema_unsatisfied` | S4 |
+| AC-121 | ★v12 修订（V11-P0-1）：用本机 v12 的报告 + `d57087a2` 的快照重算，`factMissing` 从 **37** 降到 **≤ 17**（等价 `groundedRatio ≥ 0.90`），且「最近候选差 < 1% 却未被命名」的条数从 **24** 降到 **0**（今天：`fact=178/missing=37/ratio=0.7921/derived=63`；**不得**再断言 `derivedClaims > 0`——它今天已经绿） | S5 |
+| AC-122 | ★v12 修订（V11-P1-8）：`1,296.22–1,509.76` 与 `1,296.22-1,509.76`（**ASCII 连字符同样中招**）都只产出两个**正数** claim；`11 月 2 日` 部分改为**回归**用例（今天已经绿：两个片段都记成 `identifier`、零 fact claim） | S5 |
+| AC-123 | 429 `too_many_runs` 的 `primaryActionFor()` 返回 `'wait'`，且 `runAction('wait')` 在假定时器推进 8 秒后**调用了 `onRetry` 一次** | S6 |
+| AC-124 | ★v12 修订（V11-P1-6）：「逐字段相等」**已存在**（`web/tests/runErrors.test.ts:44-48`），本轮只补夹具：`httpCodes` 从 5 条补到 **7 条**（加 `too_many_runs` / `run_conflict`），补齐后那条既有断言必须仍然绿 | S6 |
+| AC-125 | 45 秒无 SSE 事件 → 状态变 `stream_closed`，且恰好调用一次 `api.run(runId)` | S6 |
+| AC-126 | `AGENT_ATTEMPTS=2` 且 attempt 1 产生过 pid 时，attempt 2 的 argv 含 `--resume`、**不含** `--prompt-file`；无会话时回落成完整重跑并记 `resumed:false` | S7 |
+| AC-127 | ★v12 修订（V11-P1-2/V11-P1-3）：run 终止后**本 run 的**会话文件被删——命令必须是 `aragon sessions rm <id> --yes`（缺 `--yes` 时 CLI 回 exit 2 `Refusing to delete without --yes.`）；清理失败必须落一条 `run.log(level=warn, code=session_cleanup_failed)`；**不存在**任何全局 `prune` 调用（用假 CLI 断言参数里没有 `prune`） | S7 |
+| AC-128 | ★v12（V11-P0-1）：`api/tests/test_grounding_baseline.py` 用「同一份 doc + 同一份 snapshot」重算 6 份历史报告，断言**今日**比值集合 = `{0.7057, 0.7875, 0.8086, 0.7704, 0.9453, 0.7921}`（±0.001）；若 `RULES_VERSION` 变更而这条没跟着改，它会红——这就是「口径变了必须说出来」的机器判据 | S5 |
+| AC-129 | ★v12（V11-P2-6）：`GET /capabilities` 里任何声称 schema 字节的地方都必须是**真源**的 18,392 B / sha1 `7a93509904b4`（不是 19,295 B 的 CRLF 副本） | S1 |
+| AC-130 | ★v12（V11-P1-4）：`SCHEDULER_ENABLED=0` 时启动一个「插了旧 `started_at` 的 `running` 行」，60 秒内该行变 `failed(agent_timeout)`（清扫不依赖 ticker 开关） | S2 |
+| AC-131 | ★v12（V11-P1-5）：服务端发**真实** `ping` 帧（`event: ping` + `data: {}`）时，前端 `subscribeToRun` 的 `lastEventAt` 被刷新、**不**触发 `onIdle`；连续 N 个 ping 周期后仍不触发（安静 ≠ 断） | S6 |
+| AC-132 | ★v12（V11-P1-11）：mock `create_subprocess_exec` 抛 `OSError` 时错误码是 `aragon_unavailable`；抛 `NotImplementedError` 时才是 `event_loop_unsupported`（两条用例，断言码不互换） | S1 |
+| AC-133 | ★v12（V11-P1-12）：`GET /capabilities.runtime.sessionSave` 由 `agent_attempts` 派生——`=2` 时 `retry_only`、`=1` 时 `off`；设置里**没有** `agent_session_save` 这个键（`Settings.model_fields` 断言） | S7 |
+| AC-134 | ★v12（V11-P2-11）：S4 用**构造夹具**验收——尾部缺 `}]}` 的截断 JSON 经 `rescue_from_text` 返回 `json_repaired` 并由 `salvage_doc` 出报告；纯散文返回 `None`；**不得**引用「33% 真实生成可救」（本机 24 份 `result.json` 的 `text` 里 `{`/`}` 出现 0 次） | S4 |
+| AC-135 | ★v12（V11-P2-5）：`derived_values()` 的前缀集合包含 `ttm:` / `extreme:` / `bollinger:` 三类**新增**，且 `distanceMa:` / `upside:` / `scenarioUpside:` 仍然存在（防「补 5 类」时手滑删掉已有的） | S5 |
+| AC-136 | ★v12（V11-P2-1）：`start-all.ps1` 的参数块含 `[switch]$Reload`；`-Reload` 时 argv 含 `--reload`、默认时不含（用 `-WhatIf`/干跑断言 argv，不真的起服务） | S1 |
+
+#### 22.7.3 回归门（一条都不许破）
+
+| 门 | 今天 | 本轮要求 |
+| --- | --- | --- |
+| `pytest` | 880 passed / 3 skipped | **≥ 880 + 新增**，0 failed |
+| `vitest` | 249 passed / 1 skipped（22 files） | ≥ 249 + 新增，0 failed |
+| `ruff` / `tsc --noEmit` / `eslint` | clean | clean |
+| `next build` | ok | ok |
+| `check-bundle` | 240.9 kB ≤ 245 kB，11 个懒加载面板 | ≤ 245 kB；**新增文件不得静态进首屏**（`scripts/grounding-explain.py` 不经前端，安全） |
+| `alembic heads` | `0005_engine_probes` | **不变**（本轮零迁移） |
+| 密钥扫描 | `test_no_secret_in_run_artifacts` 绿 | 绿；`--api-key` 打码三落盘点不动 |
+| 契约三向相等 | 18 条 | 21 条，三处同步 |
+
+### 22.8 风险与缓解（R-54 ~ R-63）
+
+| 编号 | 风险 | 概率 | 影响 | 缓解 |
+| --- | --- | --- | --- | --- |
+| R-54 | 去掉 `--reload` 让开发体验变差（改代码要手动重启），有人会偷偷加回去 | 高 | 中 | `/capabilities.runtime.loopOk` 常驻显示；`loopOk=false` 时生成按钮禁用并给一句话，不是靠文档约定 |
+| R-55 | `isinstance(loop, ProactorEventLoop)` 在非 win32 / uvloop 下限不到（会误判为不支持） | 中 | 高 | `spawn_capability()` 用 `sys.platform` 短路；`ASSUME_NOT_WINDOWS` 用例覆盖三条分支 |
+| R-56 | clamp 把关键数字截掉，制造新的「编造」 | 中 | 高 | 只在句边界切、绝不在数字中间切；`clamp.count>0` 必降级；AC-118 断言「截断后仍能通过接地」 |
+| R-57 | clamp 掩盖了「模型反复超长」这个信号 | 中 | 中 | 计数器进 `quality.clamp`；同一个 run 的 `clamp.count` 进 `engine.json`，连续 3 次 > 5 时在诊断面板提示「提示词该收紧」 |
+| R-58 | `rescue_from_text` 从散文里抠出**别的** JSON（例如提示词回显） | 中 | 高 | 三条守卫：必须含 `sections`、必须过 `salvage_doc` 的 schema、`how` 必须落盘；抠出来一律 `degraded` 且抽屉里写明「从正文还原」 |
+| R-59 | 派生目录扩容引入**假命中**（把编造数认成推算数） | 中 | 高 | 不放宽 `match_derived` 的容差；只加「有名字的公式」；AC-121 之外再加一条**人工抽样**（20 条，错判 ≤2） |
+| R-60 | `--session-id` 让同一 run 的两次 attempt 共享上下文，第二次可能「记得」第一次的错并固执重复 | 中 | 中 | 只在 attempt 1 有 pid 且退出码非 0 时 resume；`stop_reason=length` 时**不 resume**（重跑才有新 token 预算） |
+| R-61 | 会话目录清理删掉了不该删的（CLI 自己的会话） | 低 | 高 | ★v12 修订（V11-P1-3）：**只删** `sanitize_session_id(run.id)` 精确匹配的 id（`rm <id> --yes`）；**删除全局 prune**——实测 `prune --older-than 7 --dry-run` 会列出 `smoke-threads-tenant-a/b`、`webuse-…` 等**别的项目**的会话 9 条，而目录 1545.71 MB 早已超阈值 ⇒ 按 v11 的写法第一次 tick 就会删别人的东西。目录体积只做只读上报 |
+| R-62 | 清扫误杀正在跑的 run | 低 | 高 | `if run.id in self._tasks: continue`；截止时间 = CLI `--max-duration` + 120s，且每次 tick 重新算 deadline |
+| R-63 | 新增 3 个错误码导致 `web` 侧漏改，界面上出现裸码 | 中 | 中 | AC-124 的双向断言 + `copy.ts` 的三条新文案；CI 里 `runErrors.test.ts` 是必跑项 |
+| R-64 | ★v12：**基线漂移**——「今天的数字」与「落库的数字」混用，导致下一轮又照着旧值施工（本节 6 条 P0/P1 的同一个根因） | 高 | 高 | 每条断言写明**重算命令**；AC-128 把 6 份历史报告的重算值钉成用例；`quality.grounding.rules` 缺失时界面明示「早期口径，不可比」 |
+
+### 22.9 实施顺序与里程碑（M31–M37）
+
+| 里程碑 | 内容 | 完成判据 | 依赖 |
+| --- | --- | --- | --- |
+| **M31** | S1 执行环境自证：`spawn_capability()` + `main.py` 自证 + `fullyCapable` 闸 + 三个新码之一 `event_loop_unsupported` | AC-110/111/112/113 绿；Selector 下生成在进门前失败 | 无 |
+| **M32** | S1 收尾 + S6 契约打底：`kill_process_tree` 修三处、`--reload` 从两个启动入口去掉、契约夹具补两码并把 `action` 纳入断言 | AC-116/124 绿 | M31 |
+| **M33** | S2 墙钟兜底：`wait_for` + `sweep_stale_runs` + ticker 接线 + `agent_timeout` | AC-114/115 绿 | M31 |
+| **M34** | S3 逐字段收敛：`CLAMP_LIMITS` + `clamp_doc` + `quality.clamp` + `SalvageReport.clamped` | AC-117/118 绿；E-93 夹具先红后绿 | M34 无依赖 |
+| **M35** | S4 散文救援：`rescue_from_text` + `_close_unbalanced` + `output_truncated` | AC-119/120 绿 | M34（复用 clamp） |
+| **M36** | S5 接地口径：派生 5 类 + 区间符号 + 中文月日 + `derived` 分类 + `scripts/grounding-explain.py` | AC-121/122 绿；`groundedRatio ≥ 0.90` | 无（与 M34 并行） |
+| **M37** | S7 重试不重付 + 前端 S6 收尾：`--session-id`/`--resume`、会话清理、`wait` 真等、看门狗、`loopOk` 徽标 | AC-123/125/126/127 绿 | M31/M32 |
+
+顺序理由：**M31 必须先做**——其它六项的所有真机验证都要靠一次能起得来的生成；M34/M36 无依赖，
+可以并行；M37 放最后，因为它的验收需要「重试真的发生」，而重试要在 M33 的截止时间和 M34 的
+收敛都稳定之后才有意义。
+
+### 22.10 自检（写完全节即执行，结果记录在此）
+
+#### 22.10.1 实测证据（E-88 ~ E-101，全部本机、可重放）
+
+| 编号 | 断言 | 命令 / 位置 | 实测输出（摘录） |
+| --- | --- | --- | --- |
+| **E-88** | uvicorn 在 `--reload` 下装 Selector 循环，且 Selector 上 spawn 必抛 `NotImplementedError('')` | `.run/probe/e6_uvicorn_loop.py` | `--workers 1 → use_subprocess=False loop=ProactorEventLoop`；`--reload → use_subprocess=True loop=_WindowsSelectorEventLoop`；`_WindowsSelectorEventLoop: NotImplementedError('')` |
+| **E-89** | 两个默认启动入口都给 uvicorn 加 `--reload`；真实 run 在 `research` 以 `internal` 结束 | `scripts/dev.mjs:83`、`start-all.ps1:589`、`runs` 表 | `7aa5aeaa… stage=research pct=20 exit=None error_code=internal error_message='NotImplementedError: ' 02:09:10→02:09:20（10s）tokens=None` |
+| **E-90** | 启动预检串行跑 3 次 CLI，共 23.4 秒，阻塞 `lifespan()` | `.run/probe/e3_preflight_hang.py` | `info --json rc=0 8.96s`；`doctor rc=0 5.18s`；`models rc=0 9.28s` |
+| **E-91** | `kill_process_tree` 有三个洞：早退、窄捕获、超时只写日志 | `aragon_runner.py:428,443,451-454` | `:428 if process is None or process.returncode is not None: return`；`:443 except OSError`；`:454 logger.warning("cancel_timeout …")`；`grep cancel_timeout api/app` → 仅此一处，**从未作为错误码产出** |
+| **E-92** | Python 侧没有墙钟截止，唯一 `wait_for` 是 SSE 轮询 | `run_manager.py:941`、`aragon_runner.py:697-714` | `grep -n "wait_for\|deadline" run_manager.py` → 只有 `:941 event = await asyncio.wait_for(queue.get(), timeout=poll_timeout)` |
+| **E-93** | 601 字 summary → 整份判死；`salvage_doc` 对同一份同样返回 `None` | `.run/probe/e4_salvage_entry.py`（真实 v12 文档 + `d57087a2` 快照） | baseline `errors=0 status=degraded`；A `errors=1 status=degraded ok=False`；B `salvaged is None = True`；A2 `['<root>: headline is a required property']`；B2 `None` |
+| **E-94** | schema 里有 54 个有界字段；真实文档远低于上界 | `.run/probe/e7_limits.py` | `54 bounded fields`（summary 600 / headline 160 / paragraph 4000 / rows 80 / series 6 …）；`v12 summary 373 字，最长段落 317 字`；最大落库文档 `v10 = 16149 B`（`valueBytes` 上限 262144） |
+| **E-95** | 6/6 真实报告的比值都低于 0.9 的降级线；3/9 真实生成只落成散文卡片；`derivedClaims` 恒 0 | `.run/probe/e8_grounding.py` | `aragon 0.766/0.880/0.704/0.745/0.564/0.624`（v12=degraded，v6~v11=superseded）；`aragon-text provisional ×3`；`mock 0.950–0.989 全 ready`；`derived` 列全 0 |
+| **E-96** | v12 的 15 条未接地样本是同比/pp/均线距离/TTM/单季轧差/中文月日 | 同上（samples 明细） | `-0.2`（同比）、`1,744.3`（TTM）、`10.1`（距 MA60）、`821.6`（TTM 净利）、`11`（「11 月 2 日」）；15 条里 **6 条逐字存在**于 snapshot/bars/fundamentals，**7 条去掉符号后存在** |
+| **E-97** | 37 条未接地 claim 里 24 条（65%）与已有数字差 <1% | `.run/probe/e9_grounding_gap.py` | `1,744.3 vs 1,741.441 → 0.16%`；`10.1 vs 10.02 → 0.79%`；`48.6 vs 48.4 → 0.41%`；汇总 `within 1% = 24 / no arithmetic neighbour = 13` |
+| **E-98** | 区间破折号被读成负号 | 同上（明细行） | `1,296.22–1,509.76 → canonical -1509.76（gap 98.44%）`；`1,480.00 → -1480` |
+| **E-99** | 429 的主按钮点下去什么都不发生；`stream_closed` 不在码表；契约只断言超集 | `web/lib/runErrors.ts:63`、`GenerationOverlay.tsx:72-84`、`useGenerationStream.ts:316-320`、`runErrors.test.ts:38,45` | `too_many_runs: {action:'wait', primary:true}`；`runAction` 只有 retry/checkKey/openSettings/openLog；夹具 `httpCodes` 5 条（缺 `too_many_runs`/`run_conflict`），且**无任何用例断言 `action`** |
+| **E-100** | 24 个 `result.json` 只有 12 份成了报告；单次生成 input token 68,974–181,421 | `.run/probe/e5_paid_but_lost.py` | `result.json present: 24 → became a report: 12`；`stop=max_turns exit 3 ×4`；`stream_error isError=True exit 1 ×2`；token 最小 48,126 / 最大 181,421。★v12 复核（V11-P2-10）：今天 `result.json=24`、`report.json=**17**`、`prose_only=**4**`——「12 份」已随产物漂移，AC 不得引用它 |
+| **E-101** | CLI 会话目录 1,543 MB；`sanitize_session_id` 是死代码 | `~/.aragon-agent/sessions`、`aragon_runner.py:107` | `entries 1023 / total MB 1543.33`；`grep sanitize_session_id api/app` → 只有 def，argv 里从不发 `--session-id`（`:234` 永远 `--no-save-session`） |
+
+★v12 新增（评审节点，全部本机只读；脚本 `.run/probe/sec22_*.py`）：
+
+| 编号 | 断言 | 命令 / 位置 | 实测输出（摘录） |
+| --- | --- | --- | --- |
+| **E-102** | 用**今天**的代码重算，6 份 aragon 报告的比值全部移位，v11 已 ≥0.90 | `.run/probe/sec22_regrade.py` | `v6 0.7656→0.7057` / `v7 0.8803→0.7875` / `v8 0.7036→0.8086` / `v10 0.7451→0.7704` / `v11 0.5635→**0.9453**` / `v12 0.6235→0.7921`；`derived` = 85/27/92/95/98/63 |
+| **E-103** | 落库的 `grounding` 只有 8 个键（**无 `rules`/`docHash`/`snapshotHash`**）⇒ 旧口径的铁证；v6/v7/v8/v10 的 `grounding` 是**空对象** | `select json_extract(quality_json,'$.grounding') from reports` | v11/v12 = `[factClaims, factMissing, totalMissing, projectionClaims, derivedClaims, identifierClaims, skipped, samples]`；v6/v7/v8/v10 = `[]` |
+| **E-104** | 工作区目录在两处、且都在闸门之前创建 | `run_manager.py:234-235` / `:312-313` | `workspace = settings.runs_dir / run_id` + `workspace.mkdir(parents=True, exist_ok=True)`（`start()`，写行之前）；`workspace.mkdir(parents=True, exist_ok=True)`（`_pipeline()` 第一句） |
+| **E-105** | schema 的 `text` 上限**因块型而异**；有界字段 67（带 type 56）条，不是「54」 | `.run/probe/sec22_review.py` | `bounded_all= 67  bounded_typed= 56`；`block\|0.text 4000` / `block\|1.text **120**` / `block\|3.text 1200` / `block\|7.text 800`；`block\|5.rows 80` / `block\|10.scenarios 3` / `block\|9.peers 10` |
+| **E-106** | hint 的真源是 `FailureSpec.hint`，不是 `errors.py` | `api/app/agent/failure.py:36-44` / `:323` | `@dataclass(frozen=True, slots=True) class FailureSpec: code, retryable, severity, hint, http_status`；`def hint_for(code)` |
+| **E-107** | `capability_degraded()` 不存在；`fullyCapable` 不在 wire 上；`preflight.py` 顶层不 import asyncio | `read_file preflight.py:12-20 / :192-255 / :391-491` | 顶层 import 只有 `json, re, shutil, subprocess, time, dataclass, Path, Any, urlsplit`；`as_payload()` 键里**没有** `fullyCapable` |
+| **E-108** | `aragon sessions` 的两条命令都要额外参数；全局 prune 会删别的项目 | `aragon sessions --help` / `prune --older-than 7d --dry-run` / `rm <id>` / `prune --older-than 7 --dry-run` | `7d` → rc=2 `--older-than takes a non-negative number of days.`；`rm` → rc=2 `Refusing to delete without --yes.`；`7` → rc=0，列出 `smoke-threads-tenant-a/b`、`webuse-17d194d2-…`、`3c64b53a-…-tenant-a` 共 9 条 |
+| **E-109** | `SCHEDULER_ENABLED=0` 时 ticker 根本不启动；`tick_once` 是单测入口且返回 int | `main.py:137-140` / `scheduler_ticker.py:58-86` | `if settings.scheduler_enabled: get_ticker().start() else: logger.info("scheduler disabled …")`；`async def tick_once(self) -> int:` |
+| **E-110** | SSE 保活是**注释帧**，前端收不到；`EventSource` 封在 `lib/sse.ts` 里 | `routers/runs.py:154-166` / `run_manager.py:920-946` / `web/lib/sse.ts:58-148` | `if event is None: yield ": ping\n\n"`（`poll_timeout=15.0`）；`wire()` 只订阅 8 个命名事件，注释帧不进 `onmessage`；`subscribeToRun()` 内部持有 `source` 与 `close()`，hook 拿不到 |
+| **E-111** | 「契约从不断言 `action`」是错的；缺的是夹具的 2 条 httpCodes | `web/tests/runErrors.test.ts:44-48` / `contracts/run_error_codes.json` | `for (const row of [...CONTRACT.codes, ...CONTRACT.httpCodes]) { expect(actionFor(row.code).action).toBe(row.action); }`；`httpCodes` 只有 5 条（`monthly_budget_exceeded/probe_in_progress/probe_busy/probe_disabled/agent_mock_mode`） |
+| **E-112** | 区间破折号在 `numbers_in_text_from_clean():934` 被折成负号；中文月日**已经**归 identifier | `.run/probe/sec22_claims.py` | `'目标价区间 1,296.22–1,509.76 元'` → `[('1,296.22','1296.22','fact'), ('-1,509.76','-1509.76','fact')]`；ASCII 连字符同样；`'11 月 2 日'` → `[('11 月','','identifier'), ('2 日','','identifier')]` |
+| **E-113** | 两处异步 spawn；Selector 上两处都抛；默认 Proactor 可以 spawn | `.run/probe/e1_loop_notimplemented.py` + `aragon_runner.py:420-460` | `A default loop = ProactorEventLoop | spawned ok rc=128`；`B selector loop = _WindowsSelectorEventLoop | ESCALATES NotImplementedError: ''`；`kill_process_tree` 签名 `-> None`，`:433` 另一处 `create_subprocess_exec` |
+| **E-114** | 没有 `agent_hard_deadline_sec` 这个配置项；`AGENT_ATTEMPTS` 对应 `agent_attempts=2` | `api/app/config.py:79-131` | `aragon_max_duration_ms: int = 900_000` / `aragon_max_output_tokens: int = 40_000` / `agent_attempts: int = 2`；**无** `agent_hard_deadline_sec`；`Settings.model_config` 无 `env_prefix` ⇒ `ARAGON_MAX_OUTPUT_TOKENS` 是合法环境变量名（hint 正确） |
+| **E-115** | 散文救援在本机**零目标**：24 份 `result.json` 的 `text` 最长 413 字、`{`/`}` 出现 0 次；4 份散文卡片的 `stopReason` 全是 `max_turns` | `.run/probe/sec22_counts.py` / `sec22_prose.py` | `result.json=24 report.json=17 prose_only=4 text_contains_braces=**0** max_text_len=**413**`；`stopReason = max_turns`、`text[29] = '我只提交报告，非结构化提交或者不满足'` |
+| **E-116** | v12 的 37 条缺口逐条归类：24 条差 <1%、6 条符号（其中 2 条是区间端点）、7 条无邻 | `.run/probe/sec22_missing.py` | `区间破折号造成的 = 0`（L1 口径）→ `仅符号问题 = 6 -> ['-0.2','-0.2','-0.13','-1,509.76','-1,480.00','-0.2']`；`差 < 1% = 24`（`1,744.3 vs 1741.441 0.16%` …）；7 条无邻（`2.0/2.0/3.9/1,660/6/5/4.1`） |
+| **E-117** | `derived_values()` 已有 13 个前缀 51 条（均线距离、情景空间已在） | `.run/probe/sec22_derived.py` | `prefixes = {'yoy':12,'singleQuarter':10,'singleQuarterYoy':4,'pp':4,'singleQuarterMargin':5,'magnitudeRatio':4,'distanceMa':3,'priceGap':1,'closeChange':1,'volReturn':2,'upside':1,'scenarioCenter':1,'scenarioUpside':3}` |
+| **E-118** | schema 真源是 18,392 B（19,295 是 CRLF 副本）；会话目录 1545.71 MB / 1023 项 | `.run/probe/sec22_review.py` / `sec22_counts.py` | `bytes= 18392 sha1= 7a93509904b4 depth= 11 nodes= 658 headroom= 1`；`sessions entries=1023 total_mb=1545.71` |
+
+> **诚实标注**：E-100 里那 1 份「structured 有值但没有 report.json」是
+> `ac83-success-60f83a76`——它是 §20 手搭的验收夹具目录（`ac83-summary.json` 里写着
+> `doc: true`），不是产品缺陷。本节没有把它算进「花了钱拿不到报告」的分子。
+
+#### 22.10.2 oracle 自检结论（对照 §22.0.3）
+
+| 断言 | 结果 | 说明 |
+| --- | --- | --- |
+| O-24 引用行号真实 | ✅ | 13 处关键引用逐条 `findstr`/`read_file` 复核：`dev.mjs:83`、`start-all.ps1:589`、`config.py:378-379`（uvicorn）、`aragon_runner.py:107/234/292-307/420-454/660/669`、`run_manager.py:301/427/484-493/941`、`report_validator.py:280-354/543`、`numeric_claims.py:523/949-955/1130-1199`、`runErrors.ts:63`、`GenerationOverlay.tsx:72-84`、`main.py:97-148` |
+| O-25 每条 P0/P1 有可复现证据 | ✅ | E-88~E-101，共 14 条；探针脚本全部落在 `.run/probe/*.py`（已 gitignore） |
+| O-26 至少一条真机证据 | ✅ | E-89 用的是 `runs` 表里那次真实失败；E-93/E-95/E-96/E-97 用真实 v12 报告 + 真实快照；E-100 用真实 `result.json` |
+| O-27 降级率有可算目标 | ✅ | `≥0.90`，依据 E-97 的 24/37 可命名 + E-98 的 2 条符号噪声 |
+| O-28 新码/契约/用例点名 | ✅ | §22.5.3（3 个码、三处同步）、§22.4.5（16 个测试文件） |
+| O-29 不违反既有裁决 | ✅ | 见 §22.12 的逐条对照 |
+| O-30 零迁移复核 | ✅ | 本节未引入任何 `alembic` 变更；`0005_engine_probes` 仍是 head |
+
+#### 22.10.3 本节点**没有**做的事（避免下游误读）
+
+1. **没有改任何源码**：`git status --short` 只有 `.gitignore`（既有）与 `deploy/`（部署任务遗留）。
+2. **没有跑真实生成**：本轮的钱花在「读自己的库」上（24 个 `result.json`、14 份报告、6 份真实
+   `quality`），没有再 spawn 一次 `aragon exec`——因为 §21 已经证明「最小探针 8.7–15.7 秒/$0.002」，
+   而本轮的问题全都能从**已有产物**里读出来。唯一新增的子进程调用是三次只读 CLI 命令（E-90）。
+3. **没有重算全部历史报告**：S5 的 `≥0.90` 只承诺**用同一份快照重算 v12**；历史 v6–v11 的报告
+   `quality` 不回填（§22.6.3 的纪律①）。
+4. **没有动 `bars.csv` 的体积**：47.6 KB 的 `bars.csv` 仍是 input token 的大头，但那是 §20.3.6
+   已经裁决过的「资料预算」问题，本轮不重复。
+
+#### 22.10.4 通过条件（Implementation Conditions，实现节点必须逐条满足）
+
+| 编号 | 条件 |
+| --- | --- |
+| C-31 | M31 未绿之前，不得开始 M34–M37 的真机验收（否则「证明不了」会被写成「不需要」） |
+| C-32 | 每条 S 层修复都要有「先红后绿」的证据，并在 spec 里追加 I-107 起的 findings |
+| C-33 | `spawn_capability()` 只能有一份实现，`fullyCapable` / `degradedReason` / `capabilities.runtime` 三处都读它 |
+| C-34 | `clamp_doc()` 只能挂在 `normalize_doc()` 里；不许在 `validate_doc()` 之后再补一次 |
+| C-35 | 接地指标的改动必须能在**同一份快照**上前后对比（0.624 → ≥0.90），不许换快照换口径 |
+| C-36 | 三个新码在 `failure.py` / 契约 JSON / `runErrors.ts` 三处的字符串必须逐字相同（含下划线） |
+| C-37 | ★v12：S3 的 `CLAMP_LIMITS` 必须**按块型**分派（`paragraph 4000 / heading 120 / callout 1200 / quote 800`）；出现「一刀切 4000」的实现即视为未完成 |
+| C-38 | ★v12：S1 的闸门必须在 `RunManager.start()` **第 0 步**（`mkdir` 之前），且 `spawn_capability()` 是**同步纯函数**；闸门写在 `_pipeline()` 里不算 |
+| C-39 | ★v12：三个新码的 `hint` 只能写在 `agent/failure.py::FailureSpec`；`errors.py` 里出现 hint 字符串即视为错放 |
+| C-40 | ★v12：`aragon sessions` 的每条命令必须在实现前**真跑一次**并把退出码写进注释（`rm` 需 `--yes`；`--older-than` 只收天数）；全局 `prune` 一律不许出现 |
+| C-41 | ★v12：`sweep_stale_runs()` 是**同步**函数，且调用点不得依赖 `SCHEDULER_ENABLED`；`tick_once()` 里不得出现未 await 的 `create_task` |
+| C-42 | ★v12：SSE 看门狗只能住在 `web/lib/sse.ts`；且必须有一条「服务端在发 ping 时不误判」的用例（AC-131） |
+| C-43 | ★v12：S5 的验收口径按 AC-121（`missing 37 → ≤17`、`<1% 未命名 24 → 0`），**不得**再以 `derivedClaims > 0` 或「6/6 都低于 0.9」为依据 |
+| C-44 | ★v12：`spawn` 的异常映射必须按类型分支（`NotImplementedError` → `event_loop_unsupported`，其余 → `aragon_unavailable`），AC-132 两条用例都要过 |
+| C-45 | ★v12：不新增 `agent_hard_deadline_sec` 与 `agent_session_save` 两个配置项；前者会造第二个截止真源、后者会造第二个会话真源 |
+| C-46 | ★v12：S4 只作防御性能力交付，验收用构造夹具；不得在文档/文案里声称「已有 33% 真实生成可被救回」（AC-134） |
+| C-47 | ★v12：凡引用「今天的数字」，实现节点的 findings 必须贴**重算命令 + 输出**；引用 `reports.quality` 落库值的必须注明 `rules` 版本 |
+| C-48 | ★v12：`quality.clamp` 新增键的同时必须改 `schemas/report.py::ReportQuality` **与** `test_every_quality_key_has_a_response_field`（反射守卫），两者缺一即红 |
+
+### 22.11 本轮的裁决清单（一句话一条，供下游直接引用）
+
+- **S-1**：Windows 上「能不能 spawn」是**进程级事实**，必须启动即自证，不能等第一次生成才发现。
+- **S-2**：坏环境的正确表现是「能读不能生成 + 一句能照做的提示」，不是「拒绝启动」，也不是「绿着跑挂」。
+- **S-3**：`--reload` 在 Windows 上是**能力杀手**而不是开发便利，默认关闭；要热重载必须显式承担后果。
+- **S-4**：格**式**越界（长 1 个字）与事**实**越界（编造数字）必须走两条不同的修法：前者 clamp，后者只标不改数。
+- **S-5**：截断是**我们自己的预算**造成的，不是模型不听话；所以它的错误码必须能指向那个预算。
+- **S-6**：已经付过钱的字节（`text` 里的 JSON）在扔掉之前必须被读一次。
+- **S-7**：`derived` 分类不许再靠 `block.derived` 这个 schema 里不存在的字段；判据必须来自**上下文单位**。
+- **S-8**：接地率的目标值用**同一份快照的前后对比**给出（0.624 → ≥0.90），不接受「感觉变好了」。
+- **S-9**：界面上每一个按钮都必须**真的做事**；做不到就不要画（`wait` 的今天就是反例）。
+- **S-10**：契约夹具里的字段（包括 `action`）必须被断言，否则它只是一份 README。★v12：这条**已经做到了**
+  （`runErrors.test.ts:44-48`），所以它不构成新的「先红」理由——本轮的先红判据改由 `wait` 分支提供。
+- **S-11**（★v12）：**「上一节点测过」不等于「今天还是那样」。** 凡引用数字，必须写明它是**重算值**还是
+  **落库值**；落库值必须带 `rules` 版本，否则它就是一段没有出处的历史。
+- **S-12**（★v12）：**凡是要 spawn 的命令行，实现前先手跑一次。** `rm` 缺 `--yes`、`--older-than 7d`
+  不是天数——两条命令都不贵，但都会**静默失败**，而静默失败正是这一节要消灭的东西。
+
+### 22.12 与已有缺陷和裁决的关系
+
+| 既有条目 | 关系 | 说明 |
+| --- | --- | --- |
+| §21 K-1~K-16 | **不冲突** | S1 只是给 `fullyCapable` 加**第三道**闸，`effective_key_source()` 仍是钥匙的唯一判据（V10-P0-1 未回退） |
+| V10-P0-2（`build_argv` 返回真实 argv） | 遵守 | S7 的 `--session-id` 是 argv 里的合法值，不是掩码；打码仍只在三个落盘点 |
+| §21 K-4（重试权收回） | 加强 | S7 在 `AGENT_ATTEMPTS=2` 的框架内减少**重复付费**，不改重试次数与退避 |
+| I-50（`derived` 既不进分母也进不了合法文档） | **超集修复** | I-50 修了「进分母」，本轮修「分类真的会触发」（S-7） |
+| I-56（`asOf` 缺失时绝对日期也失效） | 同型欠账 | S5 的中文月日剥离与 I-56 是同一类：日期识别不全 → 数字噪声 |
+| I-69（`quality.prompt.sha1` 与仓库提示词永不相等） | **不相关但同型** | 都是「两份实现必然漂移」；S5 的诊断脚本是这条纪律的工具化 |
+| I-88（`stopReason=error` 不能推导成 `agent_error`） | 遵守 | S4 的 `output_truncated` 只认 `length`/`max_tokens`，不碰 `error` |
+| §19 I-44（日期必须先于标识符剥离） | 遵守 | S5 只在 `DATE_LIKE_RE` 上追加模式，不动阶段顺序 |
+| §20 AC-70~72（schema/prompt 预算闸门） | 不变 | ★v12 修订（V11-P2-6）：真源实测 **18,392 B / sha1 `7a93509904b4` / depth 11 / nodes 658 / headroom 1**（E-118）；`19,295 B` 是 `read_text`+`write_text` 的 CRLF 副本，§20 已解释，不要写混。clamp 不改 schema |
+| §19 G1（`quality.grounding` 四分类） | 保持四分类 | S5 只补 `derived` 的触发条件与噪声，不新增第五类 |
+
+### 22.13 给实现节点的一句话
+
+**先把 `--reload` 从两个默认启动参数里去掉、并在 `lifespan` 里断言事件循环（M31）——否则这一节
+剩下的六项都只能在「起不来的机器」上被证明；然后按 M34 → M35 → M36 的顺序修「花了钱拿不到报告」
+的三条路（clamp / 散文救援 / 接地口径），最后用 M37 把界面上那些「看着有、点了没用」的按钮
+逐个变成真动作。**
+
+★v12 补一句（评审节点）：**动手之前先把上面三处「今天是多少」重算一遍**——`grounding` 用
+`grounding_report(doc, snapshot)` 跑，不要读 `reports.quality`；`sessions` 的命令先 `--help` 再跑；
+`schema` 的上限遍历 schema 自己收集，不要抄「54」。本轮 4 个 P0 里有 3 个是「抄了上一节的数字」
+导致的：数字没错，**时间是错的**。
+
+## 评审结论（Review Verdict · Iteration 6）
+
+**有条件通过。**
+
+§22 的**判断**是对的：这一轮终于问了前五轮没问的那个问题——「这台机器上、用默认参数，
+生成到底起不起得来」。它的三条主线（执行环境自证、花了钱要拿到东西、界面上每个按钮都要真做事）
+都是"可用稳健"的正确分解，S1~S7 的切分也互不重叠，且**提出了三条本机可复现的真实缺陷**：
+
+1. `scripts/dev.mjs:83` 与 `start-all.ps1:589` 默认给 uvicorn 传 `--reload` ⇒ 本机 `uvicorn 0.52.3`
+   的 loop factory 返回 `_WindowsSelectorEventLoop` ⇒ `create_subprocess_exec` 抛 `NotImplementedError('')`，
+   而 `runs.7aa5aeaa` 就是那一行（`stage=research / pct=20 / 10 秒 / token 全空 / error_code=internal`）。
+   评审节点独立复现（E-88/E-113），**这条没有问题**。
+2. `validate_doc` 是二值判据而 `normalize_doc` 不做任何长度收敛 ⇒ 601 字的 `summary` 让整份报告消失。
+   评审节点复核了 `normalize_doc` 的 11 个 pass（全是存在性/类型修补，无截断）与
+   `validate_doc` 的 `if outcome.errors`，**这条也没有问题**。
+3. 429 的主按钮是「稍后重试」而 `runAction()` 没有 `wait` 分支 ⇒ 点下去什么都不发生
+   （`runErrors.ts:63` 有 `{action:'wait', primary:true}`，`GenerationOverlay.tsx:72-84` 只认
+   4 个 action）。**这条成立**，并且 8 秒倒计时重试的方向是对的。
+
+但**基线、插入点、命令与判据**有 4 处 P0 与 12 处 P1 必须落地前修掉，其中 3 处属于同一类失效：
+**"上一节点测过"被当成了"今天还是那样"**——最典型的是 W-3：v11 说「6/6 真实报告比值全在 0.9 以下、
+`derivedClaims` 恒 0」，而评审节点用**今天的代码**对同一份 `doc + snapshot` 重算得到
+`0.7057 / 0.7875 / 0.8086 / 0.7704 / **0.9453** / 0.7921` 与 `derivedClaims 85/27/92/95/98/63`；
+落库值之所以不同，是因为它们的 `grounding` 载荷**连 `rules` 键都没有**（旧口径的铁证）。
+不改这一条，实现节点会为「让 6 份都过 0.9」去做一件已经部分完成的事，并在验收时得到假绿。
+
+已就地修复（正文 **47 处** `★v12 修订（V11-…）` 标记）：4 处 P0（基线重算、闸门前移到 `mkdir` 之前、
+`CLAMP_LIMITS` 按块型分派、hint 的真源）与 12 处 P1（`capability_degraded` 不存在 / `fullyCapable` 不在 wire /
+`aragon sessions` 两条命令需 `--yes` 与纯天数 / 全局 prune 会删别的租户 / 清扫依赖 `SCHEDULER_ENABLED` 且
+`create_task` 吞异常 / 看门狗指错文件且 ping 够不到 `onmessage` / 「契约不断言 `action`」是错的 / 区间守卫
+放错层 / 中文月日已经做完 / 「唯一 spawn 点」不成立 / `AGENT_HARD_DEADLINE_SEC` 会造第二真源 / spawn 异常
+映射吞掉 `aragon_unavailable` / `agent_session_save` 是第二真源），另修 12 条 P2。
+
+### 未解决的 P0 / P1
+
+**零。** 全部 4 个 P0 与 12 个 P1 已在正文就地修复，`## 评审记录（Review Notes · Iteration 6）` 的每一行
+都标了「处置」。12 条 P2 已记录在案，按既有惯例不阻塞实现，但**下游不要照旧写**。
+
+### 通过条件（实现节点必须逐条满足）
+
+| 编号 | 条件 | 判定方式 |
+| --- | --- | --- |
+| **C-37** | S3 的 `CLAMP_LIMITS` 按**块型**分派（`paragraph 4000 / heading 120 / callout 1200 / quote 800`）；「一刀切 4000」视为未完成 | `test_clamp.py` 含 `heading.text` 越界专项（AC-118） |
+| **C-38** | S1 的闸门在 `RunManager.start()` **第 0 步**（`mkdir` 之前），`spawn_capability()` 是同步纯函数 | AC-111 断言 `runs` 无该行且工作区目录未创建 |
+| **C-39** | 三个新码的 `hint` 只写在 `agent/failure.py::FailureSpec`；`errors.py` 里出现 hint 即错放 | `grep -n "event_loop_unsupported" api/app/errors.py` 为空 |
+| **C-40** | `aragon sessions` 每条命令实现前**真跑一次**并把退出码写进注释；全局 `prune` 一律不许出现 | AC-127 + `grep -rn "prune" api/app` 为空 |
+| **C-41** | `sweep_stale_runs()` 是**同步**函数，调用点不依赖 `SCHEDULER_ENABLED`；`tick_once()` 里无未 await 的 `create_task` | AC-130 + 代码审查 |
+| **C-42** | SSE 看门狗只在 `web/lib/sse.ts`，且必须有「服务端发 ping 时不误判」的用例 | AC-131 |
+| **C-43** | S5 的验收口径按 AC-121（`missing 37 → ≤17`、`<1% 未命名 24 → 0`），不得以 `derivedClaims > 0` 或「6/6 都低于 0.9」为依据 | AC-121 / AC-128 |
+| **C-44** | `spawn` 异常按类型分支（`NotImplementedError` → `event_loop_unsupported`，其余 → `aragon_unavailable`） | AC-132 两条用例 |
+| **C-45** | 不新增 `agent_hard_deadline_sec` 与 `agent_session_save` 两个配置项 | AC-133 断言 `Settings.model_fields` |
+| **C-46** | S4 只作防御性能力交付，验收用构造夹具；文案不得声称「33% 真实生成可救」 | AC-134 |
+| **C-47** | 凡引用「今天的数字」，findings 必须贴**重算命令 + 输出**；引用落库值的必须注明 `rules` 版本 | 实现节点的 findings 逐条核对 |
+| **C-48** | `quality.clamp` 新增键的同时改 `schemas/report.py::ReportQuality` **与** `test_every_quality_key_has_a_response_field` | 该反射守卫用例绿 |
+
+### 给实现节点的一句话
+
+**这一节最贵的三个字不是「修好了」，是「还是那样」。** 先花十分钟把三件事各跑一遍——`grounding_report()`
+对 6 份历史报告、`aragon sessions --help` 对那两条命令、遍历 `report_doc.schema.json` 那 67 条上界——
+再动手；然后按 M31（起得来）→ M34/M36 并行（救得回、说得清）→ M35（防御性）→ M37（退得干净）的顺序落地，
+每一步都用 AC 里那条**今天确实会红**的用例开刀。
+
+## 实施过程发现的方案缺陷（Implementation findings · Iteration 6 → v13 增量）
+
+> 本节点（Subtask #2 代码开发）按 §22.4 的文件表施工时，遇到 **15 处"照字面写不出来 / 写出来是错的"**
+> 的地方，逐条就地修正并把结论写回代码注释。编号接续 §22 的评审条目（上一轮最后一条是 I-106，
+> §22.0.2 硬约束 6 与 C-32 要求"每条 S 层修复都要有先红后绿证据，并追加 I-107 起的 findings"）。
+>
+> 与评审节点的区别：评审节点比的是"文档与今天的代码"，本节点比的是"**文档与能不能施工**"——
+> 其中 **I-107 / I-118 / I-119 / I-120** 四条只要照抄示例代码就会立刻炸（Linux 上 import 失败、
+> 用例断别人的副作用、`tsc` 本来就是红的）。
+
+| ID | 位置 | 方案写的 | 照着写会怎样 | 落地做法（已写进代码注释） |
+| --- | --- | --- | --- | --- |
+| **I-107** | §22.3.2(a) `preflight.py` 示例 | 模块**顶层** `import asyncio.windows_events` | `asyncio.windows_events` **只存在于 Windows**，而本项目生产环境是 Ubuntu 24.04 ⇒ `preflight` 在 Linux 上 **import 即失败**，整个 API 起不来（比"生成失败"严重一个量级） | 改成 `_proactor_loop_class()` **惰性导入**：只在 `sys.platform == "win32"` 时 `import asyncio.windows_events`，再加 `is_proactor_loop()` 用**类名兜底**（冻结构建 / uvloop 下 `isinstance` 可能失败）。语义不变（仍不靠"间接导入"），只是把那条约束限制在它成立的分支里。`preflight.py:139-175` |
+| **I-108** | §22.3.3 第 2 层 | 「由 `scheduler_ticker` 顺带调用，**零新任务**」 | 与 **C-41**（"调用点不得依赖 `SCHEDULER_ENABLED`"）**直接矛盾**：`SCHEDULER_ENABLED=0` 时 ticker 根本不启动（E-109），于是这一层在"关掉定时刷新"的部署上消失——而那是**最需要自愈**的配置 | 落地为 `main.py` 的独立常驻任务 `_sweep_loop()`（`STALE_SWEEP_SECONDS = 60`），**不碰** `scheduler_ticker`。`main.py:60 / :104-121 / :185-189`；`sweep_stale_runs()` 保持**同步**（C-41），异常在循环里落日志而不是丢进没人 await 的 Task |
+| **I-109** | §22.3.3 第 1 层 | `except TimeoutError: … raise AgentError("agent_timeout", …)` | 原文是"抛给上层"，但 `_run_with_cancel()` 已经在 `research` 阶段内部，再抛出去会被 `run_manager.py:301` 的 `except Exception` 收成 `internal`——**这个码刚好又变成了它要消灭的那个码** | 就地 `_finalize_failure(..., "agent_timeout", ..., deadline_sec=int(deadline))`，先 `await runner.cancel()` 收进程树，再 `return None`；`deadlineSec` 只在该码上出现在 `run.error.payload`（§22.5.2）。`run_manager.py:696-711 / :868-875` |
+| **I-110** | §22.3.4 `CLAMP_LIMITS` / `TEXT_LIMITS` 静态表 | 写死一张"路径 → 上限"的表 | 表与 schema 会**立刻漂移**（评审节点自己就因为抄了旧数字连错三次）；而且 `heading.text=120` 这种"因块型而异"的上限必须按 `anyOf` 分派，静态表迟早漏一格 | 改成**遍历 schema 自己收集上界**：`_clamp_node()` 按 `maxLength / maxItems / maxProperties` 递归，`anyOf` 用 `_pick_variant()` 按 `type` 分派。静态表**退化为文档与断言对象**（`report_validator.py:72-73` 的注释写明这一点），不再有第二份真源。`report_validator.py:398-507` |
+| **I-111** | §22.3.4 纪律② | 「先切到 `limit - 1` 再拼 `…`」 | 只处理了上界，**没处理下界**：`summary.minLength = 10` / `headline.minLength = 4`。若原文长 9 字且上限 8，切完只剩 7 字仍是非法——一次"修"制造两条新错 | `_clamp_text(value, max_length, min_length=…)` 同时拿 `minLength`：短于下限时**不切**（宁可整条交给 salvage / 判死，也不制造新的越界），长于上限时切到 `max_length - 1` 再补 `…`。`report_validator.py:312-355 / :422-429` |
+| **I-112** | §22.3.4 纪律① `quality.clamp.count` | 「`clamp.count` = 收敛**次数**」 | 界面文案会与数字打架：同一段超长文字里三个字段各截一次，`count=3` 但读者看到的是"一句话被截了三次"；而 `fields` 去重后只有 1-2 项 | 口径定为**去重后的字段数**（`clamp_payload()` 的 `count = len(fields)`），文案写成「有 {count} 处**字段**超过格式上限」与之一致（`web/lib/copy.ts::trust.clamped`）。AC-117 的 `count == 1` 在"单字段单次"夹具上两条口径重合，所以用例本身不需要改。`report_validator.py:510-524` |
+| **I-113** | §22.3.6(b) | 「先按 `derived` 记账（计入分母、单独计数），命中不了再落回 `factMissing`」 | 这句话把两种**不同性质**的数混成一个桶：`yoy:` / `pp:` 是**精确**命名公式（差 0 也算命中），而"与某条公式差 0.16%"是**口径差**（模型用了盘中价）。混在一起会让 `derivedClaims` 变成一个既不是"精确"也不是"未接地"的混合计数，界面无法说清 | 落地为**第五个非正式计数** `approxClaims`：`match_derived()` 命中记 `derived`，`match_derived_approx()`（≤1%）命中记 `approx`——**两者都进分母**、各自单独计数、界面文案写「推算（近似）」。`GroundingReport.as_payload()` 增 `approxClaims`。`numeric_claims.py:976-1000 / :1435-1440` |
+| **I-114** | §22.4.2 `schemas/report.py` 行 | 只写「`ReportQuality` 增 `clamp`」 | `quality.salvage` 新加的 `prunedBlocks / clamped / how` **没有对应的响应字段**会被 pydantic 静默丢弃——这是同一个坑的**第五次**（v6 `engine`、v7 `quality.cost`、v9 `aragon.verified`、v11 `loopOk`） | `SalvageQuality` 三个字段（`prunedBlocks` / `clamped` / `how`）与 `ClampQuality` 一起声明；`test_every_quality_key_has_a_response_field`（反射守卫）随即覆盖它们。`schemas/report.py:310-395` |
+| **I-115** | §22.3.5 L1.5 伪代码 | `return doc, ("json" if parsed is candidate else "json_repaired"), report` | `parsed` 是 `dict`、`candidate` 是 `str`，这个比较**恒为 False** ⇒ 所有从正文还原的报告都会被标成 `json_repaired`，"括号是不是我们补的"这个信息永久丢失 | 改成**按候选分别跟踪 `how`**：①先试"第一个 `{` 到最后一个 `}`"的整段（`json`）；②失败才从第一个 `{` 到结尾做有界尾补（`json_repaired`），若尾补失败但整段能 `loads` 则回落成 `json`。尾补本身也加了两条修正：**截断落在字符串中间时先丢掉半截字符串再退到上一个边界**（`payload[:-2]` 是真实形态）。`report_validator.py:1017-1112` |
+| **I-116** | §22.3.3 `sweep_stale_runs` 伪代码 | `session = report_service_session()` 写在 `try` 之前 | 连接池耗尽 / DB 文件被锁时，**建 session 自己就抛**，而这个函数是 60 秒常驻任务的入口 ⇒ 一次抛错就再也不会对账（"清扫"退化成"偶尔清扫"） | session 建立移进 `try` 里，`finally` 只在非 `None` 时 `close()`。`run_manager.py:986-1024` |
+| **I-117** | §22.3.8 第 3 条 | 「失败升为 `run.log(level=warn, code=session_cleanup_failed)`」 | 会把**两种正常情形**报成失败：①mock 模式没有 CLI；②单次尝试走 `--no-save-session`（`AGENT_ATTEMPTS=1`，本机默认）时**根本没有会话文件**。于是每一次生成都落一条 warn，"清理失败"这条告警立刻变成噪音（S-12 要消灭静默，但**用噪音换静默**不是解法） | `cleanup_session()` 返回 `(ok, detail)`，`detail ∈ {no_binary, absent}` 视为**不是失败**、不落 warn；其余失败才落 `run.log(level=warn, code=session_cleanup_failed)`。`aragon_runner.py:540-600 / run_manager.py:1026-1074` |
+| **I-118** | §22.7.2 AC-122 | 「`1,296.22–1,509.76` 只产出两个**正数** claim」 | 断言写得太窄：真正被读错的不只是 U+2013，还有 U+2014 / `~` / `～` / `至`，以及 **ASCII 连字符**（`1,296.22-1,509.76`）。只测一个字符的用例会让剩下四种继续错，而它们在生产文档里都出现过 | 守卫落在 `numbers_in_text_from_clean()`（**唯一**能看到 `match.start()-1` 的一层）并抽成 `_is_range_separator()`；`RANGE_DASHES = "–—~～至"` + ASCII `-`。用例参数化覆盖六种分隔符 + 一个反例（`最大回撤 −18.2%` 的负号**必须**保留）。`numeric_claims.py:334 / :1169-1197` |
+| **I-119** | §22.7.2 AC-111 第 ③ 条 | 「`settings.runs_dir/<id>` 目录**未创建**」 | 照字面写成"目录里一个子目录都没有"会**断别人的副作用**：`WORKSPACE_ROOT` 是 **session 级**临时目录（`conftest.py:22-24`），同进程里其它用例早已在里面建过工作区 ⇒ 这条用例按执行顺序随机红绿（本节点第一次跑就红在别人的目录上） | 改成**前后快照比较**：请求前后 `runs_dir` 的条目集合必须完全一致。AC-111 的原意（这次请求没建目录）一字不改，但不再依赖用例顺序。`api/tests/test_event_loop_guard.py:56-90` |
+| **I-120** | §22.7.3 回归门「`tsc --noEmit` clean」 | 今天 clean | **今天不 clean**：`web/components/generation/useGenerationStream.ts` 的 `GenerationState.reconnectAttempt` 是**必填**字段（v6 的 V4-P1-6 加的），而 `web/tests/run-actions.test.tsx` 的夹具一直没补 ⇒ 两处既有类型错误（`TS2352` 缺字段 / `TS18048` 索引可能 undefined，后者由 `noUncheckedIndexedAccess` 触发）。它们被 `incremental` 的旧 `tsbuildinfo` 遮住，直到本轮新建测试文件才暴露 | 补 `reconnectAttempt: 0` 与 `!spec` 收窄（**只改测试夹具，不动生产类型**），并把这条写进用例注释：回归门第一次真的绿。`web/tests/run-actions.test.tsx:23-50 / :84-92` |
+| **I-121** | §22.3.7(b) | 「新增 `GET /runs/{id}` 的调用点（`api.run()` 现在全仓无调用），重连时先查一次状态」 | 端点**已经存在**（`routers/runs.py:117-119` 的 `get_run`），所以"新增端点"是多余动作；但"谁来调"没写清 ⇒ 实现时很容易写成"看门狗里直接重连"（那样 `stream_closed` 就只是个换了名字的 `onerror`） | 把对账做成 `useGenerationStream` 里的 `reconcileRun(runId, instrumentId)`：看门狗 → 先 `dispatch(stream_closed)` → **再**调一次 `api.run()`；服务端若已 `succeeded` 就顺手 `invalidateQueries(['reports'])`，用户不必再点一次生成。**只加调用点，不加端点**（硬约束 2）。`useGenerationStream.ts:301-330 / :355-372` |
+| **I-122** | §22.3.7(c) + AC-131 | 「服务端把保活改成**真实帧**（`event: ping` + `data: {}`）」 | 这句话只改了前端契约的一半：`contracts/run_error_codes.json` 的 `sseEvents` 加了 `ping` 之后，`runErrors.test.ts` 的"订阅清单逐项相等"用的是 `/'([a-z]+\.[a-z]+)'/g` ——**只匹配带点号的事件名**，于是 `ping` 被静默漏掉，"服务端多一个事件名"这条断言对它**失效**（它永远匹配不上，也就永远不红） | 正则改成 `/'([a-z]+(?:\.[a-z]+)?)'/g`，并补一条"看门狗收到 ping 不误判"的用例。`web/tests/runErrors.test.ts:55-60`、`api/app/routers/runs.py:159-173`、`web/tests/stream-watchdog.test.ts` |
+| **I-123** | §22.3.5 S4 | 「`rescue_from_text` 放 `report_validator.py`，因为它是结构的主人」 | 顺序写反了一次就会白付钱：方案把 L1.5 画在 `run_manager.py:427` 之后，但那里同时是 L1（`salvageable_raw` 是 dict）的分支；若 L1.5 放在 L1 **之前**，"`result` 里有合法 JSON"的路径会先走更激进的正文拾取，把更可信的那一份让位给更不可信的那一份 | 顺序**写死**：先 L1（`result.result`），后 L1.5（正文）；L1.5 只在 `doc is None and result.text` 时触发，且成功时落一条 `run.log(level=warn, code=rescue)`。`run_manager.py:473-500` |
+| **I-124** | §22.5.1 `runtime.sessionDirMb` | 只写"只读测量" | `os.walk` 一次要遍历 1000+ 个文件、1.5 GB（本机实测 1545.71 MB），而 `/capabilities` 会被前端**反复轮询** ⇒ 每轮都 walk 一次会让"打开页面"变慢，且这件事发生在**事件循环线程**里（同步路由，但仍是同一次请求） | 加 60 秒 TTL 缓存（`SESSION_DIR_TTL_SEC`），读不到时返回 **`None` 而不是 0**（"没测到"与"0 MB"是两件事）；`reset_cache()` 一并清掉，用例之间不串味。`preflight.py:139 / :228-253` |
+
+### 先红后绿的证据（C-32）
+
+| 修复 | 先红（改之前失败的输出） | 后绿（现在的用例） |
+| --- | --- | --- |
+| I-107 | `python -c "import app.agent.preflight"` 在非 win32 上 `ModuleNotFoundError: asyncio.windows_events` | `api/tests/test_spawn_capability.py`（三条分支：Proactor / Selector / 非 win32 短路） |
+| I-108 | `SCHEDULER_ENABLED=0` 时插一行旧 `running`，60 秒后仍 `running`（E-109 的 ticker 不存在） | `api/tests/test_sweep_stale_runs.py`（含"清扫循环在 lifespan 的 4 空格层级、不在 `if scheduler_enabled` 里"的结构断言 + 真跑一次循环的行为断言） |
+| I-109 / AC-114 | 假引擎 hang 时 run 永远 `running`（E-92：全仓唯一的 `wait_for` 是 SSE 轮询） | `api/tests/test_hard_deadline.py`（monkeypatch grace=3 ⇒ ≤5 秒 `failed(agent_timeout)`，且 `run.error.payload.deadlineSec` 存在） |
+| I-110 / I-111 / I-112 | 601 字 `summary` ⇒ `errors=1` ⇒ `_finalize_failure`，`salvage_doc` 对同一份也返回 `None`（E-93） | `api/tests/test_clamp.py`（AC-117 夹具 + AC-118 遍历 schema 自己收集上界 + `heading.text=120` 专项） |
+| I-113 / I-118 | `1,296.22–1,509.76` ⇒ `('‑1,509.76','-1509.76','fact')`；37 条缺口里 24 条差 <1%（E-112/E-116） | `api/tests/test_numeric_claims.py`（区间六种分隔符 + 负号反例 + `approxClaims` 分流）、`api/tests/test_grounding_baseline.py::test_the_v12_report_is_at_or_above_the_degrade_line`（v12 `missing ≤ 17`） |
+| I-115 / I-123 / AC-119/134 | 截断 JSON / 正文里的 JSON 一律 `result_schema_unsatisfied` ⇒ 临时卡片 | `api/tests/test_rescue_from_text.py`（尾部缺 `}]}` ⇒ `json_repaired`；纯散文 ⇒ `None`） |
+| I-117 / AC-127 | `aragon sessions rm <id>` 缺 `--yes` ⇒ exit 2，且被 `try/except: log debug` 吞掉（E-108） | `api/tests/test_session_resume.py` + `run_manager._cleanup_session()` 的 `no_binary/absent` 不算失败分支 |
+| I-119 / AC-111 | 第三条断言按用例顺序随机红（本节点第一次跑就红在别人的工作区目录上） | `api/tests/test_event_loop_guard.py::test_generation_is_rejected_before_any_side_effect` |
+| I-120 | `npx tsc --noEmit` ⇒ `TS2352`（缺 `reconnectAttempt`）+ `TS18048`（`spec` 可能 undefined） | `web/tests/run-actions.test.tsx` 夹具补齐 ⇒ `tsc` 真绿 |
+| I-121 / I-122 / AC-123/125/131 | 429 主按钮点了没反应（E-99）；`stream_closed` 落 `openLog` 兜底；注释帧够了不 `EventSource.onmessage` ⇒ 45 秒必然误重连（E-110） | `web/tests/run-actions.test.tsx`（假定时器推进 8 秒 ⇒ `onRetry` 恰一次）、`web/tests/stream-watchdog.test.ts`（只收 ping 不触发 `onIdle`）、`web/tests/capabilities-runtime.test.tsx`（`loop_blocked` 第四态 + 抽屉两行） |
+
+### 本节点没有做的事（避免下游误读）
+
+1. **没有 `git commit`**（那是下一个节点的职责）。
+2. **没有加迁移**：`alembic heads` 仍是 `0005_engine_probes`；新事实全部装进 `reports.quality`（JSON）与 `run_events.payload`。
+3. **没有加端点**：`GET /capabilities` 只加 `runtime` 对象，SSE 只加 `ping` 事件与三个 payload 字段。
+4. **没有重跑真实生成**：本轮的全部证据来自既有产物（24 份 `result.json`、17 份 `report.json`、6 份真实 `quality`）与构造夹具，与 §22.10.3 的纪律一致——S4 因此只作防御性能力交付（C-46）。
+5. **没有全局 `prune`**：`grep -rn "prune" api/app` 为空；只保留"按本 run 的 session-id 精确 `rm --yes`"。
+
+
+## 评审节点发现的缺陷（Iteration 6 · 评审 + 提交）
+
+> 本节点（Subtask #3 代码 Review、修复与提交）逐条比对 §22.3–§22.7 与 `api/` + `web/` 的
+> 实际代码（覆盖度 / 回归风险 / 命名与注释），发现 **7 处**"写进去了但写得不对"的地方，
+> 全部就地修复并把结论写回代码注释。编号接续实现节点的 I-124。
+>
+> 与实现节点的区别：实现节点比的是"文档与能不能施工"，本节点比的是
+> **"代码与它自己的注释是否一致"**——七条里有五条是"注释承诺了一件事，代码做了另一件事"，
+> 而它们都不报错、也不改测试颜色（除了 I-125 / I-127 两条，见下表）。
+
+| ID | 位置 | 代码在做什么 | 为什么是缺陷 | 落地做法 |
+| --- | --- | --- | --- | --- |
+| **I-125** | `api/app/services/numeric_claims.py::_is_range_separator` | 多一条"左侧数字本身不带符号"的判据 | 该判据把 `-1,000–2,000` 读成 `['-1,000', '-2,000']`：**右端点凭空多了负号**，而它在句子里是正的。这与 E-112 的 `-1,509.76` 是同一类**假缺口**（快照里只有 `2,000`，报告被记成"编造了 -2,000"），也正是本条守卫存在的理由。而真正的负数（`最大回撤 −18.2%` / `(-18.2%)`）靠"破折号左邻不是数字"一条就挡住了 | 删掉那条判据，只留"两侧都紧邻数字"（右邻允许 `.` / `(`）；`-10–-5` 由"右邻不是数字"保住符号。补一条参数化用例 |
+| **I-126** | `api/app/agent/aragon_runner.py::stream()` | `run.retry.resumed` 与 `engine.json.session.resumed` **各算了一遍** | 两处都会说假话：①`AGENT_ATTEMPTS=3` 的第三次尝试，帧里 `resumed: true` 而准入条件只有 `attempt == 2` 成立 ⇒ 那次其实是从零重跑；②attempt 2 真的 `--resume` 了、最后却 `stop_reason=length` 收场时，`engine.json` 记成 `resumed: false / truncated`，把"我们接过上下文"这件事抹掉。于是"重试不重付"（S7）的账目不可信 | 判定前移到发帧**之前**且只做一次（`can_resume`），结果存进 `self._resume_used`；帧与 `engine.json` 都读它；`reason` 多一个不撒谎的 `second_attempt_only` |
+| **I-127** | `api/app/services/run_manager.py::start()` 第 0 步 | 闸门**无条件**拒绝 | mock 引擎一次子进程都不 spawn（`build_runner()` 的原话："mock must never spawn anything"），"事件循环不支持子进程"对它是**不成立的前提**。无条件拒绝 ⇒ `start-all.ps1 -Mock -Reload`（README 里明写的演示开关）把整条无需 CLI 的链路也关掉，用户看到"这台机器起不来"而它其实起得来。`auto` 不豁免（那里 `loopOk` 已是 `fullyCapable` 的一道门） | `agent_mode == "mock"` 时让路；AC-111 的两条用例显式设 `real`（那才是它描述的现场），另加一条"mock 不被拦"的反向用例 |
+| **I-128** | `api/tests/test_grounding_baseline.py` | 两处结尾都是 `assert checked >= 0` | 这两行**恒真**：库里 aragon 报告被清理、或 `quality_json` 全为空对象时，三条基线用例会悄悄变成"什么都没检查"的绿——而 AC-121/AC-128 是整轮 S5 唯一的机器判据（S-11：上一节点测过 ≠ 今天还是那样） | 改成"重算到就断言、一条都没重算到就 `skip`（带原因）"；三段重复的"取库 + 取快照 + 重算"提成 `_graded_rows()`，于是"重算了 0 条"只可能漏在一个地方 |
+| **I-129** | `api/tests/test_session_resume.py::test_cleanup_never_prunes_globally` | 断言写成 `... or True` | 又是恒真断言。C-40 的"代码里不许出现 prune"因此只剩一条逐行扫描在守，而它自己也被前一行误导成"已经检查过了" | 删掉恒真行，只留逐行扫描（注释里解释"为什么不用 prune"仍然允许） |
+| **I-130** | `api/app/services/run_manager.py::_pipeline` | `repair.startswith("收敛")` 写了两遍字面量 | `repairs` 的**生产者**是 `report_validator.CLAMP_PREFIX`，消费者是这里。改一处就静默失配：`quality.clamp` 还在记账，而 `run.log{code:"clamp"}` 再也不出现，前端抽屉悄悄少一行（S3 的可解释性直接退化） | 读 `report_validator.CLAMP_PREFIX`（一份真源）；`level` 与 `code` 从同一个 `is_clamp` 派生 |
+| **I-131** | `api/app/agent/aragon_runner.py::build_argv`（S7） | `AGENT_ATTEMPTS > 1`（**仓库默认 2**）时对**所有**调用点发 `--session-id` | `--session-id` 的含义是"这次会话要落盘"，而落盘的东西必须有人删——本仓唯一的清理点是 `run_manager._cleanup_session()`（每个 run 收尾 `sessions rm <id> --yes`）。`ask_runner`（报告内追问）与 `probe`（引擎自检）**不在那条 finally 里**，于是每问一次就留一个永不回收的会话文件。而会话目录今天已经 1545.71 MB（E-101）——正是 S7 要治的病（R-61） | `AgentRequest.keep_session`（默认 `False`）＝"我会负责删"；只有 `run_manager` 传 `True`。不认领的调用点 argv 与 v11 逐字相同（`--no-save-session`） |
+
+### 先红后绿的证据（本节点）
+
+| 修复 | 先红（改之前真的会红） | 后绿（现在的用例） |
+| --- | --- | --- |
+| I-125 | `numbers_in_text_from_clean("回撤区间 -1,000–2,000 元。")` → `['-1,000', '-2,000']`（探针实跑） | `test_a_range_with_a_negative_left_endpoint_keeps_the_right_one_positive`（两种分隔符 + `-10–-5` 反例） |
+| I-126 | `AGENT_ATTEMPTS=3`：两帧的 `resumed` 都是 `true`；`length` 收场时 `engine.json` 说 `resumed: false` | `test_resumed_truth_has_exactly_one_decision_point`（真 resume / 第 3 次不 resume / 截断不 resume，三条路径） |
+| I-127 | `AGENT_MODE=mock` + `spawn_capability() → False` 时 `start()` 抛 503（演示链路整条关掉） | `test_mock_mode_is_not_blocked_by_the_event_loop`；AC-111 那两条仍绿（显式 `real`） |
+| I-128 / I-129 | 三条基线用例 + prune 用例在"库被清空"时仍然全绿 | `-rs` 输出可见 `skip` 原因；恒真断言已删除 |
+| I-130 | 改 `CLAMP_PREFIX` 后 `run.log.code` 静默消失（无任何用例会红） | 读常量 ⇒ 改一处两处同步 |
+| I-131 | `AGENT_ATTEMPTS=2` 时 `ask`/`probe` 的 argv 含 `--session-id`（留下永不回收的会话文件） | `test_only_the_call_site_that_cleans_up_may_save_a_session` |
+
+### 本节点确认**没有**问题的地方（逐条核对，不重复施工）
+
+1. **C-37 按块型分派**：`_pick_variant()` 依 `type` 选 `anyOf` 分支，`heading.text=120`
+   专项用例在；`BLOCK_TEXT_LIMITS` 只作断言对象，运行时真源是 schema 本身（I-110）。
+2. **C-38 闸门位置**：`start()` 的 `spawn_capability()` 在 `active_run_for()` / `mkdir()` 之前，
+   AC-111 的前后快照断言在。
+3. **C-39 hint 真源**：`grep -n "event_loop_unsupported" api/app/errors.py` 只命中
+   `class EventLoopUnsupported.code`，三段 hint 文本一个字都不在 `errors.py`（用例守着）。
+4. **C-40 / R-61 无全局 prune**：`grep -rn "prune" api/app` 只命中 `prune_unknown_blocks`
+   （块裁剪，与此无关）与注释 / 文档字符串；没有任何可执行的 `prune` 子命令。
+5. **C-41 同步清扫**：`sweep_stale_runs()` 无 `await`，调用点在 `main.py::lifespan` 与
+   `_sweep_loop()`，**不在** `if scheduler_enabled` 分支里；`tick_once()` 里没有裸
+   `create_task`。
+6. **C-42 / AC-131**：看门狗在 `web/lib/sse.ts`，`ping` 帧刷新 `lastEventAt` 且不进 reducer，
+   "只收 ping 不误判"的用例在。
+7. **C-45 无第二个真源**：`Settings.model_fields` 里没有 `agent_hard_deadline_sec` /
+   `agent_session_save`；`sessionSave` 由 `agent_attempts`、`hardDeadlineSec` 由
+   `aragon_max_duration_ms + grace` 派生。
+8. **零迁移 / 零新端点**：`alembic heads` = `0005_engine_probes`；`/capabilities` 只加
+   `runtime` 对象与 `aragon.loopOk/loopReason`，SSE 只加 `ping` 事件与三个 payload 字段。
+9. **契约三向相等**：21 条 run 码在 `failure.RUN_ERROR_CODES`、`contracts/run_error_codes.json`、
+   `web/lib/runErrors.ts` 三处一致（pytest 集合相等 + vitest 逐字段 `action`）。
+
+### 评审结论（Review Verdict · Iteration 6 评审节点）
+
+**通过。** §22 的 S1–S7 全部落地（`pytest` 972 → **981 passed / 3 skipped**，`vitest` **260 passed / 1 skipped**），
+4 处 P0 与 12 处 P1 的通过条件（C-37~C-48）逐条核对无违反，实现节点的 18 条 findings
+（I-107~I-124）逐条复核与代码一致。本节点新增 7 条缺陷已全部就地修复并各带一条机器判据，
+未留 TODO。
+
+真实缺陷的净收益：**三处假数据被消灭**（区间右端点负号、`resumed` 的两种假话、
+不认领会话清理却落盘会话），**两处假绿被消灭**（三条基线用例与 prune 用例的恒真断言），
+**一处产品承诺被恢复**（无 CLI 的 mock 演示链路不再被事件循环闸门拦死）。

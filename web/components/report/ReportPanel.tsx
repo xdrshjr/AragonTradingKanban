@@ -380,7 +380,14 @@ export function ReportPanel({
           {summary?.quality.source === 'mock' ? <Badge tone="info">{copy.report.mock}</Badge> : null}
           {/* ★v6 G1：`grounding == null`（无数据 / 早期报告 / 能力关闭）时组件自己返回 null。 */}
           {summary ? (
-            <TrustBadge quality={summary.quality.grounding ?? null} reportId={summary.id} onJump={jumpToBlockById} />
+            <TrustBadge
+              quality={summary.quality.grounding ?? null}
+              // ★v12（S3/S4）：格式收敛与"从正文还原"与接地率同处一个抽屉（见 TrustBadge 注释）。
+              clamp={summary.quality.clamp ?? null}
+              salvage={summary.quality.salvage ?? null}
+              reportId={summary.id}
+              onJump={jumpToBlockById}
+            />
           ) : null}
           {/* ★v9（K5）：抢救可见。`used === false` 或老报告没有这个键 ⇒ 什么都不渲染。 */}
           {summary ? <SalvageNotice salvage={summary.quality.salvage ?? null} /> : null}

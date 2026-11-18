@@ -55,7 +55,7 @@ Cls = Literal["fact", "projection", "identifier", "derived"]
 #: 两个不同规则算出来的 `factClaims/factMissing` 在版本列表里被并排展示，
 #: 读者无法知道它们不可比（本轮实测：同一份 doc + 同一份 snapshot 在
 #: 2026-11 的两代规则下得到 323/141 与 270/103）。跨口径只能"各自陈述"，不能比较。
-RULES_VERSION = "claims-v3"
+RULES_VERSION = "claims-v4"
 
 #: 一个数值可以被写成更短的小数（`1,634.9` 对 `1634.88`），但舍入损失一旦超过
 #: 这个**相对**量，它已经不是"同一个数"了 —— `0.78 → "1"` 损失 28%，
@@ -65,6 +65,14 @@ _MAX_ROUNDING_LOSS = 0.001
 #: 一位有效数字的整数（`1`/`5`/`9`）几乎总是计数、档位或序号，不是测量值：
 #: 只有当它落在派生量的 0.1% 以内时才认。这条把"信心度 3/5"这类误判挡在门外（R-E8）。
 _SINGLE_DIGIT_RELATIVE = 0.001
+
+#: ★v12（S5 / AC-121）：**近似推算**的相对容差（1%）。
+#:
+#: 为什么它与 `match_derived()` 的「末位半个单位」是两个常数而不是一个：那个是
+#: **四舍五入的定义**（一个数只可能来自它末位的半个单位），放大会把编造值认成事实；
+#: 这个是**口径差**的上界（模型用盘中价、我们用收盘价），只用于"命名"而不是"核验"，
+#: 且命中单独记进 `approxClaims`（界面文案是"与那条公式差 0.8%"，不是"就是那条公式"）。
+APPROX_TOLERANCE = 0.01
 
 #: 一个写法至少保留几位有效数字才算"同一个数"（见 `_precisions`）。
 _MIN_SIGNIFICANT_DIGITS = 2
@@ -240,6 +248,11 @@ class GroundingReport:
     #: 样本不足时的显式标记。**优先于** `ratio >= 0.9`（★V6-P2-8）。
     skipped: str | None = None
     samples: list[dict[str, Any]] = field(default_factory=list)
+    #: ★v12（S5 / §22.3.6）：**近似推算**的命中数——与 `derived_claims`（精确命名的公式）
+    #: 分开计数，理由与 `droppedBlocks` / `prunedBlocks` 不相同的那条一样：两者在界面上
+    #: 说的是不同的话（"这一条就是那条公式" vs "这一条与那条公式差 0.8%"）。合并会让
+    #: `derivedClaims` 从"可点开看公式"退化成"大概算过"。
+    approx_claims: int = 0
     #: ★A6：口径版本与输入指纹。跨口径（或缺少 `rules`）时 UI 不给可比百分比。
     rules: str = RULES_VERSION
     doc_hash: str = ""
@@ -264,6 +277,7 @@ class GroundingReport:
             "sampledValues": self.sampled_values,
             "projectionClaims": self.projection_claims,
             "derivedClaims": self.derived_claims,
+            "approxClaims": self.approx_claims,
             "identifierClaims": self.identifier_claims,
             "skipped": self.skipped,
             "samples": list(self.samples),
@@ -311,6 +325,62 @@ def strip_identifiers(text: str) -> str:
     最后才走 `NUMBER_RE`。理由见 `_strip_with_removals`（I-44）。
     """
     return _strip_with_removals(text)[0]
+
+
+#: ★v12（S5 / §22.3.6(c) / AC-122）：**区间分隔符**，不是负号。
+#: 实测（E-112）：`目标价区间 1,296.22–1,509.76 元` 会被抽成 `1,296.22` + `-1,509.76`，
+#: 于是第二条**必然**未接地（`-1509.76` 与语料差 98.44%）。ASCII 连字符同样中招
+#: （`1,296.22-1,509.76`），所以不能只处理 `–` / `−`。
+#:
+#: ★评审修正（E-114）：这张表是**生产代码与用例共用的唯一真源**——`_fold_range_dashes()`
+#: 按它折字符，`test_ac122_every_separator_is_handled` 按它参数化。写死两处的后果是
+#: 上一版只在两个字符上验过（`–` 与 ASCII `-`），而 `—` / `~` / `～` / `至` 一条用例都没有。
+RANGE_DASHES = "\u2013\u2014~\uff5e"  # – — ~ ～
+#: 中文的"至"（`1,296.22至1,509.76`）**不是符号**：它不会被 `NUMBER_RE` 的 `-?`
+#: 吃成负号，所以不需要折成 `-`，但它是同一种语义，用例必须一起覆盖。
+RANGE_WORD = "\u81f3"
+
+
+def _fold_range_dashes(text: str) -> str:
+    """把**排版用**的破折号与波浪线折成 ASCII `-`（`RANGE_DASHES` 是唯一真源）。
+
+    折叠与"剥符号"是两件事：折完之后 `NUMBER_RE` 才能把 `…-1,509.76` 认成一个带符号
+    的 token，再由 `_is_range_separator()` 判断那个符号属于分隔符。也就是说，
+    **这里多折一个字符，守卫就多覆盖一种写法**——这正是上一版漏掉 `—` / `~` / `～` 的原因。
+    """
+    for dash in RANGE_DASHES:
+        text = text.replace(dash, "-")
+    return text
+
+
+def _is_range_separator(text: str, dash_index: int) -> bool:
+    """`text[dash_index]` 是不是一个**区间分隔符**（而不是负号）。
+
+    判据只有一条，而且它就是 AC-122 的全部内容：**破折号两侧都紧邻数字**
+    （左邻是数字；右邻是数字，或是 `.` / `(` —— 右端点可能写成 `.5` 或以括号起头）。
+    右侧数取绝对值由调用方执行（`raw = raw[1:]`）。
+
+    为什么这一条足够了：负号在 `NUMBER_RE` 里是 `-?` 吃掉的前缀，所以「不是分隔符」的
+    那些写法，破折号左边一定不是数字——`最大回撤 −18.2%`（空格）、`(-18.2%)`（括号）、
+    `净利润下滑-18%`（汉字）都在第 1 条之前就出局。反过来，**左邻是数字**的破折号在
+    中文投研文本里就是区间（`1,296.22–1,509.76` / `PE 24-30 倍`），不存在"减法"这一说。
+
+    ★评审修正（评审节点 I-125）：上一版还有一条"左侧数字本身不带符号"的判据，它把
+    `-1,000–2,000` 读成了 `-1,000` + `-2,000` —— 右端点凭空空了一个负号，而那个数
+    在那个句子里明明是正的（正是本条守卫要消灭的那一类假缺口）。左端点是负数**不改变**
+    破折号的性质：`-1,000–2,000` 与 `1,000–2,000` 是同一种区间，只是起点在零的另一侧。
+    真正需要保留负号的 `-10–-5` 靠第 1 条就够了（破折号右邻是 `-`，不是数字）。
+
+    为什么守卫必须放在**这一层**（★v12 修订 V11-P1-7）：负号是在
+    `numbers_in_text_from_clean()` 里被 `NUMBER_RE` 的 `-?` 吃进 token 的，而
+    `canonical_number(token)` 只拿到 token —— 它**看不到左邻字符**，在那一层根本无法
+    执行「两侧都是数字」这条判据。
+    """
+    if dash_index <= 0 or dash_index + 1 >= len(text):
+        return False
+    left = text[dash_index - 1]
+    right = text[dash_index + 1]
+    return left.isdigit() and (right.isdigit() or right in ".(")
 
 
 def numbers_in_text(text: str) -> list[str]:
@@ -453,6 +523,14 @@ def _value_number(raw: str) -> float | None:
         return None
 
 
+#: ★评审修正（E-114）：`scripts/grounding-explain.py` 逐条解释缺口时要问两件事——
+#: "这个 token 的数值是多少"和"它保留了几位有效数字"。它们本来就是**纯函数**，
+#: 但从另一个包 import `_value_number` / `_significant_digits` 是一处随时会被重命名
+#: 静默打断的耦合（`_` 是私有约定，改名时没人会去看 scripts/）。所以给出两个公开别名：
+#: 一份实现，两处消费，名字与语义都在明面上。
+value_number = _value_number
+
+
 # ── 派生量目录（★A1）─────────────────────────────────────────────────────────
 
 #: 财报字段里**金额**（元）与**水位**（%）两类。单位决定能不能换算成亿元。
@@ -489,6 +567,21 @@ def _period_year(period: str) -> str | None:
     if len(digits) >= 4:
         return digits[:4]
     return None
+
+
+def _is_fiscal_year_end(period: str) -> bool:
+    """`20251231` / `2025-12-31` / `FY25` 是不是**全年**口径。
+
+    ★v12（S5）：TTM 换算必须找到"上年全年"这一条，而快照里的期次标签是
+    **日期形态**（`20260930` / `20251231`，实测 E-119），不是 `FY25`。
+    只认 `FY…` 会让 TTM 类在整个目录里一条都生成不出来——而它恰好是模型每次都会算的
+    那个数（`1,744.3 = 9M26 133.28 + FY25 172.05 − 9M25 130.90`）。
+    """
+    label = (period or "").strip().upper()
+    if label.startswith("FY"):
+        return True
+    digits = "".join(char for char in label if char.isdigit())
+    return len(digits) == 8 and digits.endswith("1231")
 
 
 def _has_period(periods: list[Any], index: int) -> bool:
@@ -686,6 +779,114 @@ def derived_values(
                     "%",
                     f"情景 {index} 隐含空间",
                 )
+    # ── ★v12（S5 / §22.3.6(a) / AC-135）：补三类**有名字的公式** ────────────────
+    # 实测（E-97/E-117）：`derived_values()` 已有 13 个前缀 51 条（`distanceMa` /
+    # `upside` / `scenarioUpside` / `yoy` / `pp` / `singleQuarter*` / `magnitudeRatio` /
+    # `priceGap` / `closeChange` / `volReturn` / `scenarioCenter` 全在），所以「补 5 类」
+    # 里有 2 类是重复劳动。真正缺的是下面三类——它们的共同点是**读者在报告里最常看到、
+    # 而快照里只存了原料**：TTM 加总、"距前高/前低"、"布林带上下轨"。
+
+    # (1) TTM 加总：`TTM = 最新累计 + 上年全年 − 上年同期累计`。这是投研里最基本的换算，
+    #     模型每次都会算，而快照里只存分期累计值（`financials[].revenue` 等），所以它一直
+    #     被记成"编造"（E-97：`1,744.3` 与语料 `1741.441` 差 0.16%）。
+    #     口径与 `_YOY_LAG` 一致：A 股财报是年内累计，同一「9M」两年之间隔 4 个季度。
+    #     三个数缺一就不算（目录宁可漏，也不能给一个编造的换算背书）。
+    for index, row in enumerate(periods):
+        if not isinstance(row, Mapping):
+            continue
+        period = str(row.get("period") or f"#{index}")
+        year = _period_year(period)
+        if year is None or not _has_period(periods, index + _YOY_LAG):
+            continue
+        previous_fy: Mapping[str, Any] | None = None
+        for candidate in periods:
+            if not isinstance(candidate, Mapping):
+                continue
+            label = str(candidate.get("period") or "")
+            if _is_fiscal_year_end(label) and _period_year(label) == str(int(year) - 1).zfill(4):
+                previous_fy = candidate
+                break
+        if previous_fy is None:
+            continue
+        same_period_last_year = periods[index + _YOY_LAG]
+        if not isinstance(same_period_last_year, Mapping):
+            continue
+        for name in _MONEY_FIELDS:
+            current = _finite(row.get(name))
+            full_year = _finite(previous_fy.get(name))
+            last_year_partial = _finite(same_period_last_year.get(name))
+            if current is None or full_year is None or last_year_partial is None:
+                continue
+            put(
+                f"ttm:{name}@{period}",
+                (current + full_year - last_year_partial) / 1e8,
+                "亿元",
+                f"{period} TTM（最新累计 + 上年全年 − 上年同期累计）",
+            )
+
+    # (2) 前高 / 前低：`(last − high)/high × 100`。快照里 `quote.dayHigh/dayLow` 只是**当日**
+    #     高低，报告里说的"距 60 日高点 -3.4%"没有任何字段可以直接对上，所以它一直是缺口
+    #     （E-97 的 `-3.4%`）。用 `priceSeries.close` 的窗口极值给出**有名字**的答案。
+    if closes_list:
+        window = closes_list[-60:] if len(closes_list) > 60 else closes_list
+        # ★评审修正（E-114）：键是**机器名**（进 `derived` 目录、也被用例断言），值是
+        # **人话**（进 `note`，最终渲染在"数字出处"抽屉里）。上一版把机器名直接拼进了
+        # 中文句子（「距 high60（收盘口径）」），读者看到的是一个不该出现的英文标识符——
+        # 同文件里其它 note 全是中文（「情景 3 隐含空间」），这一处是唯一的例外。
+        extremes = {
+            "high60": (max(window) if window else None, "60 日最高收盘"),
+            "low60": (min(window) if window else None, "60 日最低收盘"),
+            "highAll": (max(closes_list), "区间最高收盘"),
+            "lowAll": (min(closes_list), "区间最低收盘"),
+        }
+        for anchor_name, anchor in anchors:
+            for label, (extreme, human) in extremes.items():
+                if not extreme or not anchor:
+                    continue
+                put(
+                    f"extreme:{label}@{anchor_name}",
+                    (anchor - extreme) / extreme * 100.0,
+                    "%",
+                    f"距{human}（收盘口径）",
+                )
+            # 前高/前低本身也是报告里会直接引用的数：绝对值同样给一条命名。
+            for label, (extreme, human) in extremes.items():
+                if extreme:
+                    put(f"level:{label}@{anchor_name}", extreme, "元", f"{human}本身（收盘口径）")
+
+    # (3) 布林带端点：由 closes 的 rolling 均值 ± 2σ 得到，与 K 线图**同源**
+    #     （`indicators.bollinger()` 是唯一实现，`/bars` 与 `snapshot.technicals` 都读它）。
+    #     `technicals.bollUpper/bollLower` 已有快照值，所以这里主要补"模型抄的是图上那个
+    #     圆整值"的情形：`%b`（价格在带内的位置）也是同一个推导。
+    band_upper = _finite(technicals.get("bollUpper")) if isinstance(technicals, Mapping) else None
+    band_lower = _finite(technicals.get("bollLower")) if isinstance(technicals, Mapping) else None
+    if band_upper is not None and band_lower is not None:
+        for anchor_name, anchor in anchors:
+            if not anchor:
+                continue
+            put(f"bollinger:upper@{anchor_name}", band_upper, "元", "布林上轨")
+            put(f"bollinger:lower@{anchor_name}", band_lower, "元", "布林下轨")
+            spread = band_upper - band_lower
+            if spread:
+                put(
+                    f"bollinger:position@{anchor_name}",
+                    (anchor - band_lower) / spread * 100.0,
+                    "%",
+                    "价格在布林带内的位置（%b）",
+                )
+            put(
+                f"bollinger:distanceUpper@{anchor_name}",
+                (anchor - band_upper) / band_upper * 100.0,
+                "%",
+                "距布林上轨",
+            )
+            put(
+                f"bollinger:distanceLower@{anchor_name}",
+                (anchor - band_lower) / band_lower * 100.0,
+                "%",
+                "距布林下轨",
+            )
+
     return out
 
 
@@ -749,6 +950,11 @@ def _significant_digits(raw: str) -> int:
     digits = cleaned.replace(".", "").lstrip("0")
     return max(1, len(digits))
 
+#: ★评审修正（E-114）：`_significant_digits` 的公开别名（理由见 `value_number`）。
+#: `match_derived_approx()` 用它做"至少 3 位有效数字"的门槛，而诊断脚本要**显示**
+#: 这个位数——同一个判据被解释时，不能各算一遍。
+significant_digits = _significant_digits
+
 
 def match_derived(claim: Claim, derived: Mapping[str, DerivedValue]) -> DerivedValue | None:
     """claim 是否**就是**某条命名派生量（★A1 的判据）。
@@ -767,6 +973,15 @@ def match_derived(claim: Claim, derived: Mapping[str, DerivedValue]) -> DerivedV
 
     再加一道门槛：**一位有效数字**的写法（`1` / `5` / `9`）只有在相对误差
     ≤ 0.1% 时才认 —— 否则"信心度 3/5"的 `3` 会撞上某条恰好等于 3 的派生量（R-E8）。
+
+    ★v12（S5 / §22.3.6 / AC-121 的可达性修正）：那道门槛只在 claim **没有小数点**
+    时才生效。理由是它的原意与"带小数的一位数"无关：
+    * `3`（整数、一位有效数字）几乎总是计数/档位/序号，半单位容差 `[2.5, 3.5)` 太宽，
+      所以必须收紧到 0.1%；
+    * `-0.2`（一位有效数字但**带小数**）的舍入区间是 `[-0.25, -0.15)`，它是**定义明确**
+      的舍入结果 —— 实测 v12 的 `营业收入 ... 归母 -0.2%` 正是
+      `yoy:financials[0].netProfit = -0.2465` 保留一位小数的样子，而 0.1% 的
+      相对门槛（0.0002）把一个诚实的舍入判成了编造（E-119）。
     """
     value = _value_number(claim.raw)
     if value is None:
@@ -780,13 +995,76 @@ def match_derived(claim: Claim, derived: Mapping[str, DerivedValue]) -> DerivedV
         difference = abs(value - item.value)
         if difference > tolerance:
             continue
-        if significant <= 1 and item.value and difference > _SINGLE_DIGIT_RELATIVE * abs(item.value):
+        if (
+            significant <= 1
+            and precision == 0          # ★v12：只有**整数**的一位数才需要 0.1% 的相对门槛
+            and item.value
+            and difference > _SINGLE_DIGIT_RELATIVE * abs(item.value)
+        ):
             continue
         # 命中多条时给**最接近**的那条：读者要知道的是"这个数就是那条公式"，
         # 而不是"它碰巧也接近另一条"。容差内并列则保留目录顺序（确定性）。
         if best is None or difference < best_gap - 1e-12:
             best, best_gap = item, difference
     return best
+
+
+def match_derived_approx(claim: Claim, derived: Mapping[str, DerivedValue]) -> DerivedValue | None:
+    """★v12（S5 / §22.3.6 / AC-121 后半句）：**近似**命名的派生量（≤1% 相对差）。
+
+    为什么需要单独一层，而不是把 `match_derived()` 的容差调大（R-59 明令禁止）：
+
+    * `match_derived()` 的容差是「claim 末位半个单位」，那是**四舍五入的定义**，不是品味。
+      放宽它会让"编造值恰好落在某个公式附近"变成"已核验"——`grounding_derived_gap.py`
+      实测穷举匹配的随机假命中率 15.74%，就是这个方向的代价。
+    * 但真机上确实有一整类**算术口径差**：模型用当日盘中价算"距 MA60"，我们用的是收盘价，
+      于是 `10.1%` 对 `10.02%`（差 0.79%）。这类数不是编造的，也不是"就是那条公式"。
+
+    所以这层有四道门槛，全过才算命中（任何一道不过就继续算缺口）：
+
+    1. **相对差 ≤ 1%**（`APPROX_TOLERANCE`）；
+    2. **claim 至少 3 位有效数字**：一位数的 `5` / `9` 在半单位判据下就已经极容易撞上（R-E8），
+       再给它 1% 的宽容等于把"信心度 3/5"变成"已推算"；
+    3. **单位必须与 claim 的上下文一致**（`%` / `pp` / `元` / `倍`）：`6 个月` 撞上一个
+       `6.0 倍` 的公式是纯粹的巧合，而单位是原文里真实存在的字；
+    4. **命中多条时取最接近的**（与精确层同一个确定性规则）。
+
+    命中只计进 `approx_claims`，**不计进** `derived_claims`：界面上这两句话不一样
+    （"就是这条公式" vs "与这条公式差 0.8%"），合并会让读者以为它们同样硬。
+    """
+    value = _value_number(claim.raw)
+    if value is None:
+        return None
+    if _significant_digits(claim.raw) < 3:
+        return None
+    context = claim.context or ""
+    best: DerivedValue | None = None
+    best_gap = APPROX_TOLERANCE
+    for item in derived.values():
+        if not item.value:
+            continue
+        # 单位门槛：目录条目的单位必须出现在 claim 的上下文里（两者任一为空则不设门）。
+        if item.unit and item.unit not in (value_context_unit(context) or "") and item.unit not in context:
+            continue
+        gap = abs(value - item.value) / abs(item.value)
+        if gap > best_gap:
+            continue
+        if best is None or gap < best_gap - 1e-12:
+            best, best_gap = item, gap
+    return best
+
+
+def value_context_unit(context: str) -> str | None:
+    """claim 上下文里出现的单位（按出现顺序取第一个）。`None` ⇒ 上下文没有单位。
+
+    只认四种**互不重叠**的单位：`pp`（百分点）、`%`、`元`（金额）、`倍`（比值）。
+    顺序有讲究：`pp` 必须在 `%` 之前判，否则 `-2.4pp` 会被读成百分数。
+    """
+    text = context or ""
+    for unit in ("pp", "个百分点", "%", "元", "倍"):
+        if unit in text:
+            return unit
+    return None
 
 
 def provenance_of(
@@ -929,13 +1207,26 @@ def numbers_in_text_from_clean(text: str) -> list[str]:
     ★A2：先把排版用的减号（U+2212 `−`、U+2013 `–`）折成 ASCII `-`。去掉 `abs()`
     之后**符号是身份的一部分**：`最大回撤 −18.2%` 里的 `−18.2` 若被切成 `18.2`，
     快照里的 `-18.2` 就永远匹配不上，诚实报告会平白多一条缺口。
+
+    ★v12（S5 / AC-122）：**区间破折号不是负号**。归一成 `-` 之后，`1,296.22–1,509.76`
+    会让第二个数变成 `-1,509.76`——它必然未接地（与语料差 98.44%），而那两端的数本来
+    就在快照里。所以在这里（**唯一**能看到左邻字符的一层）按 `_is_range_separator()`
+    把这种 token 的符号剥掉。ASCII 连字符同样处理：实测 `1,296.22-1,509.76` 也一样中招。
+
+    ★评审修正（E-114）：折字符的那一步改走 `_fold_range_dashes()`（`RANGE_DASHES` 是
+    唯一真源）。上一版在这里硬编码了三个字符、在常量里写了五个，于是 `—` / `~` / `～`
+    三种写法既没有折、也没有用例——而它们在生产文档里都出现过。
     """
     found: list[str] = []
-    normalized = (text or "").replace("\u2212", "-").replace("\u2013", "-")
+    # U+2212（数学减号）不属于区间分隔符，先单独折：它是**负号**的一种写法。
+    normalized = _fold_range_dashes((text or "").replace("\u2212", "-"))
     for match in NUMBER_RE.finditer(normalized):
         raw = match.group(0)
         if not raw.replace("-", "").replace(",", "").replace(".", ""):
             continue
+        if raw.startswith("-") and _is_range_separator(normalized, match.start()):
+            # 区间右端点：符号属于分隔符，数本身是正数。
+            raw = raw[1:]
         found.append(raw)
     return found
 
@@ -1173,6 +1464,13 @@ def grounding_report(doc: Mapping[str, Any], snapshot: Mapping[str, Any]) -> Gro
         hit = match_derived(claim, derived)
         if hit is not None:
             report.derived_claims += 1
+            continue
+        # ★v12（S5 / AC-121 后半句）：精确层没命中，再问一次"它是不是某条命名公式的
+        # **近似**值（≤1%）"。命中记进 `approx_claims`（读者看到"与那条公式差 0.8%"），
+        # 不计进 `derived_claims`——两者在界面上的硬程度不同。
+        approx = match_derived_approx(claim, derived)
+        if approx is not None:
+            report.approx_claims += 1
             continue
         report.fact_missing += 1
         if claim.canonical:

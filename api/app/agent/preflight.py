@@ -9,10 +9,13 @@ mode (exit 3 with `structured: null` after two wasted minutes) is silent.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,6 +134,174 @@ def host_of(raw: str | None) -> str | None:
 
 
 
+#: 会话目录体积上报的缓存 TTL（秒）。测体积要 walk 上千个文件，`/capabilities`
+#: 会被前端反复轮询，所以测一次用一分钟——它是个易变值，不是档案。
+SESSION_DIR_TTL_SEC = 60.0
+
+
+def _proactor_loop_class() -> type | None:
+    """`asyncio.windows_events.ProactorEventLoop`，非 Windows 返回 `None`。
+
+    ★v12 修订（§22.3.2(a) 的落地差异，见 I-107）：§22.3.2 的示例代码在**模块顶层**写
+    `import asyncio.windows_events`。那个模块**只存在于 Windows**——顶层导入会让
+    `preflight` 在 Linux 上 import 失败，而本项目的生产环境是 Ubuntu。所以这里改成
+    **惰性导入**，且只在 `sys.platform == "win32"` 时执行。语义与设计完全一致
+    （"不能靠间接导入拿类"），只是把那条约束限制在它成立的分支里。
+    """
+    if sys.platform != "win32":  # pragma: no cover - 非 Windows 分支
+        return None
+    try:  # pragma: no cover - Windows 专属
+        import asyncio.windows_events as windows_events
+
+        return windows_events.ProactorEventLoop
+    except (ImportError, AttributeError):  # pragma: no cover - 冻结构建
+        return None
+
+
+def is_proactor_loop(loop: Any) -> bool:
+    """这个 loop 能不能 `create_subprocess_exec`（Windows 上只有 Proactor 能）。"""
+    proactor = _proactor_loop_class()
+    if proactor is not None and isinstance(loop, proactor):
+        return True
+    return type(loop).__name__ == "ProactorEventLoop"
+
+
+#: 当前运行中的事件循环类名（诊断用，`capabilities.runtime.eventLoop`）。
+#: ★v12（AC-112 的同一条纪律）：它与 `spawn_capability()` 读的是**同一个** loop 对象，
+#: 不另做一次判定。
+_LOOP_NAME: dict[str, str | None] = {"value": None}
+
+#: 启动时记下的 loop 实体（进程级"我在哪个循环上跑"的唯一真源）。`main.py::lifespan`
+#: 在 startup 里调用 `running_loop_name()` 一次就把真身记进来。
+_SERVING_LOOP: dict[str, Any] = {"value": None}
+
+
+def _serving_loop() -> Any | None:
+    """本进程**实际在跑**的那个 loop：当前线程的（若有），否则启动时记下的那个。
+
+    ★评审修正（E-114）：`uvicorn` 的循环是**工厂**换的，不是**策略**换的。
+    `uvicorn/loops/asyncio.py::asyncio_loop_factory(use_subprocess)` 在 `--reload` /
+    `--workers>1` 时直接 `return asyncio.SelectorEventLoop`，全程**没有**
+    `set_event_loop_policy()` —— 于是同步路由（`/capabilities` 跑在 threadpool 里，
+    没有 running loop）走"看策略"的分支时，会在一个**注定 spawn 不了子进程**的进程上
+    报 `loopOk=True`。那是比"报错"更糟的一种假绿：界面说一切正常，而每一次生成都会被
+    `RunManager.start()` 第 0 步拒绝（R-54 的缓解手段因此失效）。
+
+    所以启动时（那里一定有 running loop）记下真身，之后任何线程问"这个进程能不能
+    spawn"都拿它回答。
+
+    ★评审修正（E-114 的第二半）：记下的那个 loop **已经关掉**时返回 `None`。
+    一个关闭的循环不可能再是"本进程在跑的那个"，拿它回答只会让判据对着一个死对象
+    说话；而这个函数是**能力判据**的唯一输入，宁可不回答，也不能回答一个过时的事实
+    （用例之间也会因此串味：`TestClient` 每次生命周期换一个 loop）。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = _SERVING_LOOP["value"]
+        if loop is None:
+            return None
+        try:
+            if loop.is_closed():
+                return None
+        except AttributeError:  # pragma: no cover - 假 loop（用例里）
+            return loop
+        return loop
+    return loop
+
+
+def running_loop_name() -> str | None:
+    """`ProactorEventLoop` / `_WindowsSelectorEventLoop` / `None`（没有运行中的 loop）。
+
+    顺带把 loop 实体记下来 —— `main.py::lifespan` 在启动时调用一次，从此
+    `spawn_capability()` 在同步路由里也能回答"**这个进程**能不能 spawn"。
+    每次在真有 running loop 的上下文里被调用都会刷新（一个进程只有一个 serve loop；
+    测试里每个 `TestClient` 各有一个，所以"最新的那次"才是真的）。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return _LOOP_NAME["value"]
+    _SERVING_LOOP["value"] = loop
+    _LOOP_NAME["value"] = type(loop).__name__
+    return _LOOP_NAME["value"]
+
+
+def spawn_capability() -> tuple[bool, str | None]:
+    """`(这台机器现在能不能 spawn 子进程, 不能时的机器可读原因)`。**唯一判据**（S1）。
+
+    为什么必须是**同步纯函数**（★v12 修订 V11-P1-1 / C-38）：`RunManager.start()` 是同步
+    方法，而闸门要前移到它的第 0 步（`mkdir` 之前，V11-P0-2）。异步函数在那里根本没法调。
+
+    为什么这件事必须问"当前 loop"而不是"平台"：实测（E-88/E-113）`uvicorn --reload` 会把
+    loop factory 换成 `asyncio.SelectorEventLoop`，而 `create_subprocess_exec` 在它上面
+    直接抛 `NotImplementedError('')` —— 于是**默认启动参数下每一次生成都在 research 阶段
+    以 `internal` 结束**（`runs.7aa5aeaa`）。这不是"可能出问题"，是"必坏"。
+
+    两个前缀是**故意不同**的：`event_loop_selector:` 是"运行中的循环不对"（去关 `--reload`），
+    `event_loop_policy:` 是"策略不对"（**从未**观测到运行中的 loop 时的静态判断）——
+    可操作方向不同，所以不能合并成一句话。
+
+    ★评审修正（E-114）：中间那档"没有 running loop"**先看本进程真正在跑的 loop**
+    （启动时由 `main.py::lifespan` 记下），只有连那个都没有时才退到策略。原因见
+    `_serving_loop()`：`uvicorn --reload` 换的是工厂不是策略，只看策略会在一个注定
+    spawn 不了的进程上报 `True`。
+    """
+    if sys.platform != "win32":
+        # R-55：非 Windows / uvloop 下 `isinstance(loop, ProactorEventLoop)` 恒为假，
+        # 不做平台短路就会把一台好好的 Linux 机器判成"不能 spawn"。
+        return True, None
+    loop = _serving_loop()
+    if loop is not None:
+        if is_proactor_loop(loop):
+            return True, None
+        return False, f"event_loop_selector:{type(loop).__name__}"
+    # 连"进程在哪个 loop 上跑"都不知道（纯 CLI 入口 / 单测 / 从未启动过服务）：只能看策略。
+    policy = type(asyncio.get_event_loop_policy()).__name__
+    if policy == "WindowsProactorEventLoopPolicy":
+        return True, None
+    return False, f"event_loop_policy:{policy}"
+
+
+def session_dir() -> Path:
+    """CLI 自己的会话目录（`~/.aragon-agent/sessions`，`ARAGON_HOME` 可改根）。
+
+    只读用途：`capabilities.runtime.sessionDirMb` 要告诉用户"这里已经 1.5 GB 了"。
+    **绝不在这里删任何东西**（R-61）。
+    """
+    settings = get_settings()
+    root = Path(settings.aragon_home) if settings.aragon_home else Path.home() / ".aragon-agent"
+    return root / "sessions"
+
+
+def session_dir_size_mb() -> float | None:
+    """会话目录体积（MB，两位小数）。读不到 → `None`（不猜 0：0 与"没测到"是两件事）。
+
+    结果按 `SESSION_DIR_TTL_SEC` 缓存：它是易变值，而 `/capabilities` 会被反复轮询。
+    """
+    cached = _session_size[0]
+    if cached is not None and time.monotonic() - cached[0] < SESSION_DIR_TTL_SEC:
+        return cached[1]
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(session_dir()):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:  # pragma: no cover - 文件在遍历时被删
+                    continue
+    except OSError:  # pragma: no cover - 目录不存在
+        _session_size[0] = (time.monotonic(), None)
+        return None
+    megabytes = round(total / (1024 * 1024), 2)
+    _session_size[0] = (time.monotonic(), megabytes)
+    return megabytes
+
+
+#: `sessionDirMb` 的缓存：单元素列表是模块级可变状态的**唯一**载体（与 `_cache` 同型）。
+_session_size: list[tuple[float, float | None] | None] = [None]
+
+
 @dataclass(slots=True)
 class AragonCapability:
     available: bool = False
@@ -166,6 +337,11 @@ class AragonCapability:
     #: ★v9（K2）：探针结论 —— 由 `services.agent_probe` 回填，本类只承载。
     verified: bool = False
     verifiedAt: str | None = None
+    #: ★v12（S1 / §22.3.2(c)）：**本进程能不能 spawn 子进程**。进程级事实，不落库。
+    #: 唯一供给者是 `spawn_capability()`，`fullyCapable` / `degradedReason` /
+    #: `capabilities.runtime.loopOk` 三处都读它（C-33：一个事实一份判定）。
+    loopOk: bool = True
+    loopReason: str | None = None
 
     @property
     def keySource(self) -> str:
@@ -196,6 +372,10 @@ class AragonCapability:
         ★v9（V10-P0-1）：钥匙这一道门走 `keySource`，不再直接看 CLI 的 `hasApiKey`。
         过去只填 `.env` 的机器上这里恒 `False` ⇒ `auto` 静默退回 mock ⇒ 用户拿到一份
         示例报告而界面上没有任何红字（这是四轮里最坏的失败形态：不是红，是绿）。
+
+        ★v12（S1 / §22.3.2(c)）：第三道闸 `loopOk`。前五轮的"稳健"全部建立在
+        "子进程能起来"这个前提上，而默认启动参数下它不成立（E-88/E-89）。这一项不是
+        警告，是**必要条件**——不能 spawn 的进程一次生成都做不成。
         """
         return (
             self.available
@@ -203,12 +383,17 @@ class AragonCapability:
             and self.canStructured
             and self.hasSubmitResult
             and self.keySource != "none"
+            and self.loopOk
         )
 
     @property
     def degradedReason(self) -> str | None:
         if self.fullyCapable:
             return None
+        # ★v12（S1）：排在最前。它不是"引擎配得不对"，而是"这台机器根本起不来"——
+        # 用户能照做的动作与后面五条完全不同（去掉 --reload，而不是改配置/升级 CLI）。
+        if not self.loopOk:
+            return "event_loop_unsupported"
         if not self.available:
             return "aragon_unavailable"
         if not self.canStructured:
@@ -252,6 +437,11 @@ class AragonCapability:
             "doctor": self.doctor,
             "modelKnown": self.modelKnown,
             "errors": self.errors,
+            # ★v12（S1 / AC-112）：这两个键是**新增**的，既有键一个字没改。
+            # 只加到 dataclass 而不加到 `as_payload()`，pydantic 的响应模型会静默丢弃
+            # ——这是同一个坑的第四次（v6 engine、v7 quality.cost、v9 aragon.verified）。
+            "loopOk": self.loopOk,
+            "loopReason": self.loopReason,
         }
 
 
@@ -404,6 +594,10 @@ def check_aragon(force: bool = False) -> AragonCapability:
     capability = AragonCapability()
     binary = resolve_binary()
     capability.resolvedBinary = binary
+    # ★v12（S1 / §22.3.2(c)）：把"本进程能不能 spawn"记进能力快照。**放在最前面**，
+    # 包括下面每条早退路径——`aragon` 根本没装的时候，`degradedReason` 仍应是
+    # `aragon_unavailable`（更具体），但 `runtime.loopOk` 仍然必须正确。
+    capability.loopOk, capability.loopReason = spawn_capability()
     if not binary:
         capability.errors.append("aragon not found on PATH (set ARAGON_BIN or run mock mode)")
         return _remember(capability)
@@ -455,6 +649,13 @@ def check_aragon(force: bool = False) -> AragonCapability:
         capability.errors.append("structured_result feature or ajv validation unavailable")
     if not capability.hasApiKey:
         capability.errors.append("no model API key configured for the CLI")
+    # ★v12（S1）：这一条不是"配置问题"，而是"本进程做不成任何一次生成"。
+    # 它与 `fullyCapable` / `capabilities.runtime` 读的是**同一个** `spawn_capability()`
+    # 结果（C-33），所以三条消费点不会互相矛盾。
+    if not capability.loopOk:
+        capability.errors.append(
+            f"子进程不可用: {capability.loopReason}（去掉 --reload 后重启）"
+        )
 
     # ★v9（K1）：配置形状的两条**静态**检查（不 spawn、不做网络 I/O）。
     # 这里只 warn：真正的拦截在 `build_argv()`（`usage_error`，spawn 之前）。
@@ -501,6 +702,12 @@ def reset_cache() -> None:
     """Test hook — forces the next `check_aragon` to spawn `aragon info` again."""
     _cache[0] = None
     _self_check.clear()
+    _session_size[0] = None
+    _LOOP_NAME["value"] = None
+    # ★评审修正（E-114）：把"本进程在哪个 loop 上跑"也清掉。用例之间必须互不影响：
+    # 一个用例记下的 TestClient loop 若留给下一个用例，`spawn_capability()` 就会对着
+    # 一个已经关掉的 loop 回答，而它恰恰是用来断言"这个进程能不能 spawn"的判据。
+    _SERVING_LOOP["value"] = None
 
 
 def note_base_url(base_url: str | None) -> None:

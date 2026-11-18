@@ -313,6 +313,14 @@ class SalvageQuality(BaseModel):
     droppedKeys: int = 0
     droppedSections: int = 0
     droppedBlocks: int = 0
+    #: ★v12（S3 / V11-P2-2）：`SalvageReport.as_payload()` 过去漏发 `prunedBlocks`，
+    #: 于是"裁掉未知块"这件事写进了一个前端读不到的地方。三处同步补：报告键、响应模型、
+    #: `web/lib/types.ts`。
+    prunedBlocks: int = 0
+    #: ★v12（S3）：格式收敛了几处（与 dropped* 不重叠：那些是丢了，这个是被截短）。
+    clamped: int = 0
+    #: ★v12（S4）：从正文还原的方式（`json` / `json_repaired`）。`None` ⇒ 没走 L1.5。
+    how: str | None = None
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -334,6 +342,21 @@ class PromptQuality(BaseModel):
     bytes: int = 0
 
 
+class ClampQuality(BaseModel):
+    """★v12（S3 / C-48）：`quality.clamp` —— 格式收敛记录（纯格式问题，不是事实问题）。
+
+    三个纪律：
+
+    1. **只标不改数**（S-4）：clamp 只处理 schema **明说**的上界（"模型写得比我们允许的
+       更长"），真事实问题（编造数字）由 S5 的接地口径负责，两者不重叠。
+    2. `count > 0` **必须**降 `status = degraded`：读者有权知道这份报告是被截过的。
+    3. 老报告没有这个键（v1–v12 的 `quality` 不回填，§22.6.3），所以类型是可缺失的。
+    """
+
+    count: int = 0
+    fields: list[str] = Field(default_factory=list)
+
+
 class ReportQuality(BaseModel):
     groundedRatio: float = 1.0
     missingSections: list[str] = Field(default_factory=list)
@@ -352,6 +375,9 @@ class ReportQuality(BaseModel):
     cost: CostQuality | None = None
     prompt: PromptQuality | None = None
     salvage: SalvageQuality | None = None
+    #: ★v12（S3 / AC-117 / C-48）：格式收敛记录。`None` = 没有收敛（或老报告）。
+    #: 反射守卫 `test_every_quality_key_has_a_response_field` 会盯住这个键。
+    clamp: ClampQuality | None = None
 
 
 class ReportSummary(BaseModel):

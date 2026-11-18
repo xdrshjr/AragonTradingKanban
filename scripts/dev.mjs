@@ -77,10 +77,32 @@ process.on('SIGTERM', () => shutdown(0));
 
 process.stdout.write('\u001b[36m[dev]\u001b[0m API :8000 (workers=1)   web :3000\n');
 
+// ★v12（S1 / §22.3.2(g) / AC-113）：`--reload` 在 Windows 上是**能力杀手**，不是开发便利。
+// 实测（E-88）：uvicorn 的 `use_subprocess = bool(reload or workers > 1)`（uvicorn/config.py:378-379）
+// 在 Windows 上因此装 `SelectorEventLoop`，而 `asyncio.create_subprocess_exec` 在它上面
+// 直接抛 `NotImplementedError('')` ⇒ **每一次生成都在 research 阶段以 internal 结束**
+// （runs.7aa5aeaa 就是那一行）。所以默认**不带** `--reload`，要热重载必须显式承担后果：
+//   DEV_RELOAD=1 npm run dev
+const reload = process.env.DEV_RELOAD === '1';
+if (reload) {
+  process.stdout.write(
+    '\u001b[33m[dev]\u001b[0m 警告：DEV_RELOAD=1 —— 热重载会关掉子进程能力，生成将全部失败\n',
+  );
+}
+
 start(
   'api',
   python,
-  ['-m', 'uvicorn', 'app.main:app', '--reload', '--port', process.env.PY_API_PORT || '8000', '--workers', '1'],
+  [
+    '-m',
+    'uvicorn',
+    'app.main:app',
+    ...(reload ? ['--reload'] : []),
+    '--port',
+    process.env.PY_API_PORT || '8000',
+    '--workers',
+    '1',
+  ],
   join(ROOT, 'api'),
   '32',
 );

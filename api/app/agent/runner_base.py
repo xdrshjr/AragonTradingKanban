@@ -121,6 +121,25 @@ class AgentRequest:
     #: ★v9（K4）：这次是第几次尝试与它的工作区。`attempt_dir` 为 `None` ⇒ 用 `workspace`。
     attempt: int = 1
     attempt_dir: Path | None = None
+    #: ★v12（S7 / §22.3.8）：CLI 会话 id。`session_id` 为空 ⇒ 派生自 `run_id`。
+    #: `resume_session` 非空 ⇒ attempt ≥ 2 且第一次**真的起过进程**，此时 argv 带
+    #: `--resume <id>` 并且不再带 `--prompt-file`（"接着上次说"而不是"从零重跑"）。
+    #: 两个字段都是可空的，`None` 时行为与 v11 完全一致。
+    session_id: str | None = None
+    resume_session: str | None = None
+    #: ★评审修正（评审节点 I-131）：**只有会清理会话的调用点**才允许让 CLI 保存会话。
+    #:
+    #: `--session-id` 的含义是"这一次的会话要落盘"（而 `--no-save-session` 是 v11 的
+    #: 默认）。落在盘上的东西必须有人删，而本仓唯一的清理点是 `run_manager._cleanup_session()`
+    #: （每个 run 结束时 `sessions rm <id> --yes`）。`ask_runner` 与 `probe` 也有自己的
+    #: `AgentRequest`，但它们**不在那条 finally 里**——所以对它们打开保存等于每问一次就
+    #: 在 `~/.aragon-agent/sessions` 里留一个永不回收的文件。而会话目录今天已经 1545.71 MB
+    #: （E-101），正是 S7 要治的那个病（R-61）。
+    #:
+    #: 于是这个字段的语义很窄：**"我会负责删"**。默认 `False` ⇒ 与 v11 一模一样
+    #: （`--no-save-session`），只有 `run_manager` 传 `True`；能否真保存还要看
+    #: `AGENT_ATTEMPTS > 1`（见 `build_argv()` 与 `capabilities.runtime.sessionSave`）。
+    keep_session: bool = False
 
 
 @runtime_checkable

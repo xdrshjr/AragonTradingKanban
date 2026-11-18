@@ -47,6 +47,23 @@ export const RUN_ERROR_ACTIONS: Record<string, RunErrorActionSpec> = {
   internal: { action: 'retry', primary: false },
   data_provider_unavailable: { action: 'wait', primary: false },
   instrument_not_found: { action: 'none', primary: false },
+  // ── ★v12（S1/S2/S4 / §22.5.3）：三个追加的 run 码 ────────────────────────────
+  // 与 `api/app/agent/failure.py::RUN_ERROR_CODES`、`contracts/run_error_codes.json`
+  // 三处**逐字**相同（C-36）；任何一处漏改，`test_contract_codes.py` 与
+  // `tests/runErrors.test.ts` 的集合相等断言直接红。
+  // 事件循环不支持：重试没有意义（同一进程里循环类型不会自己变），用户要做的是去设置
+  // 里看一眼启动参数 —— 这与 `aragon_unavailable` 的动作相同，但**原因不同**，
+  // 所以是两个码而不是一个（"去设置"页里高亮的那一行不一样）。
+  event_loop_unsupported: { action: 'openSettings', primary: true },
+  agent_timeout: { action: 'retry', primary: true },
+  output_truncated: { action: 'retry', primary: true },
+  // ── ★v12（S6 / §22.3.7(b)）：**前端本地码**，服务端不产出 ──────────────────
+  // SSE 重连耗尽（或看门狗判定静默）时由 `useGenerationStream` 派发。它过去**不在**
+  // 这张表里 ⇒ 兜底动作是「查看日志」，而日志里什么都不会有（连接是前端自己放弃的）。
+  // 主按钮是「再次生成」：那次生成可能仍在后台跑，重新点一次会走到 `run_conflict` 的
+  // 接管分支（`useGenerationStream.start()`）**接回同一次生成**，而不是白付第二笔钱；
+  // 若那次已经成功，`reconcileRun()` 已经把报告列表刷出来了。（S-9：按钮要真做事。）
+  stream_closed: { action: 'retry', primary: true },
 };
 
 /**
@@ -88,7 +105,19 @@ export const ACTION_LABELS: Record<RunErrorAction, string> = {
   retry: '再次生成',
   openSettings: '去设置',
   checkKey: '检查密钥',
-  wait: '稍后重试',
+  // ★v12（S6 / §22.3.7(a)）：这个动作**现在真的会等**（8 秒后自动重试一次），
+  // 所以按钮上必须写出代价。过去它写着"稍后重试"却什么都不做（E-99）。
+  wait: '稍后重试（8s）',
   openLog: '查看日志',
   none: '',
 };
+
+/**
+ * ★v12（S6 / §22.3.7(a) / AC-123）：`wait` 分支的等待秒数。
+ *
+ * 为什么是 8 秒：429 `too_many_runs` 的成因是"同时最多 2 个生成"（`MAX_CONCURRENT_RUNS`），
+ * 而一次生成至少几十秒 ⇒ 8 秒不足以让出名额。所以这个动作的语义**不是"等到成功"**，
+ * 而是"给我一个可点击的倒计时，让我知道它在做什么，并且真的再试一次"。真正的等待由
+ * 界面的重试按钮承担（用户看到下一次 429 时不会再怀疑按钮坏了）。
+ */
+export const WAIT_RETRY_SECONDS = 8;

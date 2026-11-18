@@ -231,7 +231,34 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
     argv += ["exec"]
     argv += ["--output-format", "stream-json"]
     argv += ["--partial-messages"]
-    argv += ["--no-save-session"]
+    # ★v12（S7 / §22.3.8）：**重试不重付**。
+    # 今天 `:234` 永远加 `--no-save-session`，`sanitize_session_id()` 是死代码
+    # （`grep sanitize_session_id api/app` 只有 def）⇒ attempt 2 是**从零重跑**，
+    # 而实测单次生成的 input token 是 68,974–181,421（E-100），重试一次就是双倍钱。
+    #
+    # 规则（四条，缺一不可）：
+    # ① 只有"本次 run 可能重试"时才允许保存会话 —— 由 `AGENT_ATTEMPTS > 1` **派生**，
+    #    **不设 `agent_session_save` 配置项**（C-45：那会造第二个会话真源，同 V10-P1-6
+    #    的 keySource 教训）；
+    # ② 还要**调用点自己认领清理**（`request.keep_session`）——会话落了盘就必须有人删，
+    #    而唯一的清理点是 `run_manager` 的 run 收尾（★评审修正 I-131：`ask_runner` 与
+    #    `probe` 不在那条路径上，对它们打开保存等于每问一次留一个永不回收的文件）；
+    # ③ attempt 1 带 `--session-id <sanitize_session_id(run_id)>`，**不带** `--no-save-session`；
+    # ④ attempt ≥ 2 且第一次真的起过进程（`request.resume_session` 非空）时带
+    #    `--resume <id>` 且**不带** `--prompt-file`（接着上次的上下文说，不重新喂资料）。
+    #    `--resume` 在 CLI 侧要求会话真的存在，所以 `resume_session` 只在 attempt 1
+    #    有 pid 且退出码非 0 时由 `stream()` 填（见下），否则回落成完整重跑并在
+    #    `engine.json` 里写 `session.resumed = false`（不允许静默）。
+    session_save = request.keep_session and max(1, int(settings.agent_attempts)) > 1
+    session_id = sanitize_session_id(request.session_id or request.run_id)
+    if request.resume_session:
+        argv += ["--resume", sanitize_session_id(request.resume_session)]
+    else:
+        if session_save:
+            argv += ["--session-id", session_id]
+        else:
+            # 单次尝试时行为与 v8 完全一致（一个字都没改）。
+            argv += ["--no-save-session"]
 
     # ── permissions: strict baseline, allow list is the only registration ──
     allow = list(capability.extraAllowTools)
@@ -259,7 +286,10 @@ def build_argv(request: AgentRequest, capability: AragonCapability, binary: str)
 
     argv += ["--max-turns", str(request.max_turns)]
     argv += ["--max-duration", str(request.max_duration_ms)]
-    argv += ["--prompt-file", str(request.prompt_path)]
+    if not request.resume_session:
+        # ★v12（S7）：resume 时**不能再喂一遍 prompt**——那等于把上下文重付一次，
+        # 而且 CLI 会在"既有会话 + 新 prompt"上重新规划，反而更容易重复上次的错。
+        argv += ["--prompt-file", str(request.prompt_path)]
     return argv
 
 
@@ -348,6 +378,33 @@ def _write_engine_json(
         logger.debug("engine.json 写入失败（工作区不可写）")
 
 
+def note_session(workspace: Path, *, session_id: str | None, resumed: bool, reason: str | None = None) -> None:
+    """★v12（S7 / §22.3.8）：把"这次是接着说的还是重来的"写进 `engine.json`。
+
+    为什么单独写一次而不是塞进 `_write_engine_json()`：`engine.json` 由 `_finalize()`
+    在**每次 attempt 结束时**重写（记住的是最后一次尝试的 system 事实），而 session 事实
+    属于**整个 run**。混在一起会让"attempt 1 存了会话、attempt 2 resume 了"这件事只在
+    最后一次写入里活着——而排查成本问题时，我们恰恰要看见这段历史。
+
+    `resumed: false` 必须带 `reason`（`no_session` / `truncated` / `attempts=1`），
+    不允许静默（§22.3.8 的最后一条）。
+    """
+    path = workspace / "engine.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):  # pragma: no cover - 半写的文件
+        payload = {}
+    payload["session"] = {
+        "id": session_id,
+        "resumed": bool(resumed),
+        **({"reason": reason} if reason else {}),
+    }
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:  # pragma: no cover - 工作区被删
+        logger.debug("engine.json 的 session 写入失败")
+
+
 def _with_attempt(request: AgentRequest, attempt: int, attempt_dir: Path) -> AgentRequest:
     """★v9（K4）：把一次 attempt 的视图做出来（不改调用方传进来的那个对象）。
 
@@ -417,17 +474,30 @@ def _merge_usage(total: AgentUsage, last: AgentUsage) -> AgentUsage:
     return merged
 
 
-async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label: str = "-") -> None:
+async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label: str = "-") -> bool:
     """★P1-09, reusable (★V4-P1-5): kill the tree, not just the shim.
 
     `aragon.CMD` on Windows is a cmd.exe shim, so `proc.kill()` leaves the node
     child running and the run never finishes cancelling. `AskRegistry` needs the
     very same semantics for `deep` asks, so this lives at module level instead of
     inside `AragonRunner.cancel()`.
+
+    ★v12（S1 / §22.3.2(f)，AC-116）三处修正，每一处都对应一个真实洞（E-91）：
+
+    1. **删掉 `process.returncode is not None` 的早退**。`returncode` 非空只说明
+       **cmd shim 退了**，而 `node` 孙子可能还在跑——那正是最需要 `taskkill /T` 的时刻。
+       改判 `pid is None` 才早退（`process.pid` 在 `returncode` 落定之后依然可读，
+       所以不需要设计草案里那个 `hard_pid` 旁路参数）。
+    2. **捕获加 `NotImplementedError`**：`taskkill` 本身也是一次
+       `create_subprocess_exec`，Selector 循环上它同样抛（E-113）——于是"生成起来了、
+       取消却崩"。这里降级成 `process.kill()` 并留一条 warn。
+    3. **返回 `bool`**（原签名 `-> None`）：调用方把它写进 run 事件，让"进程残留"从
+       "翻 uvicorn 日志"变成"界面上一行字"。
     """
-    if process is None or process.returncode is not None:
-        return
-    pid = process.pid
+    pid = process.pid if process is not None else None
+    if pid is None:
+        return True
+    ok = True
     if sys.platform == "win32":
         try:
             killer = await asyncio.create_subprocess_exec(
@@ -440,9 +510,13 @@ async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await killer.wait()
-        except OSError as exc:  # pragma: no cover - non-Windows CI
-            logger.warning("taskkill failed (%s), falling back to kill()", exc)
-            process.kill()
+        except (OSError, NotImplementedError) as exc:
+            # ★v12：Selector 循环走这里（`--reload` 下 taskkill 自己也 spawn 不起来）。
+            logger.warning("taskkill 不可用（%s），降级为 kill()", exc)
+            if process is not None and process.returncode is None:
+                process.kill()
+            else:
+                ok = False
     else:
         try:
             os.killpg(os.getpgid(pid), 15)
@@ -451,7 +525,59 @@ async def kill_process_tree(process: asyncio.subprocess.Process | None, *, label
     try:
         await asyncio.wait_for(process.wait(), timeout=CANCEL_GRACE_SEC)
     except TimeoutError:
+        ok = False
         logger.warning("cancel_timeout %s pid=%s", label, pid)
+    return ok
+
+
+async def cleanup_session(run_id: str, *, binary: str | None = None) -> tuple[bool, str]:
+    """★v12（S7 / §22.3.8 第 3 条 / AC-127）：删掉**本 run 自己的** CLI 会话。
+
+    命令形态是**实测过**的（E-108），退出码写进注释是因为它们是这条命令唯一的文档：
+
+    ```text
+    $ aragon sessions rm <id>
+    Refusing to delete without --yes.          ← exit 2（缺 --yes）
+    ```
+
+    所以只 `rm <id> --yes`。**绝不** `prune`：它是全局的，实测 dry-run 会列出
+    `smoke-threads-tenant-a/b`、`webuse-17d194d2-…` 这些**别的项目**的会话 9 条，
+    而目录今天已经 1545.71 MB 早过阈值 ⇒ 按 v11 的写法第一次 tick 就会删别人的东西
+    （R-61 / C-40）。目录体积只做只读上报（`capabilities.runtime.sessionDirMb`）。
+
+    返回 `(ok, detail)`。`detail == "no_binary"` 表示 mock 模式（没有 CLI，也就没有会话），
+    **不是失败**——调用方据此不落 warn。
+    """
+    binary = binary or check_aragon().resolvedBinary
+    if not binary:
+        return False, "no_binary"
+    session_id = sanitize_session_id(run_id)
+    try:
+        completed = await asyncio.create_subprocess_exec(
+            binary,
+            "sessions",
+            "rm",
+            session_id,
+            "--yes",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await asyncio.wait_for(completed.communicate(), timeout=15)
+    except (OSError, NotImplementedError, TimeoutError) as exc:
+        # NotImplementedError = Selector 循环（`--reload`）：清理失败但不影响结论。
+        return False, f"{type(exc).__name__}: {exc}"
+    if completed.returncode == 0:
+        return True, "removed"
+    detail = (stderr or b"").decode("utf-8", errors="replace").strip().splitlines()
+    last = (detail[-1] if detail else f"exit {completed.returncode}")[:200]
+    # ★实施发现（I-117）：**"会话不存在"不是失败**。单次尝试（`AGENT_ATTEMPTS=1`，
+    # 走 `--no-save-session`）与 mock 模式根本没有会话文件，而 CLI 对这个情形的回答是
+    # `session_not_found: no session "<id>".`。把它当失败会在**每一次正常运行**的末尾
+    # 落一条 `session_cleanup_failed` 警告——那正是 S-12 说的"静默失败"的反面：
+    # 一条永远为真的警告，等于没有警告。
+    if "session_not_found" in last.lower():
+        return True, "absent"
+    return False, last
 
 
 class AragonRunner:
@@ -468,6 +594,14 @@ class AragonRunner:
         #: ★v9（K4）：`None` ⇒ 跟 `settings.agent_attempts`。探针（K2）传 1 ——
         #: 一次自检不值得再花一次 token，也不该把"通不通"这件事拖成两倍时间。
         self._max_attempts = max_attempts
+        #: ★v12（S7）：本次 run 的 CLI 会话 id 与"第一次真的起过进程"这个事实。
+        #: `_attempt1_spawned` 是 resume 的**准入条件**：没有 pid 就没有会话文件，
+        #: `--resume` 会以 usage_error 结束（§22.3.8 的"拒绝条件"）。
+        self._session_id: str | None = None
+        self._attempt1_spawned = False
+        #: ★评审修正（评审节点 I-126）：**我们真的接过上下文吗**。它是 `run.retry.resumed`
+        #: 与 `engine.json.session.resumed` 的**唯一**来源（一条判定，两处消费）。
+        self._resume_used = False
 
     # ── public API ───────────────────────────────────────────────────────
     async def run(
@@ -484,9 +618,17 @@ class AragonRunner:
         )
 
     async def cancel(self) -> None:
-        """★P1-09: kill the process *tree*, not just the shim."""
+        """★P1-09: kill the process *tree*, not just the shim.
+
+        ★v12（S1）：把 `kill_process_tree()` 的结论记下来。它过去只是一个
+        `logger.warning("cancel_timeout …")`，而 `spec.md` §7.3 里那个 `cancel_timeout`
+        码从未被产出过（E-91：`grep cancel_timeout api/app` 只有这一处注释级别的东西）。
+        于是"进程残留"这条事实只能靠翻 uvicorn 日志才能发现。
+        """
         self._cancelled = True
-        await kill_process_tree(self._process, label=f"run={self._run_id}")
+        ok = await kill_process_tree(self._process, label=f"run={self._run_id}")
+        if not ok:
+            logger.warning("取消未能确认进程树已终止 run=%s", self._run_id)
 
     # ── streaming core ───────────────────────────────────────────────────
     async def stream(
@@ -517,6 +659,38 @@ class AragonRunner:
         for attempt in range(1, total + 1):
             if self._cancelled:
                 break
+            attempt_dir = request.workspace if attempt == 1 else request.workspace / f"attempt-{attempt}"
+            # ★v12（S7 / §22.3.8）：resume 的**准入条件**（R-60 / 裁决里的"拒绝条件"）。
+            # `--resume` 在 CLI 侧要求会话真的存在；若第一次 attempt 崩在 spawn **之前**，
+            # 会话不存在 ⇒ `--resume` 会 `usage_error`。所以只在
+            # "attempt 1 真的有 pid 且退出码非 0" 时才允许 resume，否则回落成完整重跑，
+            # 并把 `resumed: false` 写进帧与 `engine.json`（不允许静默）。
+            # 另外 `stop_reason=length` 时**不 resume**：被 max-token 截断的那次需要新的
+            # 输出预算，接着同一个上下文只会更快撞上限（R-60 的第二条）。
+            #
+            # ★评审修正（评审节点 I-126）：这段判定必须发生在**发 `run.retry` 帧之前**，
+            # 并且**只在这里**做一次。上一版把它放在帧之后、又在帧与 `engine.json` 里
+            # 各自重算了一遍"是否 resume"，于是两处都会说假话：
+            #   * `AGENT_ATTEMPTS=3` 的第三次尝试：帧里 `resumed: true`，而 `can_resume`
+            #     只有 `attempt == 2` 才成立 ⇒ 那次明明是从零重跑；
+            #   * attempt 2 真的 resume 了、但最终 `stop_reason=length`：`engine.json`
+            #     记成 `resumed: false / reason: truncated`，把"我们接过上下文"这件事抹掉。
+            # 一条判定、一个 `self._resume_used`，两处消费（同 C-33 的纪律）。
+            can_resume = (
+                attempt == 2
+                and self._attempt1_spawned
+                and result is not None
+                and result.stop_reason not in ("length", "max_tokens")
+            )
+            if can_resume:
+                self._resume_used = True
+                attempt_request = replace(
+                    _with_attempt(request, attempt, attempt_dir),
+                    session_id=self._session_id,
+                    resume_session=self._session_id,
+                )
+            else:
+                attempt_request = _with_attempt(request, attempt, attempt_dir)
             if attempt > 1:
                 # 预算守卫（§21.3.5 第 3 条）：不满足就**不重试**，把第一次的错误交出去
                 # —— 比"重试到超时"诚实。
@@ -549,17 +723,20 @@ class AragonRunner:
                         "of": total,
                         "code": (result.error_code if result else None),
                         "backoffMs": backoff_ms,
+                        # ★v12（S7 / §22.5.2）：这次重试是**接着说的**还是**重来的**。
+                        # 没有它，"重试一次多花一倍钱"这件事在证据链里看不见。
+                        # 值就是上面那条判定的结论（`can_resume`），不重算。
+                        "resumed": can_resume,
+                        "sessionId": self._session_id if can_resume else None,
                     },
                 )
                 await asyncio.sleep(backoff_ms / 1000)
 
-            attempt_dir = request.workspace if attempt == 1 else request.workspace / f"attempt-{attempt}"
             if attempt == 2:
                 # ★v9（K4）：第一次尝试的文件留在**根目录**（与 v8 完全一致：单次尝试时
                 # 布局一个字都没动），只在真的发生重试时才归档到 `attempt-1/`，
                 # 于是 AC-100 要的"两次的 attempt-<n>/ 都存在"与既有产物路径同时成立。
                 _archive_attempt(request.workspace, 1)
-            attempt_request = _with_attempt(request, attempt, attempt_dir)
             attempts_made = attempt
             result = None
             async for event in self._stream_once(attempt_request, on_event):
@@ -582,6 +759,31 @@ class AragonRunner:
             result = AgentResult(error_code="internal", error_message="runner produced no result", source=self.source)
         result.usage = _merge_usage(usage_total, result.usage)
         result.attempts_made = max(1, attempts_made)
+        # ★v12（S7 / §22.3.8）：把 session 事实落到 `engine.json`（"接着说"还是"重来"）。
+        if total > 1:
+            # ★评审修正（评审节点 I-126）：`resumed` 的唯一来源是 `self._resume_used`
+            # （上面的准入判定写过一次）。上一版在这里用"最终结果的 stop_reason"重算，
+            # 于是 attempt 2 明明 `--resume` 了、最后却因 `stop_reason=length` 收场时，
+            # `engine.json` 会记成 `resumed: false` —— 把"我们接过上下文"这件事抹掉。
+            resumed = self._resume_used
+            reason = None
+            if not resumed:
+                if attempts_made <= 1:
+                    reason = "attempts=1"
+                elif result.stop_reason in ("length", "max_tokens"):
+                    reason = "truncated"
+                elif not self._attempt1_spawned:
+                    reason = "no_session"
+                else:
+                    # ★评审修正（I-126）：会话存在、却因为"只有第 2 次尝试才 resume"
+                    # 而没接上。旧口径把它叫 `no_session`，那是不实的（会话在）。
+                    reason = "second_attempt_only"
+            note_session(
+                request.workspace,
+                session_id=self._session_id if self._attempt1_spawned else None,
+                resumed=resumed,
+                reason=reason,
+            )
         yield AgentEvent(AgentEventType.log, {"__result": result, "level": "info", "message": "生成引擎已退出"})
 
     async def _stream_once(
@@ -601,6 +803,7 @@ class AragonRunner:
             raise AgentError("structured_result_unsupported", "aragon 不支持结构化结果（ajv / structured_result）")
 
         self._run_id = request.run_id
+        self._session_id = sanitize_session_id(request.session_id or request.run_id)
         request.workspace.mkdir(parents=True, exist_ok=True)
         ndjson_path = request.workspace / "aragon.ndjson"
         stderr_path = request.workspace / "aragon.stderr.log"
@@ -666,10 +869,24 @@ class AragonRunner:
                 limit=STREAM_LIMIT,
                 **(dict(start_new_session=True) if sys.platform != "win32" else {}),
             )
+        except NotImplementedError as exc:
+            # ★v12（S1 / §22.3.2(e)）：**只有这一种**是 Selector 循环造成的
+            # （`--reload` 在 Windows 上的必然后果，E-88/E-113）。显式点名，因为它是
+            # 本机默认启动参数的产物，而用户能照做的动作只有"去掉 --reload"。
+            raise AgentError(
+                "event_loop_unsupported",
+                "当前进程的事件循环不支持启动子进程（通常是 --reload 造成）",
+            ) from exc
         except (OSError, ValueError) as exc:
+            # ★v12 修订（V11-P1-11 / C-44）：**必须按类型分支**。把三种异常统一映射成
+            # `event_loop_unsupported` 会把"找不到 aragon.CMD""cwd 不存在""argv 非法"
+            # 全部报成"事件循环不支持"，把唯一真正可操作的 `aragon_unavailable`
+            # （hint：检查 `ARAGON_BIN` 与 PATH）吞掉。
             raise AgentError("aragon_unavailable", f"无法启动 aragon：{exc}") from exc
 
         self._process = process
+        # ★v12（S7）：真的有 pid 了 ⇒ 会话文件可能存在 ⇒ attempt 2 才有资格 `--resume`。
+        self._attempt1_spawned = True
         logger.info("spawned aragon pid=%s run=%s", process.pid, request.run_id)
 
         observed = {

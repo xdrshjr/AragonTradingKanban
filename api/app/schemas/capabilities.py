@@ -39,6 +39,13 @@ class AragonAragonOut(BaseModel):
     #: ★v7：两项只 warn 不降级的自检结果（`doctor` 摘要 / 模型是否在名录里）。
     doctor: str | None = None
     modelKnown: bool | None = None
+    #: ★v12（S1 / AC-112 / §22.4.2）：本进程能不能 spawn 子进程，以及不能时的机器前缀。
+    #: **★评审修正（E-114）**：这两个键在 `preflight.as_payload()` 里是有的，但本模型
+    #: 没声明 ⇒ pydantic 把它们**静默丢掉**（实测 `/capabilities.aragon.loopOk == null`）。
+    #: 那正是这张类上面那段注释数过的第五次同型事故，所以补在这里，并由
+    #: `test_capabilities_api.py::test_aragon_payload_carries_the_loop_facts` 守着。
+    loopOk: bool = True
+    loopReason: str | None = None
     errors: list[str] = Field(default_factory=list)
 
 
@@ -171,6 +178,33 @@ class EngineCapabilityOut(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RuntimeCapabilityOut(BaseModel):
+    """★v12（S1 / S7 / §22.5.1）：**进程级事实**，不落库，只走 `/capabilities`。
+
+    为什么单独一个顶层对象而不是塞进 `aragon`：`aragon` 回答的是"引擎是谁、装没装对"，
+    而这里回答的是"**这个进程**现在能做什么"。两者可以矛盾（引擎完全正常、但这个
+    `--reload` 起的进程 spawn 不了子进程），把它们混在一起会让"降级原因"读起来自相矛盾。
+
+    六个字段的取值域：
+    * `eventLoop` —— 运行中的循环类名（诊断用，例如 `_WindowsSelectorEventLoop`）；
+    * `loopOk` —— 本进程能不能 spawn 子进程；**唯一**供给者是 `preflight.spawn_capability()`；
+    * `loopReason` —— 不能时的机器前缀（`event_loop_selector:` / `event_loop_policy:`）；
+    * `hardDeadlineSec` —— `ARAGON_MAX_DURATION_MS/1000 + agent_hard_deadline_grace_sec`；
+    * `sessionSave` —— **由 `agent_attempts` 派生**（`>1` ⇒ `retry_only`，`=1` ⇒ `off`）。
+      **不是配置项**（C-45：`agent_session_save` 会造第二个会话真源，同 V10-P1-6 的 keySource）；
+    * `sessionDirMb` —— CLI 会话目录体积（**只读测量**，本机实测 1545.71 MB / 1023 项），
+      超 `agent_session_dir_max_mb` 时界面提示"可清理"，**永不自动删**（R-61）。
+    """
+
+    eventLoop: str | None = None
+    loopOk: bool = True
+    loopReason: str | None = None
+    hardDeadlineSec: int = 0
+    #: `retry_only | off`（两个值，不是自由字符串——前端据此显示一行说明）。
+    sessionSave: str = "off"
+    sessionDirMb: float | None = None
+
+
 class CapabilitiesResponse(BaseModel):
     aragon: AragonAragonOut
     agentMode: Literal["real", "mock"]
@@ -178,3 +212,5 @@ class CapabilitiesResponse(BaseModel):
     features: FeaturesOut = Field(default_factory=FeaturesOut)
     limits: dict[str, object] = Field(default_factory=dict)
     engine: EngineCapabilityOut = Field(default_factory=EngineCapabilityOut)
+    #: ★v12（§22.5.1）：只加字段，不改既有键（AC-104 的顶层形状断言同步更新）。
+    runtime: RuntimeCapabilityOut = Field(default_factory=RuntimeCapabilityOut)
