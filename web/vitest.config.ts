@@ -7,6 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./', import.meta.url)),
+      // `import 'server-only'` 由 Next 在构建期内置别名；vitest 里没有，给一个空替身。
+      'server-only': fileURLToPath(new URL('./tests/stubs/server-only.ts', import.meta.url)),
     },
   },
   // The shell exports NODE_ENV=production, which makes React resolve its

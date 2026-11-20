@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Settings2 } from 'lucide-react';
 
@@ -10,7 +11,6 @@ import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import type { BarsResponse, ChartAdjust, ChartRange, ChartTimeframe, ChartView } from '@/lib/types';
 
-import { CandleChart } from './CandleChart';
 import {
   DEFAULT_INDICATORS,
   IndicatorToggles,
@@ -46,6 +46,18 @@ const ADJUSTS = [
 type TimeframeValue = ChartTimeframe;
 type RangeValue = ChartRange;
 type AdjustValue = ChartAdjust;
+
+/**
+ * ★X6 / AC-35 / AC-202：K 线图（lightweight-charts，≈155 kB 源码）改为 `next/dynamic`。
+ *
+ * 它本来就只能在浏览器里画（canvas，`CandleChart` 在 effect 里挂载），所以服务端渲染的 HTML
+ * 没有任何差别；变的只是这 ≈40 kB gzip 不再计入 `/[symbol]` 首屏 JS——首屏预算是硬线，而基线
+ * （M44）在加入任何认证代码**之前**就已经是 249.1 kB > 245 kB。占位骨架与图表同样撑满容器，无布局跳动。
+ */
+const CandleChart = dynamic(() => import('./CandleChart').then((module) => module.CandleChart), {
+  ssr: false,
+  loading: () => <Skeleton className="m-3 min-h-[200px] flex-1" />,
+});
 
 export interface PricePanelProps {
   instrumentId: string;

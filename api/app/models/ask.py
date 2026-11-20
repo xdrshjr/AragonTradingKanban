@@ -49,12 +49,15 @@ class ReportAsk(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     finished_at: Mapped[str | None] = mapped_column(Text)
+    #: ★v15（0007_users_auth / §24.6.2）：提问者。`NULL` = 历史追问，仅管理员可见。
+    user_id: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         # Covers both the version list and the "24h deep quota" query
         # (`WHERE report_id=? AND mode='deep' AND created_at>=?`) — the separate
         # `ix_asks_mode_created` of v3 was redundant (V4-P2-9).
         Index("ix_asks_report_created", "report_id", "created_at"),
+        Index("ix_asks_user", "user_id", "report_id"),
     )
 
     @property

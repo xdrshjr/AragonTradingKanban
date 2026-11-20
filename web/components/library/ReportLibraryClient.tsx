@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ApiError, api } from '@/lib/api';
+import { isGuest, useMe } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import { copy } from '@/lib/copy';
 import { triggerDownload, exportFilenameHint } from '@/lib/download';
@@ -55,8 +56,12 @@ export function ReportLibraryClient({
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
 
+  // ★X6（§24.3.9(c)）：回收站是“我的”——游客没有。URL 里手敲 `?scope=trash` 也退回默认视图，
+  // 而不是对服务端发一个必然 401 的请求。
+  const guest = isGuest(useMe());
   const scopeParam = searchParams.get('scope');
-  const scope: ScopeTab = isScopeTab(scopeParam) ? scopeParam : initialScope ?? DEFAULT_LIBRARY_SCOPE;
+  const rawScope: ScopeTab = isScopeTab(scopeParam) ? scopeParam : initialScope ?? DEFAULT_LIBRARY_SCOPE;
+  const scope: ScopeTab = guest && rawScope === 'trash' ? DEFAULT_LIBRARY_SCOPE : rawScope;
   const q = searchParams.get('q') ?? initialQuery;
 
   const [focusIndex, setFocusIndex] = useState(0);
@@ -117,7 +122,12 @@ export function ReportLibraryClient({
         await api.patchReport(item.report.id, { archived: true });
         notify.success(copy.library.actions.archive);
         invalidate();
-      } catch {
+      } catch (error) {
+        // ★Y2(a)：普通用户归档自己唯一的版本 → 403 forbidden{reason:'only_version'}（不新增错误码）。
+        if (error instanceof ApiError && error.code === 'forbidden' && error.detail.reason === 'only_version') {
+          notify.info(copy.errors.archiveOnlyVersion);
+          return;
+        }
         notify.error(copy.errors.generic);
       }
     },
@@ -191,7 +201,8 @@ export function ReportLibraryClient({
           break;
         case 'p':
         case 'P':
-          if (current) {
+          // 置顶是全站可见旗标（RV-10）：只有 `canCurate` 的主体才响应；未知（旧后端）不收窄。
+          if (current && current.report.canCurate !== false) {
             event.preventDefault();
             void toggleStar(current);
           }
@@ -205,7 +216,7 @@ export function ReportLibraryClient({
           break;
         case 'Delete':
           // **归档**，不是删除：删除必须走二次确认（既有 `report.deleteVersion` 的弹窗）。
-          if (current && scope !== 'trash') {
+          if (current && scope !== 'trash' && current.report.canManage !== false) {
             event.preventDefault();
             void archive(current);
           }
@@ -249,6 +260,7 @@ export function ReportLibraryClient({
         counts={counts}
         q={q}
         total={total}
+        showTrash={!guest}
         searchRef={searchRef}
         onScopeChange={(next) => {
           setFocusIndex(0);
@@ -309,6 +321,8 @@ export function ReportLibraryClient({
                       onOpen={open}
                       onToggleStar={toggleStar}
                       onRestore={restore}
+                      canCurate={item.report.canCurate !== false}
+                      canManage={item.report.canManage !== false}
                     />
                   </div>
                 );

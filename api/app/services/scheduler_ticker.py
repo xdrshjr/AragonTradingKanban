@@ -16,11 +16,13 @@ import asyncio
 import contextlib
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from ..config import get_settings
 from ..db.session import SessionLocal
 from ..errors import MonthlyBudgetExceeded, RunConflict, TooManyRuns
 from ..logging import get_logger
-from ..models import Instrument
+from ..models import Instrument, Schedule
 from .run_manager import get_manager
 from .scheduler import Scheduler
 
@@ -95,7 +97,12 @@ class SchedulerTicker:
                 scheduler.release_lease(session, item["id"])
                 return False
             try:
-                run = manager.start(session, instrument, reason="scheduled")
+                # ★v15（§24.3.9(e)）：`actor` 缺省 = system（不扣额度）；`created_by` 记定时任务的创建者。
+                # （不往 `tick_claim()` 的 dict 里加键：AC-43 钉死了它的键集；owner 这里现查。）
+                owner_id = session.execute(
+                    select(Schedule.owner_id).where(Schedule.id == item["id"])
+                ).scalar_one_or_none()
+                run = manager.start(session, instrument, reason="scheduled", created_by=owner_id)
             except (TooManyRuns, RunConflict):
                 # A manual run got there first:让步 is the specified behaviour (AC-30).
                 scheduler.defer(session, item["id"], minutes=5)

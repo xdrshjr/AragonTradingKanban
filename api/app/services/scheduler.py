@@ -250,6 +250,7 @@ def create(
     *,
     enabled: bool = True,
     min_age_hours: int = 12,
+    owner_id: str | None = None,
 ) -> Schedule:
     normalized = cron_module.validate(expression)
     now = datetime.now(UTC)
@@ -259,6 +260,7 @@ def create(
         cron=normalized,
         enabled=1 if enabled else 0,
         min_age_hours=max(1, min(int(min_age_hours), 720)),
+        owner_id=owner_id,
         next_run_at=_iso(cron_module.next_fire(normalized, now)),
         created_at=_iso(now),
         updated_at=_iso(now),

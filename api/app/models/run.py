@@ -63,6 +63,10 @@ class Run(Base):
     cost_usd_est: Mapped[float | None] = mapped_column(Float)
     cost_source: Mapped[str | None] = mapped_column(String(12))
 
+    # ── ★v15（0007_users_auth / §24.6.2）：谁触发的。`NULL` = 系统 / 历史（不是"某个人"）。
+    # 无 FK：用户只会被匿名化而不会物理删除（见迁移文件头）。
+    created_by: Mapped[str | None] = mapped_column(String(32))
+
     __table_args__ = (
         # One live run per instrument — including the `cancelling` hand-over state
         # (★P1-9), otherwise a second POST sneaks in during the kill window.
@@ -74,6 +78,7 @@ class Run(Base):
             postgresql_where=text("status IN ('queued','running','cancelling')"),
         ),
         Index("ix_runs_instrument_started", "instrument_id", "started_at"),
+        Index("ix_runs_created_by", "created_by", "started_at"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

@@ -263,6 +263,11 @@ def test_events_token_is_bound_to_the_ask(client, seeded, deep_env, monkeypatch)
         json={"question": "毛利率多少？", "mode": "deep"},
     )
     ask_id = created.json()["askId"]
+    # ★v15（§24.3.11，有意的语义迁移）：令牌的真校验现在取决于 `AUTH_MODE` + `SESSION_SECRET`。
+    # `API_TOKEN` 仍设着并带 Bearer：它是 service 主体，对追问对象级规则（M49：拥有者或管理员）
+    # 天然通过——这条用例要证明的是"令牌绑定 ask_id"，与"谁能签发"无关。
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced", raising=False)
+    monkeypatch.setattr(get_settings(), "session_secret", "test-session-secret", raising=False)
     monkeypatch.setattr(get_settings(), "api_token", "secret-token", raising=False)
 
     issued = client.post(f"/api/v1/asks/{ask_id}/events-token", headers={"authorization": "Bearer secret-token"})

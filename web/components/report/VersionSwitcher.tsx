@@ -178,7 +178,8 @@ export function VersionSwitcher({
                 </button>
 
                 <div className="absolute right-1 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  {onPin ? (
+                  {/* ★X6（RV-10）：置顶 / 设最新是全站可见旗标，只有 `canCurate` 的主体才看得到；`!== false` = 未知时不收窄（旧后端 / 开放模式）。 */}
+                  {onPin && report.canCurate !== false ? (
                     <IconButton
                       label={report.pinned ? copy.report.unpin : copy.report.pin}
                       className="!size-6"
@@ -187,7 +188,7 @@ export function VersionSwitcher({
                       {report.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
                     </IconButton>
                   ) : null}
-                  {onArchive ? (
+                  {onArchive && report.canManage !== false ? (
                     <IconButton
                       label={report.archived ? copy.report.unarchive : copy.report.archive}
                       className="!size-6"
@@ -205,7 +206,7 @@ export function VersionSwitcher({
                       <Download className="size-3" />
                     </IconButton>
                   ) : null}
-                  {onDelete && !report.isLatest ? (
+                  {onDelete && !report.isLatest && report.canManage !== false ? (
                     <IconButton label={copy.report.deleteVersion} className="!size-6" onClick={() => onDelete(report.id)}>
                       <Trash2 className="size-3 text-[var(--danger)]" />
                     </IconButton>

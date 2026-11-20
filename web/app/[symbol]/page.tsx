@@ -4,7 +4,8 @@ import { notFound } from 'next/navigation';
 import { ReportMeta } from '@/components/shell/ReportMeta';
 
 import { WorkspaceClient } from '@/components/shell/WorkspaceClient';
-import { api, ApiError } from '@/lib/api';
+import { ApiError } from '@/lib/api';
+import { serverApi } from '@/lib/serverApi';
 import type {
   Capabilities,
   ChartView,
@@ -18,6 +19,9 @@ export const dynamic = 'force-dynamic';
 
 async function loadWorkspace(symbol: string) {
   const instrumentId = decodeURIComponent(symbol);
+  // ★X6：服务端实例转发 `aragon_sid` 且一律 `no-store`——`Capabilities` 随主体而异（脱敏），
+  // 绝不能进 Next Data Cache 被别的访客复用（RV-6）。
+  const api = await serverApi();
 
   let instrument: Instrument | null = null;
   try {
@@ -68,6 +72,7 @@ async function loadWorkspace(symbol: string) {
 export async function generateMetadata({ params }: { params: Promise<{ symbol: string }> }): Promise<Metadata> {
   const { symbol } = await params;
   try {
+    const api = await serverApi();
     const response = await api.instrument(decodeURIComponent(symbol));
     const instrument = response.items[0];
     if (instrument) return { title: `${instrument.name} 投研报告` };
@@ -143,6 +148,7 @@ export default async function WorkspacePage({
   if (!workspace) notFound();
 
   const query = await searchParams;
+  const api = await serverApi();
   const reportId = firstValue(query.report);
   const section = firstValue(query.section);
   const block = firstValue(query.block);

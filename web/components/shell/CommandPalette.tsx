@@ -37,6 +37,14 @@ export interface CommandPaletteProps {
    * 标的内部切版本（它写不进路径里的标的）。所以这里给的是 `(symbol, reportId)`。
    */
   onOpenReport?: (symbol: string, reportId: string) => void;
+  /**
+   * ★X6（§24.3.15e）：账号类命令。与 `onOpenLibrary` 同一个“不传即不出现”的模式——
+   * 游客只会看到「登录或注册」，普通用户看到「账号与额度 / 退出登录」，管理员另有「管理后台」。
+   */
+  onSignIn?: () => void;
+  onOpenAccount?: () => void;
+  onOpenAdmin?: () => void;
+  onSignOut?: () => void;
   /** ★v14：最近 5 份报告（来自 `reportLibrary({limit:5})`），命令面板里的动态项。 */
   recentReports?: { id: string; symbol: string; name: string; headline: string; version: number }[];
 }
@@ -63,6 +71,10 @@ export function CommandPalette({
   onOpenLibrary,
   onOpenReport,
   recentReports = [],
+  onSignIn,
+  onOpenAccount,
+  onOpenAdmin,
+  onSignOut,
 }: CommandPaletteProps) {
   const open = useUiStore((state) => state.commandPaletteOpen);
   const toggle = useUiStore((state) => state.toggleCommandPalette);
@@ -150,6 +162,21 @@ export function CommandPalette({
         }))
       : [];
 
+    const accountItems: CommandItem[] = [
+      ...(onSignIn
+        ? [{ id: 'sign-in', label: copy.auth.command.signIn, group: copy.command.groups.actions, run: () => { toggle(false); onSignIn(); } }]
+        : []),
+      ...(onOpenAccount
+        ? [{ id: 'account', label: copy.auth.command.account, group: copy.command.groups.actions, run: () => { toggle(false); onOpenAccount(); } }]
+        : []),
+      ...(onOpenAdmin
+        ? [{ id: 'admin', label: copy.auth.command.admin, group: copy.command.groups.actions, run: () => { toggle(false); onOpenAdmin(); } }]
+        : []),
+      ...(onSignOut
+        ? [{ id: 'sign-out', label: copy.auth.command.signOut, group: copy.command.groups.actions, run: () => { toggle(false); onSignOut(); } }]
+        : []),
+    ];
+
     const actionItems: CommandItem[] = [
       ...searchItem,
       ...libraryItems,
@@ -205,6 +232,7 @@ export function CommandPalette({
           toggle(false);
         },
       },
+      ...accountItems,
       {
         id: 'reset-layout',
         label: copy.command.actions.resetLayout,
@@ -230,10 +258,14 @@ export function CommandPalette({
     instruments,
     onExport,
     onGenerate,
+    onOpenAccount,
+    onOpenAdmin,
     onOpenCost,
     onOpenLibrary,
     onOpenReport,
     onOpenSearch,
+    onSignIn,
+    onSignOut,
     onSelectInstrument,
     onSelectVersion,
     onToggleChart,

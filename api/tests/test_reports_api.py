@@ -334,13 +334,18 @@ def test_duplicate_run_conflicts_409(client) -> None:
 
 
 def test_sse_without_token_is_rejected_when_api_token_is_set(client, monkeypatch) -> None:
-    """AC-22: `EventSource` cannot send headers, so the query token is enforced."""
+    """AC-22: `EventSource` cannot send headers, so the query token is enforced.
+
+    ★v15（§24.3.11，有意的语义迁移）：校验不再取决于 `API_TOKEN` 是否非空，而取决于
+    `AUTH_MODE`（请求时读取）与 `SESSION_SECRET`。`open` 模式保留旧的"恒真"行为。
+    """
     client.post("/api/v1/symbols/resolve", json={"query": "600519"})
     run_id = client.post("/api/v1/instruments/CN:600519.SH/reports", json={}).json()["runId"]
 
     from app.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "api_token", "secret-token", raising=False)
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced", raising=False)
+    monkeypatch.setattr(get_settings(), "session_secret", "test-session-secret", raising=False)
 
     response = client.get(f"/api/v1/runs/{run_id}/events")
     assert response.status_code == 401
@@ -352,10 +357,12 @@ def test_sse_token_is_accepted(client, monkeypatch) -> None:
 
     from app.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "api_token", "secret-token", raising=False)
-    # Minting a token is itself authenticated; only the SSE endpoint accepts the
+    # ★v15（§24.3.11，有意的语义迁移）：见上一条。令牌签名密钥现在是 `SESSION_SECRET`。
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced", raising=False)
+    monkeypatch.setattr(get_settings(), "session_secret", "test-session-secret", raising=False)
+    # Minting a token is public (runs are public reads); only the SSE endpoint accepts the
     # short-lived `?token=` instead of a header (★P1-3).
-    issued = client.post(f"/api/v1/runs/{run_id}/events-token", headers={"authorization": "Bearer secret-token"})
+    issued = client.post(f"/api/v1/runs/{run_id}/events-token")
     assert issued.status_code == 200
     token = issued.json()["token"]
     assert token
@@ -377,7 +384,8 @@ def test_events_token_is_bound_to_the_run(client, monkeypatch) -> None:
     from app.config import get_settings
     from app.routers.runs import sign_events_token
 
-    monkeypatch.setattr(get_settings(), "api_token", "secret-token", raising=False)
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced", raising=False)  # ★v15：§24.3.11
+    monkeypatch.setattr(get_settings(), "session_secret", "test-session-secret", raising=False)
     forged = f"{9999999999}.{sign_events_token('a-different-run', 9999999999)}"
     response = client.get(f"/api/v1/runs/{run_a}/events?token={forged}")
     assert response.status_code == 401

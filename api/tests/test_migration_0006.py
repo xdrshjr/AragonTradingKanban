@@ -72,7 +72,7 @@ def _index_sql(engine: sa.Engine, name: str) -> str:
 def test_upgrade_adds_the_column_and_the_three_partial_indexes(migrated) -> None:
     """三件事各自可断言：列存在且可空、三个索引存在、每个索引的谓词**写进了 DDL**。"""
     config, engine = migrated
-    command.upgrade(config, "head")
+    command.upgrade(config, "0006_report_library")  # ★v15：head 已是 0007，本条仍只验 0006 本身
     assert _revision(engine) == "0006_report_library"
 
     columns = _columns(engine, "reports")
@@ -98,7 +98,7 @@ def test_downgrade_removes_everything_and_upgrade_replays(migrated) -> None:
     assert "doc_sha1" not in _columns(engine, "reports")
     assert not ({FEED, STARRED, TRASH} & _index_names(engine, "reports"))
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0006_report_library")
     assert _revision(engine) == "0006_report_library"
     assert "doc_sha1" in _columns(engine, "reports")
     assert {FEED, STARRED, TRASH} <= _index_names(engine, "reports")
@@ -110,7 +110,7 @@ def test_downgrade_removes_everything_and_upgrade_replays(migrated) -> None:
 
 def test_revision_ids_are_the_real_ones_not_abbreviations() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
-    assert script.get_current_head() == "0006_report_library"
+    assert script.get_current_head() == "0008_account_recovery"  # ★v16：head 随 0008 前移
     revision = script.get_revision("0006_report_library")
     assert revision is not None
     assert revision.down_revision == "0005_engine_probes"

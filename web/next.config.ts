@@ -20,8 +20,20 @@ const nextConfig: NextConfig = {
   // The service worker must never be served stale: a cached `sw.js` would pin every
   // visitor to an old cache name forever, and no amount of new deploys would fix it
   // (A5 / §18.4.5).
+  //
+  // ★X6（§24.4.2）：站点级安全响应头。页面渲染着"当前用户"，不应被嵌进别人的 iframe
+  // （点击劫持），也不应把带路径的 Referer 发给第三方。`X-Frame-Options` 之外不设 CSP：
+  // 现有页面有内联 bootstrap 脚本（主题 / 布局防闪烁），收紧 CSP 是另一项独立的工作。
   async headers() {
     return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'same-origin' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+        ],
+      },
       {
         source: '/sw.js',
         headers: [

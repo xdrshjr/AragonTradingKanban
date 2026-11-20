@@ -327,7 +327,8 @@ def test_the_202_body_says_whether_dedupe_was_requested(client) -> None:
     client.post("/api/v1/symbols/resolve", json={"query": "600519"})
     body = client.post("/api/v1/instruments/CN:600519.SH/reports", json={}).json()
     assert body["dedupe"] is True
-    assert set(body) == {"runId", "status", "instrumentId", "estimateUsd", "dedupe"}
+    # ★v15（§24.5.5）：202 体追加 `quota`（service/system 为 null；user 为 `QuotaStatus.report`）。
+    assert set(body) == {"runId", "status", "instrumentId", "estimateUsd", "dedupe", "quota"}
 
 
 # ── AC-146：摘要段的三条断言（上限 / 章节 / 无数字） ────────────────────────

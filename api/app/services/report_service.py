@@ -36,11 +36,15 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..errors import Forbidden
 from ..logging import get_logger
 from ..models import Instrument, Report, Run
 from ..models.ask import ReportAsk
 from ..models.run import ACTIVE_STATUSES
+from ..models.user import User
 from ..schemas.report import ReportQuality, ReportSummary
+from ..security import objects as object_rules
+from ..security.principal import Principal
 from . import cost_service, search_index
 
 logger = get_logger("report_service")
@@ -58,7 +62,30 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def summarize(report: Report) -> ReportSummary:
+DELETED_AUTHOR = "已注销用户"
+
+
+def author_names(session: Session, reports: list[Report]) -> dict[str, str]:
+    """`{user_id: display}` for the authors of `reports` — one query, never per row.
+
+    An anonymised (`status='deleted'`) user shows as "已注销用户" (spec §24.3.9(c)); a
+    `created_by` that no longer resolves is treated the same way rather than leaking an id.
+    """
+    ids = {report.created_by for report in reports if report.created_by}
+    if not ids:
+        return {}
+    rows = session.execute(select(User.id, User.username, User.status).where(User.id.in_(ids))).all()
+    names = {uid: (DELETED_AUTHOR if status == "deleted" else username) for uid, username, status in rows}
+    return {uid: names.get(uid, DELETED_AUTHOR) for uid in ids}
+
+
+def summarize(
+    report: Report,
+    principal: Principal | None = None,
+    authors: dict[str, str] | None = None,
+) -> ReportSummary:
+    """`principal=None` is the trusted internal caller: `canManage/canCurate` stay `False`
+    (the viewer is unknown), which is the safe default."""
     doc: dict[str, Any] = {}
     try:
         doc = json.loads(report.doc_json)
@@ -99,6 +126,9 @@ def summarize(report: Report) -> ReportSummary:
         tokensOut=report.tokens_out,
         durationMs=report.duration_ms,
         docBytes=report.doc_bytes,
+        author=(authors or {}).get(report.created_by) if report.created_by else None,
+        canManage=bool(principal is not None and object_rules.can_manage_report(principal, report)),
+        canCurate=bool(principal is not None and principal.can("report.manage_any")),
     )
 
 
@@ -284,6 +314,10 @@ def _persist(
     payload = json.dumps(doc, ensure_ascii=False)
     doc_sha1 = content_sha1(doc)
     quality_payload = quality or {}
+    # ★v15：作者沿用 `run_id` 链路取自 `runs.created_by`（不新增传参）；`NULL` = 系统 / 历史。
+    created_by = (
+        session.execute(select(Run.created_by).where(Run.id == run_id)).scalar_one_or_none() if run_id else None
+    )
     generated_at = _iso()
     as_of = str(doc.get("asOf") or generated_at)
     rating = doc.get("rating") or {}
@@ -319,6 +353,7 @@ def _persist(
                 known=bool(cost_known),
                 usd_est=cost_usd_est,
                 source=resolved_source,
+                user_id=created_by,
             )
             if run_id:
                 session.execute(update(Run).where(Run.id == run_id).values(report_id=baseline.id))
@@ -373,6 +408,7 @@ def _persist(
         is_latest=make_latest,
         pinned=False,
         archived=False,
+        created_by=created_by,
     )
     session.add(report)
     session.flush()
@@ -410,6 +446,7 @@ def _persist(
         known=bool(cost_known),
         usd_est=cost_usd_est,
         source=resolved_source,
+        user_id=created_by,
     )
 
     if run_id:
@@ -559,7 +596,20 @@ def set_flags(
     pinned: bool | None = None,
     archived: bool | None = None,
     set_latest: bool | None = None,
+    principal: Principal | None = None,
 ) -> Report:
+    # ★v15（RV-10）：`pinned` / `setLatest` 改变**所有访客**看到的置顶与"最新版本"，只给
+    # `report.manage_any`。`principal=None` = 受信的内部调用方。整个请求原子失败，不做部分生效。
+    if principal is not None and (pinned is not None or set_latest is not None):
+        object_rules.assert_can_set_curation_flags(principal)
+    # ★v16（Q-9 / D-11）：非 `report.manage_any` 的主体归档**当前最新版**——不能让标的"没有首页"，
+    # 也不能让全站首页悬空：把指针交给与 `soft_delete` 同一个后继者。是唯一可用版本 ⇒ 403
+    # `only_version`。**必须在任何字段被改之前判定**（整个请求原子失败）。
+    handover: Report | None = None
+    if archived is True and report.is_latest and principal is not None and not principal.can("report.manage_any"):
+        handover = _pick_successor(session, report)
+        if handover is None:
+            raise Forbidden(permission="report.manage_any", detail={"reason": "only_version"})
     if pinned is not None:
         report.pinned = pinned
     if archived is not None:
@@ -568,6 +618,12 @@ def set_flags(
             # An archived version can never be the front page (§7.1 PATCH).
             report.is_latest = False
             report.status = "superseded"
+            if handover is not None:
+                # Demote first and flush: `ux_reports_latest` allows exactly one `is_latest`.
+                session.flush()
+                handover.is_latest = True
+                if handover.status == "superseded":
+                    handover.status = "ready"
     if set_latest:
         if report.deleted_at:
             raise ValueError("cannot promote a deleted report")
@@ -590,6 +646,30 @@ def set_flags(
     return report
 
 
+def _pick_successor(session: Session, report: Report) -> Report | None:
+    """The version that inherits `is_latest` when `report` stops being the front page.
+
+    Same data, same answer for "soft-delete the latest" and "archive the latest" (R-Y9): same
+    instrument, alive, not archived, not provisional, highest version first. (Note: no
+    `status = 'ready'` clause — `superseded` versions qualify and are promoted back to `ready`.)
+    """
+    return (
+        session.execute(
+            select(Report)
+            .where(
+                Report.instrument_id == report.instrument_id,
+                Report.id != report.id,
+                Report.deleted_at.is_(None),
+                Report.archived == 0,
+                Report.status != "provisional",
+            )
+            .order_by(Report.version.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
 def soft_delete(session: Session, report: Report) -> None:
     """★P1-1: stamp `deleted_at`, keep the audit trail, move the latest pointer."""
     report.deleted_at = _iso()
@@ -601,21 +681,7 @@ def soft_delete(session: Session, report: Report) -> None:
     session.flush()
 
     if was_latest:
-        successor = (
-            session.execute(
-                select(Report)
-                .where(
-                    Report.instrument_id == report.instrument_id,
-                    Report.id != report.id,
-                    Report.deleted_at.is_(None),
-                    Report.archived == 0,
-                    Report.status != "provisional",
-                )
-                .order_by(Report.version.desc())
-            )
-            .scalars()
-            .first()
-        )
+        successor = _pick_successor(session, report)
         if successor is not None:
             successor.is_latest = True
             if successor.status == "superseded":

@@ -26,6 +26,7 @@ from ..config import get_settings
 from ..db.session import get_db
 from ..logging import get_logger
 from ..schemas.capabilities import (
+    AragonAragonOut,
     CapabilitiesResponse,
     DataProviderCapability,
     EngineCapabilityOut,
@@ -35,6 +36,8 @@ from ..schemas.capabilities import (
     FeaturesOut,
     RuntimeCapabilityOut,
 )
+from ..security import deps
+from ..security.principal import Principal
 from ..services import (
     agent_probe,
     ask_service,
@@ -184,8 +187,34 @@ def _runtime_payload(settings) -> RuntimeCapabilityOut:
     )
 
 
+def _redact(full: CapabilitiesResponse) -> CapabilitiesResponse:
+    """★v15（§24.3.9(g)）：**同形状**脱敏——键集合与完整响应相同（SSR 的兜底字面量与既有类型依赖
+    它），只是敏感值变成 null / false / []。`aragon` 只留四个"用不用得了"的事实（外加
+    `loopOk`，它与 `degradedReason` 同源）；`engine` / `runtime` 整体 `null`；月度预算 `0`。"""
+    aragon = full.aragon
+    safe_aragon = AragonAragonOut(
+        available=aragon.available,
+        versionOk=aragon.versionOk,
+        canStructured=aragon.canStructured,
+        degradedReason=aragon.degradedReason,
+        loopOk=aragon.loopOk,
+    )
+    limits = dict(full.limits)
+    limits["monthlyBudgetUsd"] = 0
+    return full.model_copy(
+        update={"aragon": safe_aragon, "engine": None, "runtime": None, "limits": limits, "redacted": True}
+    )
+
+
 @router.get("/capabilities", response_model=CapabilitiesResponse)
-def capabilities(db: Session = Depends(get_db)) -> CapabilitiesResponse:
+def capabilities(
+    db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> CapabilitiesResponse:
+    full = _capabilities(db)
+    return full if principal.can("engine.probe") else _redact(full)
+
+
+def _capabilities(db: Session) -> CapabilitiesResponse:
     settings = get_settings()
     capability = check_aragon()
     mode = decide_mode(settings, capability)

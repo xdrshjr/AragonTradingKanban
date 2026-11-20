@@ -29,6 +29,30 @@ python -m uvicorn app.main:app --port 8000 --workers 1
 | `app/main.py` | 应用装配：单 worker 断言、启动即自证 `spawn_capability()`（不 raise）、迁移与启动恢复；`STALE_SWEEP_SECONDS`（60s）+ `_sweep_loop()` 是**独立于 `SCHEDULER_ENABLED`** 的常驻活性清扫 |
 | `app/routers/runs.py` | run 的创建 / 取消 / 事件流；SSE 保活发**真实帧** `event: ping` + `data: {}`（注释帧到不了 `EventSource`，前端看门狗必然假断流重连） |
 
+## 用户、权限与离线恢复（v15）
+
+默认 `AUTH_MODE=enforced`：每个 `/api/v1` 路由都在 `app/security/policy.py` 的策略表里登记了所需权限（默认拒绝；启动期会校验"策略表 == 真实路由"，漏登记进程起不来）。`tests/conftest.py` 把测试默认设为 `AUTH_MODE=open`，需要真实鉴权的用例用 `auth_client` / `make_user` / `login_as` 夹具。
+
+| 模块 | 职责 |
+| --- | --- |
+| `app/security/` | `principal`（身份）· `permissions`（读 `contracts/permissions.json`）· `policy`（策略表）· `deps`（Cookie→主体、`enforce`）· `objects`（对象级规则、管理员矩阵）· `passwords`（scrypt，KDF 并发上限）· `csrf`（Origin 校验，忽略 scheme）· `ratelimit` |
+| `app/routers/auth.py` / `me.py` / `admin.py` | 公开认证面 / 个人额度 / 管理后台（一个文件一个路由器） |
+| `app/services/` | `user_service`（行级机制）· `admin_user_service`（矩阵 + 审计编排）· `session_service` · `auth_service` · `invite_service` · `quota_service` · `audit_service` · `settings_service` · `bootstrap` |
+| `app/cli.py` | 离线恢复，见下 |
+
+**忘记 root 密码 / 离线恢复**（授权模型：能访问数据库文件的机器）：
+
+```text
+python -m app.cli reset-root-password [--password …]   # 缺省交互输入；吊销 root 全部会话 + 强制下次改密 + 审计
+python -m app.cli create-admin <username> [--password …]
+python -m app.cli unlock <username>
+python -m app.cli clear-recovery <username>            # 吊销某账号的恢复码（审计 actor=system）
+```
+
+退出码 `0` 成功 / `1` 被拒（策略、用户不存在）/ `2` 环境没就绪（库打不开、未迁移、尚无 root）。库路径取自 `DATABASE_URL`（与服务同一份配置）。`ROOT_ADMIN_PASSWORD` 只在**首次引导**时读取，改它不会重置 root；详见仓库根 `README.md`「用户与权限」。
+
+**迭代 2（v16）**：`security/recovery.py`（恢复码：生成 / 归一化 / `sha256`，纯函数）· `services/account_lifecycle.py`（管理员注销与自助注销**副作用的唯一实现**，授权由调用方先做）· `services/export_service.py`（CSV：BOM、`csv_safe` 公式转义、500 行一块、自开短会话）· `session_service.purge_dead`（死会话清扫，`asyncio.to_thread`，不在事件循环线程上）。`recover` 的固定顺序（限速 → 验证码 → 新密码策略 → 码校验 → CAS 轮换）本身就是安全设计，见 spec §25.3.3。迁移 `0008_account_recovery` 只加 2 列 + 2 个索引。
+
 ## 数据库迁移
 
 ```text

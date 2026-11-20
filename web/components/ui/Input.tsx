@@ -35,6 +35,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       ) : null}
       <input
         ref={ref}
+        data-input-field=""
         value={value}
         aria-invalid={invalid || undefined}
         className={cn(

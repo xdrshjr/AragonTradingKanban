@@ -419,6 +419,13 @@ class ReportSummary(BaseModel):
     tokensOut: int | None = None
     durationMs: int | None = None
     docBytes: int = 0
+    # ★v15（§24.3.9(c)）：按**请求者视角**由服务端算好，前端不自行推断。
+    #: 作者用户名；已注销 → "已注销用户"；历史/系统数据 → `None`。
+    author: str | None = None
+    #: 请求者能否改/删/恢复这份报告（拥有者或 `report.manage_any`）。
+    canManage: bool = False
+    #: 请求者能否置顶 / 设为最新（只有 `report.manage_any`，RV-10）。
+    canCurate: bool = False
 
 
 class ReportDetail(BaseModel):

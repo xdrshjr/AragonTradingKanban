@@ -11,7 +11,8 @@ import os
 import sys
 import tempfile
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,18 @@ os.environ["ARAGON_SELF_CHECK"] = "0"
 os.environ["AGENT_ATTEMPTS"] = "1"
 # 引擎自检在测试里**永不联网**：需要探针的用例显式注入假引擎（tests/test_agent_probe.py）。
 os.environ["AGENT_PROBE_ENABLED"] = "1"
+# ★v15（D-8 / §24）：既有 972+ 条用例是在"无鉴权"的世界里写的，所以测试默认 `AUTH_MODE=open`
+# （所有请求都是 service 主体）。需要真实鉴权的用例用 `auth_client` / `auth_mode_enforced`。
+# 其余几项同样显式赋值而不是 setdefault：宿主机的 .env / shell 不许改变测试的确定性。
+os.environ["AUTH_MODE"] = "open"
+os.environ["TRUST_PROXY"] = "0"
+os.environ["COOKIE_SECURE"] = "auto"
+os.environ["RATE_LIMIT_ENABLED"] = "1"
+os.environ["AUTH_TEST_HOOKS"] = "0"
+os.environ["SESSION_SECRET"] = ""
+os.environ["ROOT_ADMIN_USERNAME"] = "jdqqjr"
+os.environ["ROOT_ADMIN_PASSWORD"] = "13519126390"
+os.environ["AUTH_FORCE_ROOT_PASSWORD_CHANGE"] = "1"
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import build_engine  # noqa: E402
@@ -83,6 +96,23 @@ def sample_report() -> dict:
     return json.loads((FIXTURES_DIR / "sample_report.json").read_text(encoding="utf-8"))
 
 
+def _drop_all(test_engine) -> None:  # noqa: ANN001
+    """`drop_all` with SQLite foreign keys **off**.
+
+    ★v15：`reports` ↔ `runs` is a deliberate FK cycle, so SQLAlchemy cannot topologically
+    sort the DROPs ("Can't sort tables for DROP", filtered in pyproject). With FKs on, SQLite
+    runs an implicit `DELETE` on the dropped parent and trips over any child whose *other*
+    parent is already gone — `user_watchlist` (parents: `users` **and** `instruments`) is the
+    first table in the schema with two such parents. The pragma only affects this teardown
+    connection, and is switched back on before it returns to the pool.
+    """
+    with test_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        Base.metadata.drop_all(connection)
+        connection.commit()
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
 @pytest.fixture()
 def engine():
     """A fresh schema per test — `create_all` is a test-only convenience.
@@ -94,7 +124,7 @@ def engine():
     from app.services.search_index import drop_fts_schema, ensure_fts_schema
 
     test_engine = build_engine(f"sqlite:///{_DB_PATH.as_posix()}")
-    Base.metadata.drop_all(test_engine)
+    _drop_all(test_engine)
     with test_engine.begin() as connection:
         drop_fts_schema(connection)  # virtual tables are invisible to drop_all
         Base.metadata.create_all(connection)
@@ -102,7 +132,7 @@ def engine():
     yield test_engine
     with test_engine.begin() as connection:
         drop_fts_schema(connection)
-    Base.metadata.drop_all(test_engine)
+    _drop_all(test_engine)
     test_engine.dispose()
 
 
@@ -116,9 +146,8 @@ def session(engine) -> Iterator[Session]:
         db.close()
 
 
-@pytest.fixture()
-def client(engine, monkeypatch) -> Iterator[TestClient]:
-    """TestClient wired to the per-test engine."""
+def _wire_app(engine, monkeypatch):  # noqa: ANN001, ANN202
+    """Point the app's `SessionLocal` / `engine` at the per-test engine; returns `main`."""
     from app.db import session as session_module
 
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -131,6 +160,13 @@ def client(engine, monkeypatch) -> Iterator[TestClient]:
     # Tests own the schema: create_all above already built it, so the startup
     # migration would collide. Alembic stays the production path (R-14).
     monkeypatch.setattr(main_module, "run_migrations", lambda: None, raising=False)
+    return main_module
+
+
+@pytest.fixture()
+def client(engine, monkeypatch) -> Iterator[TestClient]:
+    """TestClient wired to the per-test engine."""
+    main_module = _wire_app(engine, monkeypatch)
 
     from app.services import run_manager as run_manager_module
 
@@ -142,6 +178,195 @@ def client(engine, monkeypatch) -> Iterator[TestClient]:
     with TestClient(main_module.app) as test_client:
         yield test_client
     run_manager_module.reset_manager()
+
+
+# ── ★v15（§24）：鉴权相关夹具 ──────────────────────────────────────────────────
+
+#: A password that satisfies the policy and is not on the weak list. Hashing it per user
+#: would cost ~80 ms each, so `make_user` hashes each distinct password once per session.
+DEFAULT_TEST_PASSWORD = "Aragon-Test-9x"
+_HASH_CACHE: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_security_state() -> Iterator[None]:
+    """Every in-memory §24 store starts empty and the clock starts real, for every test.
+
+    The limiter buckets, shadow throttle, captcha store and SSE secret cache are all
+    process-global (single-worker invariant), so without this one test's failed logins
+    would lock the next test's user out.
+    """
+    from app.security import clock, deps, ratelimit
+    from app.services import sse_token
+    from app.services.captcha import get_captcha_provider
+
+    def _clean() -> None:
+        ratelimit.reset_all()
+        provider = get_captcha_provider()
+        provider.reset()
+        deps.reset_warning_state()
+        sse_token.reset_secret_cache()
+        clock.set_clock(None)
+
+    _clean()
+    get_captcha_provider().set_debug_answers(True)  # tests read answers instead of OCR-ing
+    yield
+    get_captcha_provider().set_debug_answers(False)
+    _clean()
+
+
+class FrozenClock:
+    """A settable clock for `app.security.clock` (sessions, lockouts, captchas, limiters)."""
+
+    def __init__(self, start: datetime) -> None:
+        self.current = start
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def set(self, moment: datetime) -> None:
+        self.current = moment
+
+    def advance(self, seconds: float = 0, **kwargs: float) -> datetime:
+        self.current = self.current + timedelta(seconds=seconds, **kwargs)
+        return self.current
+
+
+@pytest.fixture()
+def frozen_now() -> Iterator[FrozenClock]:
+    """Freeze the §24 clock at "now"; `frozen_now.advance(seconds=…)` moves it."""
+    from app.security import clock
+
+    frozen = FrozenClock(datetime.now(UTC).replace(microsecond=0))
+    clock.set_clock(frozen)
+    yield frozen
+    clock.set_clock(None)
+
+
+@pytest.fixture()
+def auth_mode_enforced(monkeypatch):  # noqa: ANN001, ANN201
+    """Flip the *running settings object* to `AUTH_MODE=enforced` (read per request, D-8)."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced", raising=False)
+    return get_settings()
+
+
+@pytest.fixture()
+def auth_client(engine, monkeypatch, auth_mode_enforced) -> Iterator[TestClient]:  # noqa: ANN001
+    """A `TestClient` with real authentication (`enforced`) — the lifespan bootstraps root."""
+    main_module = _wire_app(engine, monkeypatch)
+
+    from app.services import run_manager as run_manager_module
+
+    run_manager_module.reset_manager()
+    with TestClient(main_module.app) as test_client:
+        yield test_client
+    run_manager_module.reset_manager()
+
+
+@pytest.fixture()
+def client_from(auth_client):  # noqa: ANN001, ANN201
+    """`client_from("203.0.113.7")` → another client (own cookie jar) of the same app, whose
+    peer address is that IP. No lifespan is entered; `auth_client` already ran it."""
+    import app.main as main_module
+
+    def _make(host: str) -> TestClient:
+        return TestClient(main_module.app, client=(host, 50000))
+
+    return _make
+
+
+@dataclass
+class UserRecord:
+    id: str
+    username: str
+    password: str
+    role: str
+
+
+@pytest.fixture()
+def make_user(engine):  # noqa: ANN001, ANN201
+    """`make_user("alice", role="admin")` → a committed `UserRecord` (id, username, password)."""
+    from app.security.passwords import hash_password
+    from app.services import user_service
+
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    counter = {"n": 0}
+
+    def _make(
+        username: str | None = None,
+        *,
+        role: str = "user",
+        password: str = DEFAULT_TEST_PASSWORD,
+        status: str = "active",
+        must_change_password: bool = False,
+        **overrides,  # noqa: ANN003
+    ) -> UserRecord:
+        counter["n"] += 1
+        name = username or f"user_{counter['n']:03d}"
+        if password not in _HASH_CACHE:
+            _HASH_CACHE[password] = hash_password(password)
+        db = factory()
+        try:
+            user = user_service.create_user(
+                db,
+                username=name,
+                password_hash=_HASH_CACHE[password],
+                role=role,
+                must_change_password=must_change_password,
+                allow_reserved=True,
+            )
+            user.status = status
+            for key, value in overrides.items():
+                setattr(user, key, value)
+            db.commit()
+            return UserRecord(id=user.id, username=user.username, password=password, role=role)
+        finally:
+            db.close()
+
+    return _make
+
+
+@pytest.fixture()
+def login_as():  # noqa: ANN201
+    """`login_as(client, user, remember=False)` → POST /auth/login, asserts 200, returns the response."""
+
+    def _login(test_client: TestClient, user: UserRecord, *, remember: bool = False):  # noqa: ANN202
+        response = test_client.post(
+            "/api/v1/auth/login",
+            json={"username": user.username, "password": user.password, "remember": remember},
+        )
+        assert response.status_code == 200, response.text
+        return response
+
+    return _login
+
+
+@pytest.fixture()
+def solve_captcha():  # noqa: ANN201
+    """`solve_captcha(client, purpose="register")` → `(challengeId, answer)`.
+
+    Fetches a real challenge through the API and reads the plaintext answer from the
+    test-only side table. If the clock is frozen it also advances it past the 1.2 s
+    anti-script floor, so a freshly issued challenge is immediately answerable.
+    """
+    from app.security import clock
+    from app.services.captcha import get_captcha_provider
+
+    def _solve(test_client: TestClient, purpose: str = "register", *, settle: bool = True) -> tuple[str, str]:
+        response = test_client.get("/api/v1/auth/captcha", params={"purpose": purpose})
+        assert response.status_code == 200, response.text
+        challenge_id = response.json()["challengeId"]
+        answer = get_captcha_provider().debug_answer(challenge_id)
+        assert answer, "the test-only answer table is empty — is `_reset_security_state` active?"
+        if settle:
+            override = clock._override  # noqa: SLF001 - the fixture owns the clock
+            if isinstance(override, FrozenClock):
+                override.advance(seconds=2)
+        return challenge_id, answer
+
+    return _solve
 
 
 @pytest.fixture()

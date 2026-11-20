@@ -1,0 +1,32 @@
+[Unit]
+Description=Aragon Trading Kanban — Web (Next.js standalone, :3000)
+Documentation=file:///opt/aragon-trading/README.md
+After=network-online.target aragon-trading-api.service
+Wants=network-online.target
+# Not "Requires": the UI must still render its degraded states when the API is down.
+After=aragon-trading-api.service
+
+[Service]
+Type=simple
+User=aragon
+Group=aragon
+WorkingDirectory=/opt/aragon-trading/web-dist
+Environment=PATH=/opt/node22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/aragon
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+# Standalone server.js reads PORT/HOSTNAME. Bind loopback only — nginx fronts it.
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+# RSC/server components call the API over loopback instead of hairpinning via TLS.
+Environment=INTERNAL_API_BASE=http://127.0.0.1:8000
+ExecStart=/opt/node22/bin/node server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

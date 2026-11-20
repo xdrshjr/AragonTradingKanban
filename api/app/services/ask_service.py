@@ -43,7 +43,8 @@ from ..logging import get_logger
 from ..models import Instrument, Report, ReportAsk
 from ..models.ask import ASK_ACTIVE_STATUSES, ASK_TERMINAL_STATUSES, AskEvent
 from ..schemas.ask import AskAnswer, AskHit, AskOut, Citation
-from . import block_text, cost_service, search_index
+from ..security.principal import SYSTEM, Principal
+from . import block_text, cost_service, quota_service, search_index
 from .ask_registry import get_ask_registry
 
 logger = get_logger("ask_service")
@@ -401,19 +402,22 @@ def replay_events(session: Session, ask_id: str, after: int = 0) -> list[dict[st
     ]
 
 
-def daily_count(session: Session, report_id: str, *, mode: str = "deep") -> int:
+def daily_count(session: Session, report_id: str, *, mode: str = "deep", user_id: str | None = None) -> int:
+    """24 h count of asks on one report. ★v15（§24.3.9(h)）：传 `user_id` ⇒ 按"(报告, 用户)"计数，
+    否则一个用户能耗尽全站对某份报告的追问名额；不传（service / 历史口径）⇒ 全部。"""
     cutoff = _iso(datetime.now(UTC) - timedelta(hours=24))
-    return int(
-        session.execute(
-            select(func.count())
-            .select_from(ReportAsk)
-            .where(
-                ReportAsk.report_id == report_id,
-                ReportAsk.mode == mode,
-                ReportAsk.created_at >= cutoff,
-            )
-        ).scalar_one()
+    query = (
+        select(func.count())
+        .select_from(ReportAsk)
+        .where(
+            ReportAsk.report_id == report_id,
+            ReportAsk.mode == mode,
+            ReportAsk.created_at >= cutoff,
+        )
     )
+    if user_id is not None:
+        query = query.where(ReportAsk.user_id == user_id)
+    return int(session.execute(query).scalar_one())
 
 
 def to_ask_out(ask: ReportAsk) -> AskOut:
@@ -444,8 +448,8 @@ def to_ask_out(ask: ReportAsk) -> AskOut:
 # ── cite: synchronous path ───────────────────────────────────────────────────
 
 
-def ask_cite(session: Session, report: Report, question: str) -> ReportAsk:
-    """Answer immediately and record the row (quota + audit, zero cost)."""
+def ask_cite(session: Session, report: Report, question: str, user_id: str | None = None) -> ReportAsk:
+    """Answer immediately and record the row (zero cost, **no quota** — spec §24.3.8)."""
     doc = report.doc
     result = answer_cite(doc, question)
     ask = ReportAsk(
@@ -466,6 +470,7 @@ def ask_cite(session: Session, report: Report, question: str) -> ReportAsk:
         latency_ms=result.latency_ms,
         created_at=_iso(),
         finished_at=_iso(),
+        user_id=user_id,
     )
     session.add(ask)
     session.commit()
@@ -525,23 +530,32 @@ def prepare_ask_workspace(session: Session, report: Report, ask_id: str) -> tupl
     return workspace, available
 
 
-def create_deep_ask(session: Session, report: Report, question: str) -> ReportAsk:
+def create_deep_ask(
+    session: Session, report: Report, question: str, principal: Principal | None = None
+) -> ReportAsk:
+    """★v15：`principal` 缺省 = system（不扣额度，行为与旧版一致）。`user` 主体在 `deep_ask` 额度上
+    **原子预留**：锁覆盖到 commit（RV-9），账本行与追问行同事务，要么都在要么都不在。
+    本函数在线程池里跑（`asyncio.to_thread`），锁在这里是真实有竞争的。"""
     if not ask_deep_available():
         raise AskDeepUnavailable()
-    ask = ReportAsk(
-        id=new_ask_id(),
-        report_id=report.id,
-        question=question,
-        mode="deep",
-        status="queued",
-        grounded=0,
-        citations_dropped=0,
-        run_id=None,
-        cost_known=0,
-        created_at=_iso(),
-    )
-    session.add(ask)
-    session.commit()
+    actor = principal or SYSTEM
+    ask_id = new_ask_id()
+    with quota_service.reservation(session, actor, "deep_ask", ask_id):
+        ask = ReportAsk(
+            id=ask_id,
+            report_id=report.id,
+            question=question,
+            mode="deep",
+            status="queued",
+            grounded=0,
+            citations_dropped=0,
+            run_id=None,
+            cost_known=0,
+            created_at=_iso(),
+            user_id=actor.user_id if actor.kind == "user" else None,
+        )
+        session.add(ask)
+        session.commit()
     record_event(session, ask.id, "ask.stage", {"stage": "prepare", "pct": 0, "label": "准备资料"})
     return ask
 
@@ -747,6 +761,7 @@ def _finalize_success(
         known=bool(ask.cost_known),
         usd_est=resolution.estimated_usd if resolution is not None else None,
         source=resolution.source if resolution is not None else ("reported" if ask.cost_known else "unknown"),
+        user_id=ask.user_id,
     )
     record_event(
         session,
@@ -778,6 +793,7 @@ def _finalize_failure(session: Session, ask: ReportAsk, code: str, message: str)
         {"code": code, "message": ask.error_message, "retryable": code not in ("report_not_found",)},
     )
     logger.warning("ask failed id=%s code=%s", ask.id, code)
+    _refund_soon(session, ask)
 
 
 def _finalize_cancelled(session: Session, ask: ReportAsk) -> None:
@@ -790,6 +806,18 @@ def _finalize_cancelled(session: Session, ask: ReportAsk) -> None:
         "ask.error",
         {"code": "cancelled", "message": "追问已取消", "retryable": True},
     )
+    _refund_soon(session, ask)
+
+
+def _refund_soon(session: Session, ask: ReportAsk) -> None:
+    """★v15（§24.3.8(d)）：尽快退 `deep_ask` 额度。纯加速：对账幂等，sweep/启动/读额度前仍兜底。"""
+    if not ask.user_id:
+        return
+    try:
+        quota_service.reconcile_refunds(session, user_id=ask.user_id)
+    except Exception:  # pragma: no cover - 退款失败绝不改变追问的结论
+        logger.exception("追问额度退款对账失败 ask=%s（稍后由清扫重试）", ask.id)
+        session.rollback()
 
 
 def request_cancel(session: Session, ask: ReportAsk) -> None:

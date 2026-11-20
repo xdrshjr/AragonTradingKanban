@@ -242,6 +242,7 @@ export const copy = {
     // ★v14（§23.5.5）：三条新 HTTP 码的文案。前端不拼文案、服务端不下发 UI 文案——既有纪律。
     invalidCursor: '翻页参数已失效，已经从第一页重新加载',
     reportNotDeleted: '这份报告没有被删除，列表已刷新',
+    archiveOnlyVersion: '这是该标的唯一的版本，归档会让它没有首页；请联系管理员。',
     baseReportMismatch: '所选的基准版本不属于该标的，已改为独立生成',
     corruptDoc: '这份报告的正文无法解析，已按最小可渲染内容展示；建议先导出留档',
   },
@@ -598,6 +599,57 @@ export const copy = {
     includingEstimated: '含估算 ${usd}',
     estimatedRuns: '{count} 次按估算计价',
     estimatedNote: '其中 ${usd} 为按 token × 单价估算，不是引擎回执',
+  },
+
+  /**
+   * ★X6（M51，spec §24.3.15）：**首屏会用到**的那一小部分认证文案——用户菜单、游客入口、生成按钮三态。
+   *
+   * 登录/注册/账号页/错误话术这些大头住在 `lib/copy.authPages.ts`（只被懒加载的路由与浮层 import），
+   * 管理后台住在 `lib/copy.admin.ts`。拆开的原因是预算：`copy` 是一个对象，整份都会进首屏 chunk，
+   * 而首屏 JS 是硬线（AC-35 / AC-202）。
+   */
+  auth: {
+    signIn: '登录',
+    signUp: '注册',
+    signOut: '退出登录',
+    guest: '游客',
+    guestBrowse: '游客可浏览全部研报',
+    generateGuest: '登录后生成投研报告',
+    generateGuestShort: '登录后生成',
+    signedIn: '已登录',
+    engineReady: '引擎已就绪',
+    generateGuestHint: '登录后即可生成投研报告；游客可浏览全部研报',
+    watchlistGuest: '登录后可自定义自选',
+    watchlistFeatured: '平台精选',
+    sessionExpired: '登录已失效，请重新登录',
+    signedOut: '已退出登录',
+    openModeBanner: '开放模式：所有请求按服务账号处理，仅限本地演示。',
+    menu: {
+      label: '账号菜单',
+      account: '账号与额度',
+      admin: '管理后台',
+      signedInAs: '当前账号',
+    },
+    roles: { root: '根管理员', admin: '管理员', user: '用户' },
+    command: { account: '账号与额度', admin: '管理后台', signOut: '退出登录', signIn: '登录或注册' },
+    library: { trashNeedsLogin: '登录后可查看回收站', pinnedReadonly: '已置顶' },
+  },
+
+  quota: {
+    chipLabel: '生成额度',
+    chip: '今日剩余 {left}/{limit}',
+    chipBonus: ' +{bonus}',
+    unlimited: '不限次',
+    tooltip: '日额度 {left}/{limit} + 赠送 {bonus} · {reset}重置',
+    tooltipNoBonus: '日额度 {left}/{limit} · {reset}重置',
+    tooltipUnlimited: '当前账号生成不限次',
+    exhausted: '今日额度已用完',
+    exhaustedHint: '今日已用完 {used}/{limit} · {reset}重置 · 点击查看额度与申请方式',
+    resetTomorrow: '明日 {time} ',
+    resetToday: '今日 {time} ',
+    resetOn: '{date} ',
+    countdownHours: '{hours} 小时 {minutes} 分后',
+    countdownMinutes: '{minutes} 分钟后',
   },
 } as const;
 

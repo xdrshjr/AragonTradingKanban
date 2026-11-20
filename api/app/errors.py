@@ -33,11 +33,14 @@ class AppError(Exception):
         code: str | None = None,
         status_code: int | None = None,
         detail: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.message = message or self.message
         self.code = code or self.code
         self.status_code = status_code or self.status_code
         self.detail = detail or {}
+        #: Extra response headers (`Retry-After` for 429/503). Empty for almost every error.
+        self.headers: dict[str, str] = headers or {}
         super().__init__(self.message)
 
     def envelope(self) -> dict[str, Any]:
@@ -217,9 +220,26 @@ class AgentMockMode(Unavailable):
 
 
 class Unauthorized(AppError):
+    """The one 401 code (spec E-9). `detail.reason` says why: `no_session | expired |
+    revoked | disabled` — the front end treats "never had a session" (no_session) very
+    differently from "your session just died"."""
+
     code = "unauthorized"
     status_code = status.HTTP_401_UNAUTHORIZED
     message = "缺少或无效的凭据"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        reason: str | None = None,
+        detail: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        merged = dict(detail or {})
+        if reason is not None:
+            merged["reason"] = reason
+        super().__init__(message, detail=merged or None, **kwargs)
 
 
 class InvalidQuestion(AppError):
@@ -334,11 +354,240 @@ class BaseReportMismatch(AppError):
     message = "所选的基准版本不属于该标的"
 
 
+# ── ★v15（§24.5.4）：用户与权限系统的错误码。全部走同一个信封；前端 `authErrors.ts` 逐码有文案。
+class Forbidden(AppError):
+    """已登录但权限不足。`detail.permission` 是缺的那条权限串。"""
+
+    code = "forbidden"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "没有权限执行该操作"
+
+    def __init__(self, message: str | None = None, *, permission: str | None = None, **kwargs: Any) -> None:
+        detail = dict(kwargs.pop("detail", None) or {})
+        if permission is not None:
+            detail["permission"] = permission
+        super().__init__(message, detail=detail or None, **kwargs)
+
+
+class InvalidCredentials(AppError):
+    """用户名或密码不对——**不区分**不存在 / 密码错（AC-170）。"""
+
+    code = "invalid_credentials"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "用户名或密码不正确"
+
+
+class AccountDisabled(AppError):
+    """密码正确、但账号被停用。密码不对时仍是 `invalid_credentials`（不泄露哪些名字存在）。"""
+
+    code = "account_disabled"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "该账号已被停用，请联系管理员"
+
+
+class AccountLocked(AppError):
+    code = "account_locked"
+    status_code = 423
+    message = "登录失败次数过多，账号已被临时锁定"
+
+    def __init__(self, message: str | None = None, *, retry_after_ms: int = 0, **kwargs: Any) -> None:
+        super().__init__(
+            message,
+            detail={"retryAfterMs": int(retry_after_ms)},
+            headers={"Retry-After": str(max(1, (int(retry_after_ms) + 999) // 1000))},
+            **kwargs,
+        )
+
+
+class PasswordChangeRequired(AppError):
+    code = "password_change_required"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "请先修改初始密码"
+
+
+class CsrfRejected(AppError):
+    code = "csrf_rejected"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "请求来源不受信任"
+
+    def __init__(self, message: str | None = None, *, origin: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"origin": origin or ""}, **kwargs)
+
+
+class RateLimited(AppError):
+    code = "rate_limited"
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    message = "操作过于频繁，请稍后再试"
+
+    def __init__(
+        self, message: str | None = None, *, scope: str = "", retry_after_ms: int = 1000, **kwargs: Any
+    ) -> None:
+        super().__init__(
+            message,
+            detail={"scope": scope, "retryAfterMs": int(retry_after_ms)},
+            headers={"Retry-After": str(max(1, (int(retry_after_ms) + 999) // 1000))},
+            **kwargs,
+        )
+
+
+class QuotaExceeded(AppError):
+    """额度不足（预检或预留），或全站日总量已满（`detail.scope='site'`，`canRequest=false`）。
+
+    M48 的额度引擎抛它；类在 M45 先建好，让码表与前端 `authErrors.ts` 从第一天起对得上。
+    """
+
+    code = "quota_exceeded"
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    message = "今日生成额度已用完"
+
+
+class CaptchaRequired(AppError):
+    code = "captcha_required"
+    status_code = 422
+    message = "请输入验证码"
+
+
+class CaptchaInvalid(AppError):
+    """验证码错 / 过期 / 已用 / 蜜罐 / 过快——**一律同一个响应**（AC-168 要求字节级相同）。"""
+
+    code = "captcha_invalid"
+    status_code = 422
+    message = "验证码不正确或已过期"
+
+
+class CaptchaUnavailable(AppError):
+    code = "captcha_unavailable"
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    message = "验证码服务暂不可用，暂时无法注册"
+
+
+class RegistrationClosed(AppError):
+    code = "registration_closed"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "注册已关闭，请联系管理员"
+
+
+class InviteRequired(AppError):
+    code = "invite_required"
+    status_code = 422
+    message = "当前仅支持邀请码注册"
+
+
+class InviteInvalid(AppError):
+    code = "invite_invalid"
+    status_code = 422
+    message = "邀请码无效、已过期或已用完"
+
+
+class InvalidUsername(AppError):
+    code = "invalid_username"
+    status_code = 422
+    message = "用户名需为 3–20 位字母、数字或下划线，且不能使用保留词"
+
+
+class UsernameTaken(AppError):
+    code = "username_taken"
+    status_code = status.HTTP_409_CONFLICT
+    message = "该用户名已被占用"
+
+
+class WeakPassword(AppError):
+    """`detail.rules` 是**未满足**的规则 id（前端据此点亮强度条下的清单）。"""
+
+    code = "weak_password"
+    status_code = 422
+    message = "密码强度不足"
+
+    def __init__(self, message: str | None = None, *, rules: list[str] | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"rules": list(rules or [])}, **kwargs)
+
+
+class RecoveryInvalid(AppError):
+    """恢复码类失败的**唯一**出口：用户不存在 / 已停用 / 是 root / 没设码 / 码不对 / 并发输家，
+    状态码与响应体逐字节相同（AC-219）。"""
+
+    code = "recovery_invalid"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "用户名或恢复码不正确。请检查是否多输了空格；若恢复码已丢失，请联系管理员重置。"
+
+
+class RecoveryDisabled(AppError):
+    code = "recovery_disabled"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "站点暂未开放自助找回密码。请联系管理员重置。"
+
+
+class RootProtected(AppError):
+    code = "root_protected"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "根管理员账号受保护，不可修改"
+
+    def __init__(self, message: str | None = None, *, action: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"action": action or ""}, **kwargs)
+
+
+class SelfActionForbidden(AppError):
+    code = "self_action_forbidden"
+    status_code = 422
+    message = "不能对自己执行该操作"
+
+    def __init__(self, message: str | None = None, *, action: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"action": action or ""}, **kwargs)
+
+
+class AdminProtected(AppError):
+    code = "admin_protected"
+    status_code = status.HTTP_403_FORBIDDEN
+    message = "只有根管理员可以对管理员执行该操作"
+
+    def __init__(self, message: str | None = None, *, action: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"action": action or ""}, **kwargs)
+
+
+class QuotaRequestPending(Conflict):
+    code = "quota_request_pending"
+    message = "已有一条待处理的额度申请"
+
+    def __init__(self, message: str | None = None, *, request_id: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, detail={"requestId": request_id or ""}, **kwargs)
+
+
+class InvalidSetting(AppError):
+    code = "invalid_setting"
+    status_code = 422
+    message = "设置值不合法"
+
+    def __init__(self, message: str | None = None, *, field: str = "", **kwargs: Any) -> None:
+        super().__init__(message, detail={"field": field}, **kwargs)
+
+
+class PolicyMissing(AppError):
+    """路由没有登记进策略表。启动期集合校验使它**理论上不可达**；到了这里宁可 500 也不放行。"""
+
+    code = "policy_missing"
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    message = "服务器内部错误"
+
+    def __init__(self, message: str | None = None, *, route: str = "", **kwargs: Any) -> None:
+        super().__init__(message, detail={"route": route}, **kwargs)
+
+
+class Busy(AppError):
+    """KDF 槽位排队超时（RV-7）。不区分是登录还是注册，也不泄露任何账号信息。"""
+
+    code = "busy"
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    message = "服务繁忙，请稍后重试"
+
+    def __init__(self, message: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, headers={"Retry-After": "2"}, **kwargs)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error_handler(_: Request, exc: AppError) -> JSONResponse:
         logger.info("app_error code=%s status=%s message=%s", exc.code, exc.status_code, exc.message)
-        return JSONResponse(status_code=exc.status_code, content=exc.envelope())
+        return JSONResponse(status_code=exc.status_code, content=exc.envelope(), headers=exc.headers or None)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -392,4 +641,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("unhandled error path=%s", request.url.path)
         err = AppError(message="服务器内部错误")
-        return JSONResponse(status_code=err.status_code, content=err.envelope())
+        # ★v16（RV-Y7）：本处理器由最外层 ServerErrorMiddleware 调用，用户中间件加的头到不了它。
+        return JSONResponse(
+            status_code=err.status_code,
+            content=err.envelope(),
+            headers={"X-Content-Type-Options": "nosniff"},
+        )

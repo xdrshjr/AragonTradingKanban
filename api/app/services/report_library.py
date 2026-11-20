@@ -37,7 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import Select, and_, case, func, literal, or_, select
+from sqlalchemy import Select, and_, case, false, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..errors import InvalidCursor
@@ -45,6 +45,7 @@ from ..logging import get_logger
 from ..models import Instrument, Report, Run
 from ..models.run import ACTIVE_STATUSES
 from ..schemas.library import ActiveRunItem, LibraryInstrument, LibraryResponse, ReportLibraryItem
+from ..security.principal import Principal
 from . import report_service
 
 logger = get_logger("report_library")
@@ -114,8 +115,12 @@ def _latest_ids() -> Select[tuple[str]]:
     return select(ranked.c.id).where(ranked.c.rn == 1)
 
 
-def _scope_conditions(scope: str) -> list[Any]:
-    """五个 scope 的谓词（**唯一**真源：列表、计数、`counts` 三处共用这一个函数）。"""
+def _scope_conditions(scope: str, *, trash_owner: str | None = None, trash_restricted: bool = False) -> list[Any]:
+    """五个 scope 的谓词（**唯一**真源：列表、计数、`counts` 三处共用这一个函数）。
+
+    ★v15（§24.3.9(c)）：`trash_restricted=True` 时回收站只含 `created_by == trash_owner` 的行
+    （普通用户只看"我的"；`trash_owner=None` 即没有"我的" ⇒ 空集）。管理员 / service 不受限。
+    """
     if scope == "latest":
         return [Report.id.in_(_latest_ids())]
     if scope == "all":
@@ -125,7 +130,10 @@ def _scope_conditions(scope: str) -> list[Any]:
     if scope == "archived":
         return [Report.deleted_at.is_(None), Report.archived == 1]
     if scope == "trash":
-        return [Report.deleted_at.is_not(None)]
+        conditions: list[Any] = [Report.deleted_at.is_not(None)]
+        if trash_restricted:
+            conditions.append(Report.created_by == trash_owner if trash_owner else false())
+        return conditions
     raise ValueError(f"unknown scope: {scope}")  # pragma: no cover - 由 Literal 拦住
 
 
@@ -159,9 +167,17 @@ def _headline_expr(session: Session) -> Any:
     return literal("")
 
 
-def _query_conditions(session: Session, *, scope: str, q: str, instrument_id: str | None) -> list[Any]:
+def _query_conditions(
+    session: Session,
+    *,
+    scope: str,
+    q: str,
+    instrument_id: str | None,
+    trash_owner: str | None = None,
+    trash_restricted: bool = False,
+) -> list[Any]:
     """scope + `q` + `instrumentId` 的完整谓词（**列表与 total 共用**）。"""
-    conditions = _scope_conditions(scope)
+    conditions = _scope_conditions(scope, trash_owner=trash_owner, trash_restricted=trash_restricted)
     if instrument_id:
         conditions.append(Report.instrument_id == instrument_id)
     term = (q or "").strip()
@@ -191,8 +207,23 @@ def _integrity_expr(session: Session) -> Any:
     return literal("ok")
 
 
-def _base_statement(session: Session, *, scope: str, q: str, instrument_id: str | None) -> Select[Any]:
-    conditions = _query_conditions(session, scope=scope, q=q, instrument_id=instrument_id)
+def _base_statement(
+    session: Session,
+    *,
+    scope: str,
+    q: str,
+    instrument_id: str | None,
+    trash_owner: str | None = None,
+    trash_restricted: bool = False,
+) -> Select[Any]:
+    conditions = _query_conditions(
+        session,
+        scope=scope,
+        q=q,
+        instrument_id=instrument_id,
+        trash_owner=trash_owner,
+        trash_restricted=trash_restricted,
+    )
     return (
         select(Report, _integrity_expr(session).label("integrity"), Instrument)
         .join(Instrument, Instrument.id == Report.instrument_id)
@@ -200,7 +231,7 @@ def _base_statement(session: Session, *, scope: str, q: str, instrument_id: str 
     )
 
 
-def counts(session: Session) -> dict[str, int]:
+def counts(session: Session, *, trash_owner: str | None = None, trash_restricted: bool = False) -> dict[str, int]:
     """5 个 scope 的全库计数（**不含** `q` / `instrumentId`）。
 
     谁读它：库页 4 个 tab 的徽章（`latest` 不是 tab，但首页要用它）、首页「查看全部 N 份」
@@ -209,16 +240,31 @@ def counts(session: Session) -> dict[str, int]:
     result: dict[str, int] = {}
     for scope in LIBRARY_SCOPES:
         # 五个 scope 共用 `_scope_conditions()`（列表用的也是它）——这是"同源"的实现。
-        conditions = _scope_conditions(scope)
+        conditions = _scope_conditions(scope, trash_owner=trash_owner, trash_restricted=trash_restricted)
         result[scope] = int(
             session.execute(select(func.count()).select_from(Report).where(*conditions)).scalar_one()
         )
     return result
 
 
-def total_for(session: Session, *, scope: str, q: str = "", instrument_id: str | None = None) -> int:
+def total_for(
+    session: Session,
+    *,
+    scope: str,
+    q: str = "",
+    instrument_id: str | None = None,
+    trash_owner: str | None = None,
+    trash_restricted: bool = False,
+) -> int:
     """当前过滤条件命中的总行数（"共 N 份" / 空态判断用；**不参与分页**）。"""
-    conditions = _query_conditions(session, scope=scope, q=q, instrument_id=instrument_id)
+    conditions = _query_conditions(
+        session,
+        scope=scope,
+        q=q,
+        instrument_id=instrument_id,
+        trash_owner=trash_owner,
+        trash_restricted=trash_restricted,
+    )
     return int(
         session.execute(
             select(func.count())
@@ -239,6 +285,7 @@ def list_page(
     before: str | None = None,
     with_counts: bool = True,
     include_active: bool = False,
+    principal: Principal | None = None,
 ) -> LibraryResponse:
     """一页列表 + 计数 + （可选）进行中的 run。
 
@@ -248,7 +295,17 @@ def list_page(
     """
     cursor = decode_cursor(before)
     capped = max(1, min(int(limit), 50))
-    stmt = _base_statement(session, scope=scope, q=q, instrument_id=instrument_id)
+    # ★v15：回收站按拥有者过滤（`principal=None` = 受信内部调用，不过滤）。
+    trash_restricted = principal is not None and not principal.can("report.manage_any")
+    trash_owner = principal.user_id if principal is not None else None
+    stmt = _base_statement(
+        session,
+        scope=scope,
+        q=q,
+        instrument_id=instrument_id,
+        trash_owner=trash_owner,
+        trash_restricted=trash_restricted,
+    )
     if cursor is not None:
         stmt = stmt.where(
             or_(
@@ -261,9 +318,10 @@ def list_page(
 
     has_more = len(rows) > capped
     visible = rows[:capped]
+    authors = report_service.author_names(session, [row[0] for row in visible])
     items = [
         ReportLibraryItem(
-            report=report_service.summarize(report),
+            report=report_service.summarize(report, principal, authors),
             instrument=LibraryInstrument(
                 id=instrument.id,
                 symbol=instrument.symbol,
@@ -285,8 +343,15 @@ def list_page(
     return LibraryResponse(
         items=items,
         nextCursor=next_cursor,
-        total=total_for(session, scope=scope, q=q, instrument_id=instrument_id),
-        counts=counts(session) if with_counts else {},
+        total=total_for(
+            session,
+            scope=scope,
+            q=q,
+            instrument_id=instrument_id,
+            trash_owner=trash_owner,
+            trash_restricted=trash_restricted,
+        ),
+        counts=counts(session, trash_owner=trash_owner, trash_restricted=trash_restricted) if with_counts else {},
         active=active_runs(session) if include_active else [],
     )
 

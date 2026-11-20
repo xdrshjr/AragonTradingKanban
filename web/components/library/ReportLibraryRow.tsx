@@ -44,6 +44,10 @@ export interface ReportLibraryRowProps {
   onOpen?: (item: ReportLibraryItem) => void;
   onToggleStar?: (item: ReportLibraryItem) => void;
   onRestore?: (item: ReportLibraryItem) => void;
+  /** ★X6（RV-10）：置顶是全站可见旗标，只有 `canCurate` 才给按钮；否则只读展示已置顶。缺省 `true`。 */
+  canCurate?: boolean;
+  /** ★X6：恢复 / 归档属于“管理”，只有 `canManage` 才给按钮。缺省 `true`。 */
+  canManage?: boolean;
 }
 
 function trustLabel(item: ReportLibraryItem): string {
@@ -60,6 +64,8 @@ export function ReportLibraryRow({
   onOpen,
   onToggleStar,
   onRestore,
+  canCurate = true,
+  canManage = true,
 }: ReportLibraryRowProps) {
   const report = item.report;
   const stance = report.stance ?? 'watch';
@@ -120,7 +126,7 @@ export function ReportLibraryRow({
 
         <span className="flex shrink-0 items-center gap-2 text-[10.5px] text-[var(--text-tertiary)]">
           <span className="mono">v{report.version}</span>
-          <span>{when}</span>
+          <span suppressHydrationWarning>{when}</span>
           <span className={cn('mono', report.groundedRatio && report.groundedRatio < 0.9 && 'text-[var(--warn)]')}>
             {trust}
           </span>
@@ -145,6 +151,7 @@ export function ReportLibraryRow({
                 String(daysLeftInTrash(item.deletedAt, trashRetentionDays)),
               )}
             </span>
+            {canManage ? (
             <button
               type="button"
               onClick={() => onRestore?.(item)}
@@ -153,8 +160,9 @@ export function ReportLibraryRow({
               <RotateCcw className="size-3" aria-hidden="true" />
               {copy.library.actions.restore}
             </button>
+            ) : null}
           </>
-        ) : (
+        ) : canCurate ? (
           <button
             type="button"
             aria-pressed={report.pinned}
@@ -168,7 +176,15 @@ export function ReportLibraryRow({
           >
             <Star className={cn('size-3.5', report.pinned && 'fill-current')} aria-hidden="true" />
           </button>
-        )}
+        ) : report.pinned ? (
+          <span
+            role="img"
+            aria-label={copy.auth.library.pinnedReadonly}
+            className="inline-flex size-6 items-center justify-center text-[var(--accent)]"
+          >
+            <Star className="size-3.5 fill-current" aria-hidden="true" />
+          </span>
+        ) : null}
         <ArrowRight
           aria-hidden="true"
           className="size-3 text-[var(--text-tertiary)] transition-transform group-hover:translate-x-0.5"

@@ -215,6 +215,10 @@ class CapabilitiesResponse(BaseModel):
     dataProviders: list[DataProviderCapability] = Field(default_factory=list)
     features: FeaturesOut = Field(default_factory=FeaturesOut)
     limits: dict[str, object] = Field(default_factory=dict)
-    engine: EngineCapabilityOut = Field(default_factory=EngineCapabilityOut)
+    #: ★v15（§24.3.9(g)）：对没有 `engine.probe` 的主体整体置 `null`（`redacted=true`）。
+    engine: EngineCapabilityOut | None = Field(default_factory=EngineCapabilityOut)
     #: ★v12（§22.5.1）：只加字段，不改既有键（AC-104 的顶层形状断言同步更新）。
-    runtime: RuntimeCapabilityOut = Field(default_factory=RuntimeCapabilityOut)
+    runtime: RuntimeCapabilityOut | None = Field(default_factory=RuntimeCapabilityOut)
+    #: ★v15（§24.3.9(g)）：`true` = 这份响应对当前主体做过**脱敏**（同形状，敏感值为 null/false/[]）。
+    #: 前端据此显示"引擎已就绪 / 示例模式"一个状态点，而不是一堆它读不到的细节。
+    redacted: bool = False

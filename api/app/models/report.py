@@ -51,6 +51,9 @@ class Report(Base):
     pinned: Mapped[bool] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     archived: Mapped[bool] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     deleted_at: Mapped[str | None] = mapped_column(Text)
+    #: ★v15（0007_users_auth / §24.6.2）：生成者。`NULL` = 历史/系统数据，**仅管理员可管**。
+    #: 派生自 `run.created_by`（`create_version()` 沿用 `run_id` 链路写入）。
+    created_by: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         UniqueConstraint("instrument_id", "version", name="uq_reports_instrument_id_version"),
@@ -64,6 +67,17 @@ class Report(Base):
             postgresql_where=text("is_latest = 1"),
         ),
         Index("ix_reports_inst_ver", "instrument_id", "version"),
+        # 部分索引，与 0006 同纪律。★实施发现（见 spec「实施过程发现的方案缺陷」）：设计稿写的
+        # 谓词是 `deleted_at IS NULL`，它与 `ix_reports_feed` **谓词相同**，SQLite 对"无 ORDER BY
+        # 的 all/starred 扫描"会改选这个更窄的索引，`test_each_scope_uses_its_partial_index`
+        # （O-44）随即变红。加上 `created_by IS NOT NULL`：`created_by = ?` 的查询照样蕴含它，
+        # 而 feed/starred 的扫描不再蕴含（NULL 的历史行也不需要这个索引）。
+        Index(
+            "ix_reports_created_by",
+            "created_by",
+            sqlite_where=text("created_by IS NOT NULL AND deleted_at IS NULL"),
+            postgresql_where=text("created_by IS NOT NULL AND deleted_at IS NULL"),
+        ),
     )
 
     @property

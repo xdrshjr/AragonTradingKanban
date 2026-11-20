@@ -662,6 +662,14 @@ if ($webReady -and -not $NoBrowser) {
     NoteLine "浏览器入口：http://localhost:$WebPort"
 }
 NoteLine '首屏 / 首次生成报告时 Next 会按需编译，浏览器要等几秒才出画面，属正常。'
+# ★v15 用户与权限：只提示去哪里找，**从不**把密码打印到屏幕或日志。
+if ($env:AUTH_MODE -eq 'open') {
+    WarnLine 'AUTH_MODE=open：所有请求都被当作全权限的服务主体（无登录）。仅限本地演示，切勿让他人访问。'
+} else {
+    NoteLine '根管理员 jdqqjr；初始密码见 .env.example（ROOT_ADMIN_PASSWORD）/ 需求说明，首次登录将要求修改。'
+    NoteLine '忘记 root 密码：在 api 目录执行  python -m app.cli reset-root-password（见 README「忘记 root 密码」）。'
+}
+NoteLine '本机访问请始终用同一个主机名（localhost 或 127.0.0.1，别混用）：登录 Cookie 不跨主机名。'
 
 $bad = @($results | Where-Object { $_.State -eq 'failed' -or $_.State -eq 'conflict' })
 if ($bad.Count -gt 0) {

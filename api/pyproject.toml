@@ -22,6 +22,9 @@ dependencies = [
   # dimension that makes a large instrument list navigable. ~1MB, pure Python, and
   # `search_index.pinyin_available()` still degrades softly if it is missing.
   "pypinyin>=0.51",
+  # ★v15（§24.3.6 / E-14）：图形验证码。需要 Pillow >= 10.1 的内置可缩放字体（`ImageFont.load_default(size=…)`）,
+  # 不依赖系统字体，Windows 开发机与 Ubuntu 部署机渲染一致。缺失时注册入口关闭（`captcha_unavailable`），登录不受影响。
+  "Pillow>=10.1",
 ]
 
 [project.optional-dependencies]

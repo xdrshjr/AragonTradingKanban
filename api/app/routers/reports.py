@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db.session import get_db
-from ..errors import InstrumentNotFound, ReportNotDeleted, ReportNotFound
+from ..errors import Forbidden, InstrumentNotFound, ReportNotDeleted, ReportNotFound, Unauthorized
 from ..models import Instrument
 from ..schemas.blocks import BlockRangeResponse
 from ..schemas.library import LibraryResponse, LibraryScope
@@ -25,7 +25,10 @@ from ..schemas.report import (
     ReportSummary,
 )
 from ..schemas.run import RunOut
-from ..services import cost_service, report_library, report_service
+from ..security import deps, objects
+from ..security.principal import Principal
+from ..services import audit_service, cost_service, quota_service, report_library, report_service
+from ..services.audit_service import AuditTarget
 from ..services.exporter import export_filename, render_html, render_markdown
 from ..services.run_manager import RunManager, get_manager
 from .runs import to_run_out
@@ -67,6 +70,7 @@ def list_library(
     withCounts: int = Query(default=1, ge=0, le=1),
     includeActive: int = Query(default=0, ge=0, le=1),
     db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
 ) -> LibraryResponse:
     """★v14（U1 / §23.5.1）：报告库列表 —— 首页、库页、命令面板的**唯一**读路径。
 
@@ -77,8 +81,12 @@ def list_library(
     `withCounts=0` 省掉 4 次 COUNT，但 `total` **仍给且仍准确**（它是另一件事）。
     ★评审 P1-5：**首页不要关掉它**——「查看全部 N 份」用的是 `counts.all`。
     """
+    if scope == "trash" and principal.kind == "guest":
+        # ★v15：回收站是"我的"（管理员全部），游客没有"我的"。
+        raise Unauthorized(reason="no_session")
     return report_library.list_page(
         db,
+        principal=principal,
         scope=scope,
         q=q,
         instrument_id=instrumentId,
@@ -95,35 +103,41 @@ def list_reports(
     limit: int = Query(default=20, ge=1, le=100),
     includeArchived: bool = Query(default=False),
     db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
 ) -> ReportListResponse:
     instrument = _instrument(db, instrument_id)
     rows, total = report_service.list_versions(db, instrument.id, limit=limit, include_archived=includeArchived)
-    return ReportListResponse(items=[report_service.summarize(row) for row in rows], total=total)
+    authors = report_service.author_names(db, rows)
+    return ReportListResponse(items=[report_service.summarize(row, principal, authors) for row in rows], total=total)
 
 
 @router.get("/reports/{report_id}", response_model=ReportDetail)
-def get_report(report_id: str, db: Session = Depends(get_db)) -> ReportDetail:
+def get_report(
+    report_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> ReportDetail:
     report = report_service.get(db, report_id)
     if report is None:
         raise ReportNotFound()
     # 行存在就**永远 200**：损坏的 doc 走最小可渲染壳 + `integrity="corrupt"`（AC-147）。
     doc, integrity = _load_doc(db, report)
     return ReportDetail(
-        report=report_service.summarize(report),
+        report=report_service.summarize(report, principal, report_service.author_names(db, [report])),
         doc=doc,  # type: ignore[arg-type]
         integrity=integrity,  # type: ignore[arg-type]
     )
 
 
 @router.get("/instruments/{instrument_id}/reports/latest", response_model=ReportDetail | None)
-def get_latest(instrument_id: str, db: Session = Depends(get_db)) -> ReportDetail | None:
+def get_latest(
+    instrument_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> ReportDetail | None:
     instrument = _instrument(db, instrument_id)
     report = report_service.latest_of(db, instrument.id)
     if report is None:
         return None
     doc, integrity = _load_doc(db, report)
     return ReportDetail(
-        report=report_service.summarize(report),
+        report=report_service.summarize(report, principal, report_service.author_names(db, [report])),
         doc=doc,  # type: ignore[arg-type]
         integrity=integrity,  # type: ignore[arg-type]
     )
@@ -142,6 +156,7 @@ async def create_report(
     ),
     db: Session = Depends(get_db),
     manager: RunManager = Depends(get_manager),
+    principal: Principal = Depends(deps.get_principal),
 ) -> dict[str, object]:
     """Queue a generation and return immediately with the run id (§3.2 step 3).
 
@@ -156,6 +171,9 @@ async def create_report(
     """
     instrument = _instrument(db, instrument_id)
     body = payload or CreateReportRequest()
+    # ★v15（§24.3.8(c)）：额度**预检**排在 409/429/402 之前——额度是用户级、确定的；其余是系统级、
+    # 瞬时的。额度已为 0 的用户不该先被告知"该标的正在生成中"。预检只读；原子预留在 `start()` 内。
+    quota_service.precheck(db, principal, "report")
     # ★v14（§23.5.3）：`baseReportId` 的校验在**三个既有闸门之后**（409 run_conflict →
     # 429 too_many_runs → 402 monthly_budget_exceeded），因为"一个开不了的请求不该先报 422"。
     # 顺序不是在这里排的：`manager.start()` 先过三道闸门、再校验 base（见它的第 0.5 步）。
@@ -166,8 +184,10 @@ async def create_report(
         force=body.force,
         override_budget=bool(override),
         base_report_id=body.baseReportId,
+        actor=principal,
     )
     manager.schedule(run.id, force=body.force, base_report_id=body.baseReportId)
+    snapshot = quota_service.snapshot(db, principal)
     estimate_usd = cost_service.estimate(db, instrument.symbol, "run").get("estimatedUsd")
     if run.reason == "budget_override":
         # 响应的 202 体**不改名**，只追加 `estimateUsd`（★V6-P1-8：没有 streamUrl）。
@@ -180,14 +200,50 @@ async def create_report(
         # ★v14（§23.5.3）：只说"这次请求**请求了**去重"，不是结论。最终结论只有一个来源：
         # `run.done.deduped`（前端在收到那帧之前不该提示"未新增版本"）。
         "dedupe": bool(body.dedupe),
+        # ★v15（§24.5.5）：追加，让前端不必再请求一次 `/me` 就能更新额度芯片。service/system 为 `null`。
+        "quota": snapshot["report"] if snapshot else None,
     }
 
 
+def _audit_manage_other(db: Session, principal: Principal, report: Any, action: str) -> None:
+    """★v15：管理员改/删/恢复了**别人的**（含历史/系统的）报告 → 审计 `report.manage_other`。"""
+    if principal.kind == "user" and report.created_by == principal.user_id:
+        return
+    audit_service.record(
+        db,
+        principal,
+        "report.manage_other",
+        AuditTarget("report", report.id, None),
+        {
+            "action": action,
+            "instrumentId": report.instrument_id,
+            "version": report.version,
+            "ownerId": report.created_by,
+        },
+    )
+    db.commit()
+
+
+def _summary(db: Session, report: Any, principal: Principal) -> ReportSummary:
+    return report_service.summarize(report, principal, report_service.author_names(db, [report]))
+
+
 @router.patch("/reports/{report_id}", response_model=ReportSummary)
-def patch_report(report_id: str, payload: ReportPatch, db: Session = Depends(get_db)) -> ReportSummary:
+def patch_report(
+    report_id: str,
+    payload: ReportPatch,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
+) -> ReportSummary:
     report = report_service.get(db, report_id)
     if report is None:
         raise ReportNotFound()
+    # ★v15（RV-10）：全站可见旗标先判（整个请求原子失败，不做"部分生效"），再判对象级。
+    if payload.pinned is not None or payload.setLatest is not None:
+        objects.assert_can_set_curation_flags(principal)
+    # ★v16（Q-9 / D-11）：归档**最新版**不再要求 manage_any——`set_flags` 会把"最新"指针交给上一个可用
+    # 版本；是唯一版本才 403 `only_version`。判定在任何字段被改之前，整个 PATCH 原子失败。
+    objects.assert_can_manage_report(principal, report)
     try:
         updated = report_service.set_flags(
             db,
@@ -195,24 +251,32 @@ def patch_report(report_id: str, payload: ReportPatch, db: Session = Depends(get
             pinned=payload.pinned,
             archived=payload.archived,
             set_latest=payload.setLatest,
+            principal=principal,
         )
     except ValueError as exc:
         raise ReportNotFound(str(exc)) from exc
-    return report_service.summarize(updated)
+    _audit_manage_other(db, principal, updated, "patch")
+    return _summary(db, updated, principal)
 
 
 @router.delete("/reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_report(report_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_report(
+    report_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> Response:
     """★P1-1: soft delete. The row survives, so the run audit trail stays intact."""
     report = report_service.get(db, report_id)
     if report is None:
         raise ReportNotFound()
+    objects.assert_can_manage_report(principal, report)
     report_service.soft_delete(db, report)
+    _audit_manage_other(db, principal, report, "delete")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/reports/{report_id}/restore", response_model=ReportSummary)
-def restore_report(report_id: str, db: Session = Depends(get_db)) -> ReportSummary:
+def restore_report(
+    report_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> ReportSummary:
     """★v14（U5 / §23.5.2）：把一份软删的版本救回来。
 
     三种情况写死：已软删 ⇒ **200** + `ReportSummary`；不存在（含从未存在）⇒ **404**
@@ -226,10 +290,16 @@ def restore_report(report_id: str, db: Session = Depends(get_db)) -> ReportSumma
     report = report_service.get(db, report_id, include_deleted=True)
     if report is None:
         raise ReportNotFound()
+    if not objects.can_manage_report(principal, report):
+        # 回收站内容不外泄：别人的软删报告对非拥有者就是"不存在"；没删的则是明确的 403。
+        if report.deleted_at is not None:
+            raise ReportNotFound()
+        raise Forbidden(permission="report.manage_any")
     if report.deleted_at is None:
         raise ReportNotDeleted(detail={"reportId": report_id})
     restored = report_service.restore(db, report)
-    return report_service.summarize(restored)
+    _audit_manage_other(db, principal, restored, "restore")
+    return _summary(db, restored, principal)
 
 
 @router.get("/reports/{report_id}/export")
@@ -410,6 +480,7 @@ def list_instrument_runs(
     instrument_id: str,
     limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
 ) -> list[RunOut]:
     from sqlalchemy import select
 
@@ -419,4 +490,4 @@ def list_instrument_runs(
     rows = db.execute(
         select(Run).where(Run.instrument_id == instrument.id).order_by(Run.started_at.desc()).limit(limit)
     ).scalars()
-    return [to_run_out(row) for row in rows]
+    return [to_run_out(row, principal) for row in rows]

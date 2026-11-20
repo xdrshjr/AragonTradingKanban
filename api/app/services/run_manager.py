@@ -37,7 +37,8 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models import Instrument, Run, RunEvent
 from ..schemas.run import ACTIVE, STAGE_BOUNDS, STAGE_ORDER, STAGE_START, stage_end_pct, stage_label
-from . import cost_service, report_service, report_validator, run_diagnostics
+from ..security.principal import SYSTEM, Principal
+from . import cost_service, quota_service, report_service, report_validator, run_diagnostics
 from . import snapshot as snapshot_service
 
 logger = get_logger("run_manager")
@@ -275,8 +276,17 @@ class RunManager:
         force: bool = False,
         override_budget: bool = False,
         base_report_id: str | None = None,
+        actor: Principal | None = None,
+        created_by: str | None = None,
     ) -> Run:
         """Create the run row and schedule the orchestration task.
+
+        ★v15（§24.3.9(a) / M48）：`actor` 缺省 = `system`（不扣额度），所以 `scheduler_ticker`
+        不传它仍然通。`user` 主体在**第 0 步之后、422 之后、`mkdir` 之前**进入
+        `quota_service.reservation()`：取该用户的锁 → 复核 → `flush` 扣减行 → `mkdir` →
+        写 `Run` → `commit()`，**锁一直持有到提交（或回滚）之后才释放**（RV-9）。被 409/429/
+        402/422 拒绝的请求因此既不扣额度、也不建 run、也不建工作区。`created_by` 仅在
+        `actor` 不是 `user` 时才生效（定时任务传创建者）；`user` 主体恒用自己的 id。
 
         Raises `RunConflict`/`TooManyRuns`/`MonthlyBudgetExceeded` before any row
         is written.
@@ -354,31 +364,38 @@ class RunManager:
         settings = get_settings()
         run_id = uuid.uuid4().hex
         workspace = settings.runs_dir / run_id
-        workspace.mkdir(parents=True, exist_ok=True)
+        owner_id = actor.user_id if actor is not None and actor.kind == "user" else created_by
 
-        run = Run(
-            id=run_id,
-            instrument_id=instrument.id,
-            report_id=None,  # ★P1-1: written after the report exists
-            status="queued",
-            stage=None,
-            pct=0,
-            started_at=_iso(),
-            workspace_path=str(workspace),
-            log_path=str(workspace / "aragon.ndjson"),
-            reason=reason,
-            cancel_requested=0,
-            cost_known=0,
-        )
-        session.add(run)
-        try:
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            from ..errors import RunConflict
+        # ★v15（RV-9）：`with` 覆盖到 commit/rollback。锁内只允许：同一事务的 SQL + 这一次本地 mkdir。
+        with quota_service.reservation(session, actor or SYSTEM, "report", run_id):
+            workspace.mkdir(parents=True, exist_ok=True)
 
-            active = report_service.active_run_for(session, instrument.id)
-            raise RunConflict(detail={"activeRunId": active.id if active else None}) from exc
+            run = Run(
+                id=run_id,
+                instrument_id=instrument.id,
+                report_id=None,  # ★P1-1: written after the report exists
+                status="queued",
+                stage=None,
+                pct=0,
+                started_at=_iso(),
+                workspace_path=str(workspace),
+                log_path=str(workspace / "aragon.ndjson"),
+                reason=reason,
+                cancel_requested=0,
+                cost_known=0,
+                created_by=owner_id,
+            )
+            session.add(run)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                # 账本行与 run 同事务：回滚一并带走，不会"扣了额度没开成 run"。
+                session.rollback()
+                shutil.rmtree(workspace, ignore_errors=True)
+                from ..errors import RunConflict
+
+                active = report_service.active_run_for(session, instrument.id)
+                raise RunConflict(detail={"activeRunId": active.id if active else None}) from exc
 
         self._record(session, run, "run.stage", {"stage": "resolve", "pct": 0, "label": stage_label("resolve")})
         logger.info("run queued id=%s instrument=%s reason=%s", run.id, instrument.id, reason)
@@ -1088,6 +1105,14 @@ class RunManager:
             },
         )
         logger.warning("run finished status=%s code=%s run=%s", status, code, run.id)
+        # ★v15（§24.3.8(d)）：尽快退款。纯加速——对账是幂等的，sweep / 启动 / 读额度前仍会兜底，
+        # 所以这里失败只记日志；**不**在另外两个终态写入点插调用（E-5：会漏会重）。
+        if run.created_by:
+            try:
+                quota_service.reconcile_refunds(session, user_id=run.created_by)
+            except Exception:  # pragma: no cover - 退款失败绝不改变这次 run 的结论
+                logger.exception("额度退款对账失败 run=%s（稍后由清扫重试）", run.id)
+                session.rollback()
 
     def _check_cost(
         self,

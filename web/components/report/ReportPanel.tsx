@@ -426,7 +426,7 @@ export function ReportPanel({
               disabled={generating}
               buttonRef={modeButtonRef}
             />
-            <span className="hidden text-[10.5px] text-[var(--text-tertiary)] sm:inline">
+            <span className="hidden text-[10.5px] text-[var(--text-tertiary)] sm:inline" suppressHydrationWarning>
               {copy.report.generatedAt} {relativeTime(summary?.generatedAt)}
               {summary ? ` · ${costLabel(summary.costUsd, summary.costKnown, summary.quality.cost)}` : ''}
             </span>

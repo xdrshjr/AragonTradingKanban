@@ -26,6 +26,11 @@ export interface RunStatusBadgeProps {
   aragon?: AragonCapability | null;
   /** ★v9（K6）：点徽标 = 打开密钥抽屉（自检的唯一入口在那里）。 */
   onOpenKeyDrawer?: () => void;
+  /**
+   * ★X6（§24.3.9(g)）：只有 `engine.probe`（管理员）才看得到端点徽标与密钥抽屉；
+   * 其他人只看到“引擎已就绪 / 示例模式”一个状态点（`Capabilities` 对他们本就是脱敏的）。缺省 `true`。
+   */
+  canProbe?: boolean;
 }
 
 /** 静态那一帧：同一份信息、同样的高度，只是不带图标与状态机。 */
@@ -60,6 +65,7 @@ export function RunStatusBadge({
   degradedReason,
   aragon,
   onOpenKeyDrawer,
+  canProbe = true,
 }: RunStatusBadgeProps) {
   const { state, isActive } = generation;
   const setOverlayCollapsed = useUiStore((store) => store.setOverlayCollapsed);
@@ -88,6 +94,14 @@ export function RunStatusBadge({
       <Badge tone="warn" icon={<CircleAlert className="size-3" />} title={reason ?? copy.capabilities.mockBody}>
         {copy.capabilities.degraded}
         {reason ? ` · ${reason}` : ''}
+      </Badge>
+    );
+  }
+
+  if (!canProbe) {
+    return (
+      <Badge tone="accent" icon={<span aria-hidden="true" className="size-1.5 rounded-full bg-[var(--accent)]" />}>
+        {copy.auth.engineReady}
       </Badge>
     );
   }

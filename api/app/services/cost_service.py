@@ -84,6 +84,7 @@ def record(
     symbol: str | None = None,
     report_id: str | None = None,
     model: str | None = None,
+    user_id: str | None = None,
 ) -> bool:
     """只追加一行账本。**失败绝不抛给调用方**（报告比账本重要，AC-57）。
 
@@ -133,6 +134,8 @@ def record(
         usd_est=usd_est if source == "estimated" else None,
         source=source,
         created_at=_iso(),
+        # ★v15（§24.3.9）：谁花的钱。`NULL` = 系统 / 历史；定时任务记创建者。
+        user_id=user_id,
     )
     try:
         with session.begin_nested():

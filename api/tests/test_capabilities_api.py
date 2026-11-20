@@ -102,6 +102,8 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
         "limits",
         "engine",
         "runtime",
+        # ★v15（§24.3.9(g)）：顶层追加 `redacted`——只加不改，其余七个键一个字没动。
+        "redacted",
     }
     # ★v12（AC-112）：`loopOk` 必须真的在 wire 上——pydantic 会静默丢弃没声明的键，
     # 这是同一个坑的第四次（v6 engine、v7 quality.cost、v9 aragon.verified）。

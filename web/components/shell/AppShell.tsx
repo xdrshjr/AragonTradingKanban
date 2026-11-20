@@ -7,6 +7,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
+import { useCan, useGenerationGate, useMe } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import { copy } from '@/lib/copy';
 import {
@@ -25,6 +26,8 @@ import type {
   WatchlistEntry,
 } from '@/lib/types';
 
+import { QuotaChip } from '../auth/QuotaChip';
+import { UserMenu } from '../auth/UserMenu';
 import { PricePanel } from '../chart/PricePanel';
 import type { UseGenerationStreamResult } from '../generation/useGenerationStream';
 import { ReportPanel } from '../report/ReportPanel';
@@ -174,6 +177,16 @@ export interface AppShellProps {
   /** ★v6 G3：成本面板入口（命令面板的「成本…」）。 */
   onOpenCost?: () => void;
   costEnabled?: boolean;
+  /**
+   * ★X6（§24.3.15e）：命令面板里的「账号 / 管理后台 / 退出登录 / 登录」。
+   * 与 `onOpenLibrary` 同一个“不传即不出现”的模式：由 `WorkspaceClient` 按权限决定传哪几个。
+   */
+  account?: {
+    onSignIn?: () => void;
+    onOpenAccount?: () => void;
+    onOpenAdmin?: () => void;
+    onSignOut?: () => void;
+  };
   onOpenSearchResult?: (target: { symbol: string; reportId: string; sectionId: string; blockId: string }) => void;
   children?: React.ReactNode;
 }
@@ -219,6 +232,7 @@ export function AppShell({
   onChartViewChange,
   onOpenCost,
   costEnabled = false,
+  account,
 }: AppShellProps) {
   const layout = useUiStore((state) => state.layout);
   const hydrateLayout = useUiStore((state) => state.hydrateLayout);
@@ -291,13 +305,20 @@ export function AppShell({
   const collapsedByUser = useUiStore((state) => state.railCollapsedByUser);
   const toggleRailCollapsed = useUiStore((state) => state.toggleRailCollapsed);
 
+  // ★X6：游客 / 额度为 0 时，所有生成入口（左栏 ✨、命令面板、覆盖层重试）先过同一道前置闸。
+  const gate = useGenerationGate();
   const startGeneration = useCallback(
     (instrumentId: string) => {
       if (generation.isActive) return;
-      void generation.start(instrumentId);
+      gate(() => void generation.start(instrumentId), activeInstrument?.symbol);
     },
-    [generation],
+    [activeInstrument?.symbol, gate, generation],
   );
+
+  // ★X6（§24.3.9）：引擎端点徽标 / 密钥抽屉只给 `engine.probe`；左栏自选的写操作只给 `watchlist.own`。
+  const me = useMe();
+  const canProbe = useCan('engine.probe');
+  const canEditWatchlist = useCan('watchlist.own');
 
   const quoteQuery = useQuery({
     queryKey: ['quote', selectedId],
@@ -316,6 +337,15 @@ export function AppShell({
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
+      {me.authMode === 'open' ? (
+        <div
+          role="status"
+          data-print="hide"
+          className="shrink-0 border-b border-[var(--warn)]/30 bg-[var(--warn-weak)] px-3 py-1 text-center text-[11px] text-[var(--warn)]"
+        >
+          {copy.auth.openModeBanner}
+        </div>
+      ) : null}
       <header
         className="flex h-[var(--header-h)] shrink-0 items-center gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-1)] px-3"
         data-print="hide"
@@ -348,8 +378,11 @@ export function AppShell({
             agentMode={agentMode}
             degradedReason={degradedReason}
             aragon={aragon}
-            onOpenKeyDrawer={() => setKeyDrawerOpen(true)}
+            onOpenKeyDrawer={canProbe ? () => setKeyDrawerOpen(true) : undefined}
+            canProbe={canProbe}
           />
+          <QuotaChip />
+          <UserMenu />
           {klineCollapsed ? (
             <IconButton
               label={klineDrawerOpen ? copy.chart.closeDrawer : copy.chart.openDrawer}
@@ -373,6 +406,7 @@ export function AppShell({
             onToggleWatchlist={onToggleWatchlist}
             onGenerate={startGeneration}
             onToggleCollapsed={() => toggleRailCollapsed()}
+            readOnlyWatchlist={!canEditWatchlist}
           />
         </div>
 
@@ -478,11 +512,11 @@ export function AppShell({
           if (activeInstrument) startGeneration(activeInstrument.id);
         }}
         onOpenReport={(reportId) => onSelectVersion(reportId)}
-        onOpenKeyDrawer={() => setKeyDrawerOpen(true)}
+        onOpenKeyDrawer={canProbe ? () => setKeyDrawerOpen(true) : undefined}
         onOpenLog={() => setOverlayCollapsed(false)}
       />
 
-      <KeyDrawer open={keyDrawerOpen} onClose={() => setKeyDrawerOpen(false)} aragon={aragon} />
+      {canProbe ? <KeyDrawer open={keyDrawerOpen} onClose={() => setKeyDrawerOpen(false)} aragon={aragon} /> : null}
 
       <CommandPalette
         instruments={instruments}
@@ -496,6 +530,10 @@ export function AppShell({
         onToggleChart={() => setKlineDrawer(!klineDrawerOpen)}
         onOpenSearch={features?.search === false ? undefined : () => setSearchOpen(true)}
         onOpenCost={costEnabled ? onOpenCost : undefined}
+        onSignIn={account?.onSignIn}
+        onOpenAccount={account?.onOpenAccount}
+        onOpenAdmin={account?.onOpenAdmin}
+        onSignOut={account?.onSignOut}
         // ★v14（U1 / 评审 R-2）：`features.reportLibrary === false` 时两个都**不传** ⇒
         // 「打开报告库」与「最近 5 份报告」都不出现（不留死链，也无悬挂分支）。
         onOpenLibrary={features?.reportLibrary === false ? undefined : onOpenLibrary}

@@ -2,8 +2,9 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { ReportLibraryClient } from '@/components/library/ReportLibraryClient';
-import { api } from '@/lib/api';
+import { UserMenu } from '@/components/auth/UserMenu';
 import { copy } from '@/lib/copy';
+import { serverApi } from '@/lib/serverApi';
 import { DEFAULT_LIBRARY_SCOPE, isScopeTab, type ScopeTab } from '@/lib/library';
 import type { Capabilities, LibraryResponse } from '@/lib/types';
 
@@ -31,6 +32,7 @@ interface PageProps {
 
 export default async function ReportsPage({ searchParams }: PageProps) {
   const params = await searchParams;
+  const api = await serverApi();
   const initialScope: ScopeTab = isScopeTab(params.scope) ? params.scope : DEFAULT_LIBRARY_SCOPE;
   const initialQuery = params.q ?? '';
 
@@ -54,12 +56,15 @@ export default async function ReportsPage({ searchParams }: PageProps) {
           </h1>
           <p className="mt-0.5 text-[11px] text-[var(--text-tertiary)]">{copy.library.subtitle}</p>
         </div>
-        <Link
-          href="/"
-          className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
-        >
-          {copy.library.backHome}
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
+          >
+            {copy.library.backHome}
+          </Link>
+          <UserMenu />
+        </div>
       </header>
 
       <ReportLibraryClient

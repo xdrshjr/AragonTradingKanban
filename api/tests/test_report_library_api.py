@@ -97,7 +97,7 @@ def test_list_reports_across_instruments(client, many_reports) -> None:
     assert row["integrity"] == "ok"
     assert row["deletedAt"] is None
     assert len(row["docSha1"]) == 40
-    # 嵌套的 `ReportSummary` 一列都不许少（23 个键，一个不落地发）。
+    # 嵌套的 `ReportSummary` 一列都不许少（★v15：23 → 26 个键；追加 `author/canManage/canCurate`，§24.3.9(c)）。
     summary_keys = {
         "id",
         "instrumentId",
@@ -122,8 +122,15 @@ def test_list_reports_across_instruments(client, many_reports) -> None:
         "tokensOut",
         "durationMs",
         "docBytes",
+        "author",
+        "canManage",
+        "canCurate",
     }
     assert set(row["report"]) == summary_keys
+    # 新增三键的类型（按请求者视角由服务端算好）：作者可空字符串，两个权限位是布尔。
+    assert row["report"]["author"] is None or isinstance(row["report"]["author"], str)
+    assert isinstance(row["report"]["canManage"], bool)
+    assert isinstance(row["report"]["canCurate"], bool)
     # 标的是一次 join 拿齐的，前端不再逐行查 `/instruments/{id}`。
     assert set(row["instrument"]) == {"id", "symbol", "name", "market", "currency"}
 

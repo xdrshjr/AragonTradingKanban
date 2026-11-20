@@ -49,7 +49,7 @@ export function EmptyReportState({
           ))}
         </ul>
         <div className="mt-4 flex flex-col items-center gap-2">
-          <GenerateButton onGenerate={onGenerate} generating={generating} disabled={disabled} size="lg">
+          <GenerateButton onGenerate={onGenerate} generating={generating} disabled={disabled} size="lg" showQuota>
             {copy.report.generate}
           </GenerateButton>
           <p className="flex items-center gap-1.5 text-[11px] text-[var(--text-tertiary)]">

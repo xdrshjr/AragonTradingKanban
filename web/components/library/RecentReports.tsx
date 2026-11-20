@@ -157,7 +157,7 @@ export function RecentReports({ initialData, initialDataUpdatedAt, enabled = tru
                   </span>
                   <span className="flex shrink-0 items-center gap-1.5 text-[10.5px] text-[var(--text-tertiary)]">
                     <span className="mono">v{item.report.version}</span>
-                    <span>{relativeTime(item.report.generatedAt)}</span>
+                    <span suppressHydrationWarning>{relativeTime(item.report.generatedAt)}</span>
                     {item.report.groundedRatio != null ? (
                       <span className="mono">{Math.round(item.report.groundedRatio * 100)}%</span>
                     ) : null}

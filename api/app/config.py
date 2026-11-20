@@ -186,6 +186,35 @@ class Settings(BaseSettings):
     #: silently shrinks on the 15th of every month (§19.3.5).
     cost_ledger_keep_days: int = 730
 
+    # ── ★v15（§24）：用户与权限系统 ───────────────────────────────────────
+    #: `open` = 旧"本地优先"行为：所有请求视为 `service` 主体（全权限集），启动打 ERROR 横幅。
+    #: **每次请求时读取**（`deps.get_principal`），不在导入期缓存——否则 monkeypatch 无效、
+    #: 守卫形同虚设（D-8）。
+    auth_mode: Literal["enforced", "open"] = "enforced"
+    #: root 引导**只在库里没有 root 时读取一次**（D-1）；之后改环境变量不会改密码。
+    root_admin_username: str = "jdqqjr"
+    root_admin_password: SecretStr = SecretStr("13519126390")
+    #: 默认口令首次登录强制改密（D-2）。
+    auth_force_root_password_change: bool = True
+    #: SSE 令牌签名密钥；空 = 首次启动生成并落 `settings["auth.session_secret"]`。
+    session_secret: str = ""
+    #: `auto | 1 | 0`；`auto` = 请求是 https，或 `TRUST_PROXY=1` 且 `X-Forwarded-Proto=https`。
+    cookie_secure: str = "auto"
+    #: 部署在 nginx 后必须设 1：才信任 `X-Forwarded-For`（取**最右**）/ `-Proto` / `-Host`。
+    trust_proxy: bool = False
+    quota_tz: str = "Asia/Shanghai"
+    auth_max_sessions_per_user: int = 10
+    auth_session_abs_days: int = 30
+    auth_session_idle_days: int = 7
+    #: 死会话（吊销/空闲过期）在库里保留多少天后被清扫（§25.3.1b）。
+    auth_session_retain_days: int = 30
+    #: 自助找回（恢复码）的初始开关；设置 KV `auth.recovery_enabled` 可覆盖（§25.3.3）。
+    auth_recovery_enabled: bool = True
+    rate_limit_enabled: bool = True
+    audit_retention_days: int = 365
+    #: 仅 e2e：挂载 `GET /auth/_test/captcha-answer`。**生产永远不要开**（它直接泄露验证码答案）。
+    auth_test_hooks: bool = False
+
     # ── Web (read-only mirror, handy for capability payloads) ────────────
     next_public_api_base: str = "http://127.0.0.1:8000"
     enable_py_rewrite: bool = False

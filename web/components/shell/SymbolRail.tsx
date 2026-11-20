@@ -43,6 +43,11 @@ export interface SymbolRailProps {
   onToggleWatchlist?: (instrumentId: string, inWatchlist: boolean) => void;
   onGenerate?: (instrumentId: string) => void;
   onToggleCollapsed?: () => void;
+  /**
+   * ★X6（§24.3.9(d)）：游客看到的是“平台精选”（只读）。为真时隐藏“加入/移出自选”，
+   * 分组名改为“平台精选”，并给一行细提示“登录后可自定义自选”。缺省 `false` = 既有行为。
+   */
+  readOnlyWatchlist?: boolean;
 }
 
 /**
@@ -61,6 +66,7 @@ export function SymbolRail({
   onToggleWatchlist,
   onGenerate,
   onToggleCollapsed,
+  readOnlyWatchlist = false,
 }: SymbolRailProps) {
   const [query, setQuery] = useState('');
   const watchlistIds = useMemo(() => new Set(watchlist.map((entry) => entry.instrument.id)), [watchlist]);
@@ -139,6 +145,9 @@ export function SymbolRail({
             setQuery('');
           }}
         />
+        {readOnlyWatchlist ? (
+          <p className="px-0.5 text-[10.5px] leading-snug text-[var(--text-tertiary)]">{copy.auth.watchlistGuest}</p>
+        ) : null}
         <div className="flex items-center justify-between px-0.5">
           <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]">
             {instruments.length} 个标的
@@ -168,7 +177,7 @@ export function SymbolRail({
         ) : (
           <>
             {pinned.length > 0 ? (
-              <RailGroup label={copy.rail.watchlist}>
+              <RailGroup label={readOnlyWatchlist ? copy.auth.watchlistFeatured : copy.rail.watchlist}>
                 {pinned.map((item) => (
                   <RailRow
                     key={item.instrument.id}
@@ -176,7 +185,7 @@ export function SymbolRail({
                     selected={item.instrument.id === selectedId}
                     inWatchlist
                     onSelect={onSelect}
-                    onToggleWatchlist={onToggleWatchlist}
+                    onToggleWatchlist={readOnlyWatchlist ? undefined : onToggleWatchlist}
                     onGenerate={onGenerate}
                   />
                 ))}
@@ -191,7 +200,7 @@ export function SymbolRail({
                     selected={item.instrument.id === selectedId}
                     inWatchlist={false}
                     onSelect={onSelect}
-                    onToggleWatchlist={onToggleWatchlist}
+                    onToggleWatchlist={readOnlyWatchlist ? undefined : onToggleWatchlist}
                     onGenerate={onGenerate}
                   />
                 ))}

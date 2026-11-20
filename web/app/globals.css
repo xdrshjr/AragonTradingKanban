@@ -139,6 +139,27 @@ body {
   border-radius: var(--radius-sm);
 }
 
+/* ★X6：带自己焦点环的输入框（`Input` 外壳的 `focus-within:ring`）不再叠一圈全局 outline。
+   必须写在这里（非 @layer）：上面的全局 `:focus-visible` 是非分层规则，Tailwind 的 `outline-none`
+   工具类在分层里，永远压不过它。 */
+[data-input-field]:focus-visible {
+  outline: none;
+}
+
+/* ★X6：Radix `Tabs` 的选中态。`ui/Tabs.tsx` 用 `data-[state=active]:` 工具类表达“选中 = 强调色下划线 + 主文字色”，
+   但全局 `* { border-color }` / `button { color: inherit }` 是非分层规则，工具类压不过——选中与未选中长得一样。
+   只在这里为带 `data-state` 的 tab（即 Radix 的）补非分层规则，不碰报告库自己用 `aria-selected` 的标签。 */
+[role='tab'][data-state] {
+  color: var(--text-tertiary);
+}
+[role='tab'][data-state]:hover {
+  color: var(--text-secondary);
+}
+[role='tab'][data-state='active'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
 button,
 input,
 select,
@@ -286,5 +307,19 @@ button {
 
   @page {
     margin: 18mm 16mm;
+  }
+}
+
+/* ★M52：后台导航的选中态。`ui/Tabs` 同理——全局 `* { border-color }` 是非分层规则，Tailwind 工具类压不过，
+   所以选中态（强调色下划线 / 侧栏强调条）在这里以非分层规则表达。 */
+[data-admin-nav='true'][aria-current='page'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+@media (min-width: 900px) {
+  [data-admin-nav='true'][aria-current='page'] {
+    background: var(--bg-active);
+    border-bottom-color: transparent;
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 }

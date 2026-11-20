@@ -1,0 +1,43 @@
+[Unit]
+Description=Aragon Trading Kanban — API (FastAPI, single worker, :8000)
+Documentation=file:///opt/aragon-trading/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aragon
+Group=aragon
+WorkingDirectory=/opt/aragon-trading/api
+# Next/aragon CLI live outside the default non-login PATH on this host.
+Environment=PATH=/opt/node22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/aragon
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Single worker is a hard requirement (in-process orchestration + SSE fan-out).
+# WEB_CONCURRENCY pins it so a stray uvicorn default cannot break the app.
+Environment=WEB_CONCURRENCY=1
+# ★v15 用户与权限：nginx 在前面时这两项必须设置（README「用户与权限」；status.sh 会核对）。
+#  - TRUST_PROXY=1  信任 nginx 写入的 X-Forwarded-For/Proto/Host。不设则所有访客都是 127.0.0.1，
+#                   共用一个登录/注册限速桶（第 11 个人在一分钟内就会被拦住）。
+#                   前提：8000 只监听 127.0.0.1（上面 --host 已保证），公网不可直达。
+#  - COOKIE_SECURE=1 会话 Cookie 带 Secure（站点只走 https）。
+#  - AUTH_MODE=enforced 显式写出，防止 .env 里残留的 open 把站点变成无鉴权。
+Environment=TRUST_PROXY=1
+Environment=COOKIE_SECURE=1
+Environment=AUTH_MODE=enforced
+ExecStart=/opt/aragon-trading/api/.venv/bin/python -m uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 \
+    --log-level info
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+# Run workspaces and the SQLite db are the only writable state.
+ReadWritePaths=/opt/aragon-trading/api/data /opt/aragon-trading/api/workspace /opt/aragon-trading/.aragon-home
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

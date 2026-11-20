@@ -4,6 +4,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import { ApiError, api } from '@/lib/api';
+import { ME_QUERY_KEY, useAuthUi } from '@/lib/auth';
+import { isQuotaExceeded, isUnauthorized, readQuotaDetail } from '@/lib/authErrors';
 import { copy, fill } from '@/lib/copy';
 import { subscribeToRun, type RunStreamEvent } from '@/lib/sse';
 import type { CostSource, RunStageId } from '@/lib/types';
@@ -358,6 +360,10 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
             }
           }
         }
+        // 终态：失败 / 取消 / 超时会退还额度（§24.3.8(d)），成功则余额不变——两种都重取一次。
+        if (event.type === 'run.done' || event.type === 'run.error') {
+          void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+        }
         if (event.type === 'run.error') {
           onError?.(String(event.payload.code ?? 'internal'), String(event.payload.message ?? '生成失败'));
         }
@@ -405,6 +411,8 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
           { override: startOptions.override },
         );
         dispatch({ type: 'queued', runId: created.runId });
+        // ★X6：预留已经在服务端扣下，芯片上的余额要跟着变（`['me']` 是额度的唯一真源）。
+        void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
 
         unsubscribeRef.current = subscribeToRun(created.runId, streamOptions(instrumentId, created.runId));
       } catch (error) {
@@ -420,6 +428,21 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
             // 自己点的那次没有生效（虽然接管了进度）；现在两句一起说：接管了 + 这是
             // 别人的那一次。文案用 `copy.errors.runConflict`（它写了两年从没被用过）。
             onTakeover?.(activeRunId);
+            return;
+          }
+          // ★X6（§24.3.15c）：**准入级**拒绝（额度用完 / 需要登录）不是 run 级失败——
+          // 它们发生在 run 存在之前，所以不进"生成失败"卡片（那是 run 的状态机），而是打开对应对话框，
+          // 并让 `['me']` 重取（并发 / 多标签页会让预检过时，余额以服务端为准）。
+          if (isQuotaExceeded(error)) {
+            dispatch({ type: 'reset' });
+            useAuthUi.getState().openQuota(readQuotaDetail(error));
+            void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+            return;
+          }
+          if (isUnauthorized(error)) {
+            dispatch({ type: 'reset' });
+            useAuthUi.getState().openAuth('login', { type: 'generate' });
+            void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
             return;
           }
           // ★v6 G3：402 是可覆盖的闸门，不是失败 —— 交给弹窗，界面保持干净。
@@ -439,7 +462,7 @@ export function useGenerationStream(options: UseGenerationStreamOptions = {}): U
         });
       }
     },
-    [onBudgetBlocked, onError, onTakeover, streamOptions, teardown],
+    [onBudgetBlocked, onError, onTakeover, queryClient, streamOptions, teardown],
   );
 
   const cancel = useCallback(async () => {

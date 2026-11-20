@@ -56,10 +56,10 @@ export function HistoricalBanner({
       className="flex min-h-[40px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-[var(--warn)]/30 bg-[var(--warn-weak)] px-3 py-1.5 text-[11.5px] text-[var(--warn)]"
     >
       <History className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="min-w-0">
+      <span className="min-w-0" suppressHydrationWarning>
         {text(copy.history.banner, { version, when: relativeTime(generatedAt) })}
       </span>
-      <span className="text-[10.5px] text-[var(--text-tertiary)]">
+      <span className="text-[10.5px] text-[var(--text-tertiary)]" suppressHydrationWarning>
         {text(copy.history.latestIs, {
           version: latestVersion,
           when: relativeTime(latestGeneratedAt ?? generatedAt),

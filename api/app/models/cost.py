@@ -52,6 +52,8 @@ class CostLedger(Base):
     #: 约束、生产库没有"。白名单判定在 `cost_service.record()` 里（非法值记 `ledgerGap`）。
     source: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown", server_default="unknown")
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    #: ★v15（0007_users_auth / §24.6.2）：这笔花费记在谁名下。`NULL` = 系统 / 历史。
+    user_id: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         Index("ix_cost_ledger_created", "created_at"),
@@ -60,6 +62,7 @@ class CostLedger(Base):
         Index("ix_cost_ledger_source", "source", "created_at"),
         # Retry-safe: the same run can never be counted twice.
         Index("ux_cost_ledger_ref", "kind", "ref_id", unique=True),
+        Index("ix_cost_user", "user_id", "created_at"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

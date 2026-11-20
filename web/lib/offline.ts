@@ -15,6 +15,9 @@
  * 首屏报告还是 RSC 服务端直出 —— 浏览器侧 SW 既看不到那次 fetch，也无法给跨源
  * 响应贴 `X-From-Cache`。所以"过期必须自证过期"的取证位置改成了页面里的 meta 标签。
  *
+ * ★X6：缓存只收 `X-Aragon-Viewer: guest` 的导航响应（`middleware.ts` 打头），登出时 `purgeUserCache()`
+ * 通知 SW 清空——两道都在，缺一不可（§24.3.12）。
+ *
  * 集成方需要做的两件事（不在本文件里）：
  * - 在根布局/工作区挂一次 `registerOfflineSupport()`；
  * - 在 `/[symbol]` 的渲染里输出 `<meta name="aragon-report-generated-at" content={report.generatedAt}>`。
@@ -28,6 +31,23 @@ export const REPORT_GENERATED_AT_META = 'aragon-report-generated-at';
 
 /** service worker 脚本路径（`web/public/sw.js`）。 */
 export const SERVICE_WORKER_PATH = '/sw.js';
+
+/**
+ * ★X6（§24.3.12 / AC-204）：登出、或服务端判定会话失效时，让 SW 清掉导航缓存。
+ *
+ * 消息名与 `public/sw.js` 共用同一个字面量。SW 只删**导航文档**（含整份报告 HTML），
+ * `/_next/static` 的不可变资源保留。没有 SW 控制页面（首次访问 / 开发期）时是 no-op。
+ */
+export const PURGE_USER_CACHE_MESSAGE = 'purge-user-cache';
+
+export function purgeUserCache(): void {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+  try {
+    navigator.serviceWorker.controller?.postMessage({ type: PURGE_USER_CACHE_MESSAGE });
+  } catch {
+    /* 清理失败不影响登出本身；SW 另有“只缓存 guest 响应”这一道 */
+  }
+}
 
 function hasServiceWorker(): boolean {
   return typeof navigator !== 'undefined' && Boolean(navigator.serviceWorker);

@@ -18,28 +18,32 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import __version__
 from .config import get_settings
 from .db.session import SessionLocal, engine, fts_available
-from .errors import Unauthorized, register_exception_handlers
+from .errors import AppError, register_exception_handlers
 from .logging import configure_logging, get_logger, request_id_var
 from .routers import (
+    admin,
     agent,
     asks,
+    auth,
     capabilities,
     cost,
     health,
     instruments,
+    me,
     reports,
     runs,
     schedules,
@@ -47,7 +51,18 @@ from .routers import (
     symbols,
     watchlist,
 )
-from .services import ask_service, report_service, search_index
+from .security import csrf, deps, policy
+from .services import (
+    ask_service,
+    audit_service,
+    bootstrap,
+    captcha,
+    quota_service,
+    report_service,
+    search_index,
+    session_service,
+    sse_token,
+)
 from .services.run_manager import get_manager
 from .services.scheduler_ticker import get_ticker
 
@@ -59,10 +74,21 @@ logger = get_logger("main")
 #: 清扫周期单列，因为它与 tick 是两件事）。
 STALE_SWEEP_SECONDS = 60
 
-#: Paths that must stay reachable without a bearer token. SSE uses `?token=`
-#: instead of a header because `EventSource` cannot set one (★P1-3).
-PUBLIC_PATHS = ("/api/v1/health", "/docs", "/openapi.json", "/redoc")
-SSE_SUFFIX = "/events"
+#: ★v15（§24.3.10）：审计保留期清理每天一次（挂在同一个清扫循环里，理由同 V11-P1-4：
+#: 不依赖 `SCHEDULER_ENABLED`；失败只记日志）。
+AUDIT_PURGE_SECONDS = 24 * 3600
+_last_audit_purge = 0.0
+
+#: ★v16（§25.3.1b）：死会话清理每 6 小时一轮（模块级时间戳节流，与审计清理同构）。
+SESSION_PURGE_SECONDS = 6 * 3600
+_last_session_purge = 0.0
+
+#: ★v15（RV-12）：入站 `X-Request-Id` 只有匹配它才被沿用，否则丢弃重生成。它会进日志与
+#: `audit_log.request_id`——超长（PG 报错）、含换行（日志注入）都是真实的坏输入。
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+#: 带身份的响应族：`Cache-Control: private, no-store`（§24.3.2(a)）。
+_PRIVATE_PREFIXES = ("/api/v1/auth", "/api/v1/admin", "/api/v1/watchlist", "/api/v1/me")
 
 
 def assert_single_worker() -> None:
@@ -120,10 +146,70 @@ async def _sweep_loop() -> None:
             if swept:
                 logger.warning("活性清扫：%s 个卡在 running 的 run 已标记 failed(agent_timeout)", swept)
             _purge_trash_once()
+            _purge_audit_if_due()
+            # ★v16（RV-Y14）：`purge_dead` 最多一次删 10 000 行——不能直接跑在事件循环线程上。
+            await asyncio.to_thread(_purge_sessions_if_due)
+            _reconcile_quota_refunds()
         except asyncio.CancelledError:  # pragma: no cover - shutdown
             raise
         except Exception:  # pragma: no cover - 一次对账失败不该杀死清扫
             logger.exception("活性清扫失败")
+
+
+def _reconcile_quota_refunds() -> None:
+    """★v15（§24.3.8(d) 调用点①）：把"终态非 succeeded 却还没退款"的额度退回去。永不抛。
+
+    与活性清扫同循环、**不看 `SCHEDULER_ENABLED`**：退款是幂等对账（账本部分唯一索引兜底），
+    所以重复调用无害；它只碰 DB。
+    """
+    session = SessionLocal()
+    try:
+        quota_service.reconcile_refunds(session)
+    except Exception:  # pragma: no cover - 对账失败不影响服务，下一轮再来
+        logger.exception("额度退款对账失败（下一轮重试）")
+        session.rollback()
+    finally:
+        session.close()
+
+
+def _purge_audit_if_due() -> None:
+    """★v15（§24.3.10）：删除超过 `AUDIT_RETENTION_DAYS` 的审计行，至多每天一次。永不抛。"""
+    global _last_audit_purge
+    now = time.monotonic()
+    if _last_audit_purge and now - _last_audit_purge < AUDIT_PURGE_SECONDS:
+        return
+    _last_audit_purge = now
+    session = SessionLocal()
+    try:
+        removed = audit_service.purge_expired(session)
+        session.commit()
+        if removed:
+            logger.info("审计清理：%s 条过期记录已删除", removed)
+    except Exception:  # pragma: no cover - 清理失败不影响服务
+        logger.exception("审计清理失败（不影响任何读路径）")
+        session.rollback()
+    finally:
+        session.close()
+
+
+def _purge_sessions_if_due() -> None:
+    """★v16（§25.3.1b）：删除"死了超过保留期"的会话行，至多每 6 小时一轮。永不抛。
+
+    自己开关 `SessionLocal()`（它由 `asyncio.to_thread` 调用，不能共用任何请求/事件循环的会话）。
+    """
+    global _last_session_purge
+    now = time.monotonic()
+    if _last_session_purge and now - _last_session_purge < SESSION_PURGE_SECONDS:
+        return
+    _last_session_purge = now
+    session = SessionLocal()
+    try:
+        session_service.purge_dead(session)
+    except Exception:  # pragma: no cover - 清理失败不影响服务
+        logger.exception("会话清理失败（不影响任何读路径）")
+        session.rollback()
+    finally:
+        session.close()
 
 
 def _purge_trash_once() -> None:
@@ -173,8 +259,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.exception("数据库迁移失败")
         raise
 
+    # ★v15（D-8 / §24.3.3）：`AUTH_MODE=open` 等于"无鉴权"——必须响亮，不能只在 README 里写。
+    if settings.auth_mode == "open":
+        logger.error(
+            "AUTH_MODE=open：所有请求都被视为服务主体（全权限，等价于没有登录）。"
+            "仅限本地演示与测试，切勿用于可被他人访问的部署。"
+        )
+    logger.info(captcha.startup_status())
+
     session = SessionLocal()
     try:
+        # ★v15（§24.3.13）：迁移之后、run 恢复之前引导 root。`open` 模式没有人需要登录，跳过
+        # （切回 `enforced` 重启时才会引导）。同名非 root 账号会让它抛错并拒绝启动——有意为之。
+        if settings.auth_mode != "open":
+            bootstrap.ensure_root_admin(session)
+        sse_token.load_or_create_secret(session)
+        session.commit()
         recovered = get_manager().recover_interrupted(session)
         if recovered:
             logger.warning("启动恢复：%s 个中断的 run 已标记 failed(interrupted)", recovered)
@@ -202,6 +302,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("启动恢复：%s 个中断的追问已标记 failed(interrupted)", stale_asks)
         # Ask rows and ask workspaces expire with the same retention window (V4-P2-9).
         ask_service.cleanup_asks(session)
+        # ★v15（§24.3.8(d) 调用点②）：`recover_interrupted()` 把中断的 run/ask 置 failed 之后，
+        # 立刻把它们的额度退回（不必等第一轮 60 s 清扫）。
+        try:
+            quota_service.reconcile_refunds(session)
+        except Exception:  # pragma: no cover - 退款失败不拒绝启动
+            logger.exception("启动额度退款对账失败（不影响启动）")
+            session.rollback()
     finally:
         session.close()
 
@@ -273,29 +380,50 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def _observability_and_auth(request: Request, call_next):  # noqa: ANN001, ANN202
-        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    async def _observability_and_security(request: Request, call_next):  # noqa: ANN001, ANN202
+        """Request id, CSRF, and the response headers of an identity-bearing API.
+
+        ★v15（E-1）：这里**不再有整站 Bearer 闸门**。它是二元的（有钥匙 = 全权），与"游客只读 /
+        用户限额 / 管理员"三层语义不兼容；闸门现在是 `security.deps.enforce`（逐路由策略表）。
+        """
+        supplied = request.headers.get("x-request-id", "")
+        # RV-12：客户端给的 id 只有形状合规才沿用。
+        request_id = supplied if REQUEST_ID_PATTERN.fullmatch(supplied) else uuid.uuid4().hex[:16]
         token_handle = request_id_var.set(request_id)
         started = time.perf_counter()
         try:
-            if settings.api_token and _requires_auth(request):
-                header = request.headers.get("authorization", "")
-                expected = f"Bearer {settings.api_token}"
-                if header != expected:
-                    raise Unauthorized("缺少或无效的 Authorization: Bearer <API_TOKEN>")
+            deps.note_forwarded_header(request)  # RV-14：一次性配置自检
+            csrf.check_origin(
+                request.method,
+                request.headers,
+                allowed_origins=settings.cors_origins,
+                trust_proxy=settings.trust_proxy,
+                service_bearer_ok=deps.has_valid_service_bearer(request),
+            )
             response = await call_next(request)
-        except Unauthorized as exc:
-            response = JSONResponse(status_code=exc.status_code, content=exc.envelope())
+        except AppError as exc:
+            # CORS wraps this middleware, so the refusal still carries CORS headers.
+            response = JSONResponse(status_code=exc.status_code, content=exc.envelope(), headers=exc.headers or None)
         finally:
             request_id_var.reset(token_handle)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-Id"] = request_id
         response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+        # ★v16（§25.3.1c）：API 现在会返回带身份的 JSON 与 CSV——禁止浏览器嗅探类型。
+        # （500 不经过这里：Exception 兜底处理器在 ServerErrorMiddleware 里，自己带这个头。）
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        _apply_identity_headers(request, response)
         return response
 
-    # CORS is added *after* the auth middleware on purpose: Starlette prepends
-    # each `add_middleware` call, so the last one is the outermost. If auth were
-    # outermost, every 401 would leave the browser as an opaque CORS failure.
+    # CORS is added *after* the security middleware on purpose: Starlette prepends
+    # each `add_middleware` call, so the last one is the outermost. If it were inside,
+    # every 401/403 would leave the browser as an opaque CORS failure.
+    if "*" in settings.cors_origins:
+        # ★v15（§24.3.2(a)）：凭据 + 通配是浏览器会拒绝的组合，也是真实漏洞——启动即失败。
+        raise RuntimeError(
+            "ALLOW_ORIGINS 含 '*'：Cookie 会话要求显式的来源白名单（凭据与通配符不能同用）。"
+            "请改为逗号分隔的具体来源，同源部署留空即可。"
+        )
     if not settings.cors_origins:
         # Never fail open: an empty allow-list means "same origin only", which is
         # the right reading of an empty ALLOW_ORIGINS — not "allow everything".
@@ -303,45 +431,70 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Content-Disposition", "X-Request-Id"],
+        expose_headers=["Content-Disposition", "X-Request-Id", "X-Export-Truncated"],
     )
 
     register_exception_handlers(app)
 
     api_prefix = "/api/v1"
-    app.include_router(health.router, prefix=api_prefix)
-    app.include_router(capabilities.router, prefix=api_prefix)
-    app.include_router(symbols.router, prefix=api_prefix)
-    app.include_router(instruments.router, prefix=api_prefix)
-    app.include_router(reports.router, prefix=api_prefix)
-    app.include_router(runs.router, prefix=api_prefix)
-    app.include_router(asks.router, prefix=api_prefix)
-    app.include_router(search.router, prefix=api_prefix)
-    app.include_router(schedules.router, prefix=api_prefix)
+    # ★v15（§24.3.3）：**每个**业务路由器都挂 `enforce`——默认拒绝的唯一入口。
+    gated = [Depends(deps.enforce)]
+    app.include_router(health.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(capabilities.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(symbols.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(instruments.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(reports.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(runs.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(asks.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(search.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(schedules.router, prefix=api_prefix, dependencies=gated)
     # ★v6 G3：成本面板的读侧（`/cost/summary` / `/cost/entries` / `/cost/budget`）。
-    app.include_router(cost.router, prefix=api_prefix)
-    app.include_router(watchlist.router, prefix=api_prefix)
+    app.include_router(cost.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(watchlist.router, prefix=api_prefix, dependencies=gated)
     # ★v9（K2）：引擎自检（`POST/GET /agent/probe`）。
-    app.include_router(agent.router, prefix=api_prefix)
+    app.include_router(agent.router, prefix=api_prefix, dependencies=gated)
+    # ★v15（M47）：认证面。`/me/*`（M48）与 `/admin/*`（M50）落地时在这里追加。
+    app.include_router(auth.router, prefix=api_prefix, dependencies=gated)
+    # ★v15（M48）：个人额度。
+    app.include_router(me.router, prefix=api_prefix, dependencies=gated)
+    # ★v15（M50）：管理后台。每条路由都在策略表里有 `admin.*` 权限；对象级矩阵在 `admin_user_service`。
+    app.include_router(admin.router, prefix=api_prefix, dependencies=gated)
+    if settings.auth_test_hooks:
+        # e2e 钩子：**不进策略表**（`policy.EXEMPT_PREFIXES`），默认配置下该路由 404。
+        app.include_router(auth.test_hooks_router, prefix=api_prefix)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
         return {"name": "Aragon Research Terminal API", "version": __version__, "docs": "/docs"}
 
+    # ★v15（§24.3.3）：策略表与真实路由表必须一致，否则进程起不来。
+    policy.verify_against_app(app)
     return app
 
 
-def _requires_auth(request: Request) -> bool:
-    path = request.url.path
-    if any(path.startswith(public) for public in PUBLIC_PATHS):
-        return False
-    # SSE carries its own short-lived `?token=` signature (★P1-3).
-    if path.endswith(SSE_SUFFIX) and request.query_params.get("token"):
-        return False
-    return request.method != "OPTIONS"
+def _is_private_path(path: str) -> bool:
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in _PRIVATE_PREFIXES)
+
+
+def _merge_vary(existing: str | None, extra: tuple[str, ...]) -> str:
+    seen = [token.strip() for token in (existing or "").split(",") if token.strip()]
+    lowered = {token.lower() for token in seen}
+    for token in extra:
+        if token.lower() not in lowered:
+            seen.append(token)
+    return ", ".join(seen)
+
+
+def _apply_identity_headers(request: Request, response) -> None:  # noqa: ANN001
+    """`Vary: Origin, Cookie`; `no-store` for identity-bearing families; clear a dead cookie."""
+    response.headers["Vary"] = _merge_vary(response.headers.get("vary"), ("Origin", "Cookie"))
+    if _is_private_path(request.url.path):
+        response.headers["Cache-Control"] = "private, no-store"
+    if getattr(request.state, "clear_session_cookie", False):
+        deps.clear_session_cookie(response, request)
 
 
 app = create_app()

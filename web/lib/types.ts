@@ -642,6 +642,14 @@ export interface ReportSummary {
   tokensOut?: number | null;
   durationMs?: number | null;
   docBytes: number;
+  /**
+   * ★X6（§24.3.9(c)）：三个**按请求者视角**由服务端算好的追加键。
+   * 全部可选：`AUTH_MODE=open` 或旧后端不下发——此时界面按"未知 ⇒ 不收窄"处理
+   * （`!== false`），绝不在前端自行推断谁是作者。
+   */
+  author?: string | null;
+  canManage?: boolean;
+  canCurate?: boolean;
 }
 
 export interface ReportDetail {
@@ -750,6 +758,8 @@ export interface CreateRunResponse {
    * 最终结论只有一个来源：`run.done.deduped`。
    */
   dedupe?: boolean;
+  /** ★X4（§24.5.5）：202 体追加，让芯片不必再请求一次 `/auth/me`。 */
+  quota?: { remaining: number | null; resetAt?: string | null } | null;
 }
 
 export interface AragonCapability {
@@ -835,6 +845,8 @@ export interface Capabilities {
    * spawn 不了子进程）。混在一起会让"降级原因"读起来自相矛盾。
    */
   runtime?: RuntimeCapability | null;
+  /** ★X6（§24.3.9(g)）：非 `engine.probe` 主体拿到的是脱敏的同形状响应。 */
+  redacted?: boolean;
 }
 
 /** `capabilities.runtime` —— 与 `api/app/schemas/capabilities.py::RuntimeCapabilityOut` 同形。 */
@@ -858,6 +870,12 @@ export interface WatchlistEntry {
   sortOrder: number;
   pinned: boolean;
   addedAt: string;
+}
+
+/** ★X6（§24.5.5）：`scope` 说明这份列表是"我的"还是"平台精选"（guest 看到的）。 */
+export interface WatchlistResponse {
+  items: WatchlistEntry[];
+  scope?: 'personal' | 'featured';
 }
 
 export interface ApiErrorBody {
@@ -1029,4 +1047,337 @@ export interface HealthResponse {
   version: string;
   db: string;
   uptimeSec: number;
+}
+
+/* ── 用户与权限（★X6 / spec §24.5）──────────────────────────────────────────── */
+
+/** 数据库角色。`guest` 不是角色，是"没有有效会话"。 */
+export type Role = 'user' | 'admin' | 'root';
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string | null;
+  role: Role;
+  status: 'active';
+  createdAt: string;
+  lastLoginAt: string | null;
+  mustChangePassword: boolean;
+  passwordIsDefault: boolean;
+  /** ★Y3：账号是否已有恢复码（只追加，§25.5.1）。缺省按"未设置"。 */
+  hasRecoveryKey?: boolean;
+}
+
+export type QuotaResource = 'report' | 'deep_ask';
+
+export interface QuotaBucket {
+  /** `null` = 不限。 */
+  limit: number | null;
+  usedToday: number;
+  bonus: number;
+  /** `null` = 不限。 */
+  remaining: number | null;
+  resetAt: string;
+  pendingRequest: { id: string; createdAt: string } | null;
+}
+
+export interface QuotaStatus {
+  report: QuotaBucket;
+  deepAsk: QuotaBucket;
+  tz: string;
+}
+
+export interface Me {
+  authMode: 'enforced' | 'open';
+  authenticated: boolean;
+  user: AuthUser | null;
+  /** 服务端展开后的权限串——**体验层**用，不是授权依据。 */
+  permissions: string[];
+  quota: QuotaStatus | null;
+}
+
+export type RegistrationMode = 'open' | 'invite' | 'closed';
+
+export interface AuthConfig {
+  authMode: 'enforced' | 'open';
+  registrationMode: RegistrationMode;
+  registrationOpen: boolean;
+  passwordPolicy: { min: number; max: number; minClasses: number };
+  usernamePolicy: { min: number; max: number; pattern: string };
+  captchaKind: 'captcha';
+  forceRootPasswordChange: boolean;
+  /** ★Y3：站点是否开放自助找回（恢复码）。缺省 true（旧后端无此键时不隐藏入口失败，由服务端 403 兜底）。 */
+  recoveryEnabled?: boolean;
+}
+
+/** `POST /auth/register` 的 201 体：`Me` + 一次性恢复码（★Y3；关闭自助找回时为 null）。 */
+export interface RegisterResult extends Me {
+  recoveryKey?: string | null;
+}
+
+/** `POST /auth/recover`、`POST /auth/recovery-key` 的成功体：**新**恢复码，只出现这一次。 */
+export interface RecoveryKeyResult {
+  recoveryKey: string;
+  setAt: string;
+}
+
+export interface RecoverBody {
+  username: string;
+  recoveryKey: string;
+  newPassword: string;
+  captchaId: string;
+  captchaAnswer: string;
+}
+
+export interface DeleteAccountBody {
+  password: string;
+  confirm: string;
+}
+
+export interface CaptchaChallenge {
+  challengeId: string;
+  /** `data:image/png;base64,…` */
+  image: string;
+  width: number;
+  height: number;
+  expiresIn: number;
+}
+
+export interface LoginBody {
+  username: string;
+  password: string;
+  remember?: boolean;
+  captchaId?: string;
+  captchaAnswer?: string;
+}
+
+export interface RegisterBody {
+  username: string;
+  password: string;
+  captchaId?: string;
+  captchaAnswer?: string;
+  inviteCode?: string;
+  displayName?: string;
+  /** 蜜罐：人类看不见，必须保持空串。 */
+  website?: string;
+  /** 验证码**签发**的时刻（ms）——服务端据此判"过快"。 */
+  issuedAt?: number;
+}
+
+export interface SessionOut {
+  id: string;
+  current: boolean;
+  createdAt: string;
+  lastSeenAt: string | null;
+  ip: string | null;
+  userAgent: string | null;
+}
+
+export interface QuotaLedgerItem {
+  id: string;
+  at: string;
+  resource: QuotaResource;
+  delta: number;
+  reason: string;
+  source: 'daily' | 'bonus' | string;
+  refId: string | null;
+  note: string | null;
+}
+
+export interface QuotaLedgerResponse {
+  items: QuotaLedgerItem[];
+  nextCursor?: string | null;
+}
+
+export type QuotaRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface QuotaRequestOut {
+  id: string;
+  resource: QuotaResource;
+  amount: number;
+  reason: string;
+  status: QuotaRequestStatus;
+  note?: string | null;
+  createdAt: string;
+  resolvedAt?: string | null;
+}
+
+/* ── 管理后台（M52 使用；形状按 §24.5.3，前端只读不推断）───────────────────── */
+
+export interface AdminQuotaLite {
+  report: Pick<QuotaBucket, 'limit' | 'usedToday' | 'bonus' | 'remaining'>;
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  displayName: string | null;
+  role: Role;
+  status: 'active' | 'disabled' | 'deleted';
+  createdAt: string;
+  lastLoginAt: string | null;
+  quota?: AdminQuotaLite;
+  locked: boolean;
+  invitedBy?: string | null;
+}
+
+export interface AdminUserDetail extends AdminUser {
+  quotaStatus?: QuotaStatus;
+  failedLogins?: number;
+  lockedUntil?: string | null;
+  disabledReason?: string | null;
+  sessions?: SessionOut[];
+  /** 形状按后端 `AdminRunRow`（M50）：时间是 `startedAt`，`symbol` 在标的被清理后可能为空。 */
+  recentRuns?: {
+    id: string;
+    instrumentId?: string;
+    symbol: string | null;
+    status: string;
+    startedAt: string;
+    finishedAt?: string | null;
+    costUsd?: number | null;
+  }[];
+}
+
+export interface AdminUserListResponse {
+  items: AdminUser[];
+  total: number;
+  nextCursor?: string | null;
+}
+
+export interface AdminUserQuery {
+  q?: string;
+  role?: Role;
+  status?: 'active' | 'disabled';
+  /** ★Y2(c)：仅返回处于锁定期的 active 用户。 */
+  locked?: boolean;
+  limit?: number;
+  before?: string | null;
+}
+
+export interface AdminCreateUserBody {
+  username: string;
+  role?: 'user' | 'admin';
+  password?: string;
+  displayName?: string;
+  bonusCredits?: number;
+}
+
+export interface AdminPatchUserBody {
+  displayName?: string | null;
+  role?: Role;
+  status?: 'active' | 'disabled';
+  disabledReason?: string;
+}
+
+export interface AdminQuotaBody {
+  resource?: QuotaResource;
+  grant?: number;
+  dailyLimit?: number | null;
+  note?: string;
+}
+
+export interface InviteOut {
+  id: string;
+  code: string;
+  maxUses: number;
+  usedCount: number;
+  expiresAt: string | null;
+  bonusCredits: number;
+  note?: string | null;
+  disabledAt?: string | null;
+  createdAt: string;
+  createdBy?: string | null;
+  /** 服务端推出的状态（撤销 > 过期 > 用尽 > 可用）；缺省时前端按字段推。 */
+  status?: 'active' | 'exhausted' | 'expired' | 'revoked';
+}
+
+export interface InviteCreateBody {
+  maxUses: number;
+  expiresInDays: number | null;
+  bonusCredits: number;
+  note?: string;
+}
+
+export interface AdminQuotaRequest extends QuotaRequestOut {
+  /** 申请人；账号被清理的极端情形下为空。 */
+  user: { id: string; username: string; displayName?: string | null } | null;
+  userRuns7d: number;
+  granted?: number | null;
+  resolvedBy?: string | null;
+  /** 处理说明（拒绝理由 / 备注）。后端字段名是 `resolutionNote`。 */
+  resolutionNote?: string | null;
+}
+
+export interface AuditRow {
+  id: string | number;
+  at: string;
+  actorName: string | null;
+  actorRole: string | null;
+  action: string;
+  targetName: string | null;
+  /** 已按 /24（IPv6 /48）截断；后端字段名是 `ip`。 */
+  ip?: string | null;
+  /** 旧写法（规格早期叫 `ipPrefix`），保留为可选以免读旧夹具时出错。 */
+  ipPrefix?: string | null;
+  targetType?: string | null;
+  requestId?: string | null;
+  detail?: Record<string, unknown> | null;
+}
+
+export interface AuditQuery {
+  action?: string;
+  actor?: string;
+  target?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  before?: string | null;
+}
+
+export interface AdminBulkQuotaBody {
+  userIds: string[];
+  /** −50..50，非 0（与后端 `GRANT_MIN/MAX` 同值）。 */
+  grant: number;
+  note?: string;
+}
+
+export interface AdminBulkQuotaResult {
+  applied: number;
+  skipped: number;
+  batchId: string;
+}
+
+/** 概览"安全事件（24 h）"（§25.3.5c）。失败类是**尝试次数**（Σ detail.count），不是行数。 */
+export interface AdminSecurity24h {
+  loginFailures: number;
+  loginFailureBursts: number;
+  loginFailuresCapped: boolean;
+  lockouts: number;
+  recoveryFailures: number;
+  recoveries: number;
+  selfDeletes: number;
+  exports: number;
+}
+
+export interface AdminSettings {
+  registrationMode: RegistrationMode;
+  /** ★Y3：严格布尔（后端对 1/"true"/null 回 422 invalid_setting）。 */
+  authRecoveryEnabled?: boolean;
+  defaultDailyReport: number;
+  defaultDailyDeepAsk: number;
+  signupBonus: number;
+  siteDailyCap: number;
+}
+
+export interface AdminOverview {
+  users: { total: number; byRole: Record<string, number>; active7d: number; disabled: number; locked: number };
+  signups: { day: string; count: number }[];
+  runs: { today: number; succeeded: number; failed: number; successRate: number | null };
+  runsDaily: { day: string; count: number }[];
+  quota: { consumedToday: number; refundedToday: number };
+  topUsers7d: { userId: string; username: string | null; runs: number }[];
+  pendingQuotaRequests: number;
+  recentAudit: AuditRow[];
+  security24h?: AdminSecurity24h;
 }

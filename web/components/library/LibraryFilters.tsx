@@ -24,6 +24,8 @@ export interface LibraryFiltersProps {
   q: string;
   total: number;
   onScopeChange: (scope: ScopeTab) => void;
+  /** ★X6：回收站标签仅登录可见（游客没有“我的”回收站）。缺省 `true`。 */
+  showTrash?: boolean;
   onQueryChange: (q: string) => void;
   /** `/` 键要能把焦点交给搜索框：所以 ref 由父组件持有（页面级 keydown 的落点）。 */
   searchRef?: React.RefObject<HTMLInputElement | null>;
@@ -36,6 +38,7 @@ export function LibraryFilters({
   counts,
   q,
   total,
+  showTrash = true,
   onScopeChange,
   onQueryChange,
   searchRef,
@@ -59,7 +62,7 @@ export function LibraryFilters({
   return (
     <div className="flex flex-col gap-2 border-b border-[var(--border-subtle)] pb-2 sm:flex-row sm:items-center sm:justify-between">
       <div role="tablist" aria-label={copy.library.title} className="flex items-center gap-1">
-        {SCOPE_TABS.map((tab) => {
+        {SCOPE_TABS.filter((tab) => showTrash || tab !== 'trash').map((tab) => {
           const active = tab === scope;
           const count = counts[tab];
           return (

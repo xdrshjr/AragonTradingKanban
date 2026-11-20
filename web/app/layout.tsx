@@ -1,7 +1,9 @@
 import type { Metadata, Viewport } from 'next';
 
 import { Providers } from '@/components/shell/Providers';
+import { serverApi } from '@/lib/serverApi';
 import { layoutBootstrapScript, themeBootstrapScript } from '@/lib/theme';
+import type { Me } from '@/lib/types';
 
 import './globals.css';
 
@@ -25,7 +27,25 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+/**
+ * ★X6（spec §24.3.15a / R-A2）：服务端取一次 `Me`（转发 `aragon_sid`），作为 `['me']` 的 `initialData`。
+ *
+ * 为什么在布局里取：首屏 HTML 就带着正确的身份（用户名、额度芯片），不会"先游客后用户"地闪一下，
+ * 也不会出现 SSR 与 hydrate 后数据不一致。**失败即降级**——API 冷启动、超时、5xx 一律当作"取不到"，
+ * 传 `null`，站点按游客渲染并由客户端随后重试；认证接口的一次失败绝不能让整站白屏。
+ * 超时刻意比通用的 8 s 短：这是每个页面渲染都要等的那一次请求。
+ */
+async function loadInitialMe(): Promise<Me | null> {
+  try {
+    const api = await serverApi();
+    return await api.me(2500);
+  } catch {
+    return null;
+  }
+}
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const initialMe = await loadInitialMe();
   return (
     <html lang="zh-CN" data-theme="dark" suppressHydrationWarning>
       <head>
@@ -34,7 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: layoutBootstrapScript }} />
       </head>
       <body>
-        <Providers>{children}</Providers>
+        <Providers initialMe={initialMe}>{children}</Providers>
       </body>
     </html>
   );

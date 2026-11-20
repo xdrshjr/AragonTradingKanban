@@ -7,7 +7,19 @@ import { pathToFileURL } from 'node:url';
 import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ChangePasswordForm } from '@/components/auth/ChangePasswordForm';
+import { LoginForm } from '@/components/auth/LoginForm';
+import { FALLBACK_AUTH_CONFIG, RegisterForm } from '@/components/auth/RegisterForm';
+import { UserMenu } from '@/components/auth/UserMenu';
 import { useReturnFocus } from '@/lib/focus';
+
+import { GUEST, renderWithMe, userMe } from './authHarness';
+
+// UserMenu 的登录态分支用 `useRouter()`；这里只补一个桩，其余导出保持真实。
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => ({ refresh() {}, push() {}, replace() {} }),
+}));
 
 /**
  * AC-36：三块新面板（追问 / 比较 / 调度）的可访问性与焦点归还。
@@ -365,3 +377,86 @@ describe('useReturnFocus: Esc 关闭 + 焦点归还', () => {
     expect(document.body).toHaveFocus();
   });
 });
+
+/* ── ★X6 / AC-201：认证表单与菜单的结构契约（axe 未安装 → 结构断言兜底，同上）──────────── */
+
+const AUTOCOMPLETE_OK = new Set(['username', 'current-password', 'new-password', 'off', 'nickname']);
+
+function formProblems(root: Element, label: string): string[] {
+  const problems: string[] = [];
+  const inputs = Array.from(root.querySelectorAll('input, textarea, select')).filter(
+    (element) => element.closest('[aria-hidden="true"]') === null && (element as HTMLInputElement).type !== 'hidden',
+  );
+  for (const input of inputs) {
+    const id = input.getAttribute('id');
+    const hasLabelFor = id ? root.ownerDocument.querySelector(`label[for="${CSS.escape(id)}"]`) !== null : false;
+    const wrapped = input.closest('label') !== null;
+    const named = Boolean(input.getAttribute('aria-label') || input.getAttribute('aria-labelledby'));
+    if (!hasLabelFor && !wrapped && !named) {
+      problems.push(`${label}: <input name="${input.getAttribute('name')}"> 没有可见 label / aria-label`);
+    }
+    const type = (input as HTMLInputElement).type;
+    const autocomplete = input.getAttribute('autocomplete');
+    if (type === 'password' && (!autocomplete || !AUTOCOMPLETE_OK.has(autocomplete))) {
+      problems.push(`${label}: 密码输入的 autocomplete 必须是 current-password / new-password（得到 ${autocomplete}）`);
+    }
+  }
+  // 输入框的名字由上面的 label 检查负责（`accessibleNameOf` 不解析 label[for]）；这里查其余可交互元素。
+  for (const element of Array.from(root.querySelectorAll(INTERACTIVE_SELECTOR))) {
+    if (element.closest('[aria-hidden="true"]') || /^(input|textarea|select)$/i.test(element.tagName)) continue;
+    if (!accessibleNameOf(element)) problems.push(`${label}: <${element.tagName.toLowerCase()}> 没有可访问名`);
+  }
+  for (const element of Array.from(root.querySelectorAll('[tabindex]'))) {
+    if (Number(element.getAttribute('tabindex')) > 0) problems.push(`${label}: tabindex > 0`);
+  }
+  // 错误区必须是 aria-live（读屏器播报），且至少存在一个
+  if (root.querySelector('[aria-live]') === null) problems.push(`${label}: 没有 aria-live 区域`);
+  // 提交按钮存在且是 type=submit（Enter 提交）
+  if (root.querySelector('button[type="submit"]') === null) problems.push(`${label}: 没有 submit 按钮`);
+  return problems;
+}
+
+describe('AC-201：认证表单的可访问性结构契约', () => {
+  it('LoginForm', () => {
+    const { container } = renderWithMe(<LoginForm onSuccess={() => {}} />);
+    expect(formProblems(container, 'LoginForm')).toEqual([]);
+    const usernameField = container.querySelector('input[name="username"]');
+    expect(usernameField?.getAttribute('autocomplete')).toBe('username');
+  });
+
+  it('RegisterForm（含验证码、邀请码、强度清单）', async () => {
+    const { container } = renderWithMe(<RegisterForm config={FALLBACK_AUTH_CONFIG} onSuccess={() => {}} />);
+    expect(formProblems(container, 'RegisterForm')).toEqual([]);
+    // 验证码图必须有 alt；强度清单是带名字的 list
+    await vi.waitFor(() => expect(container.querySelector('input[autocomplete="off"]')).not.toBeNull());
+    expect(container.querySelector('ul[aria-label]')).not.toBeNull();
+  });
+
+  it('ChangePasswordForm', () => {
+    const { container } = renderWithMe(<ChangePasswordForm username="alice" onDone={() => {}} />);
+    expect(formProblems(container, 'ChangePasswordForm')).toEqual([]);
+    const autocompletes = Array.from(container.querySelectorAll('input[type="password"]')).map((input) =>
+      input.getAttribute('autocomplete'),
+    );
+    expect(autocompletes).toEqual(['current-password', 'new-password', 'new-password']);
+  });
+
+  it('UserMenu：游客两个入口都有可访问名；已登录触发器带 aria-haspopup / aria-expanded', () => {
+    const guest = renderWithMe(<UserMenu />, { me: GUEST });
+    expect(domProblemsFor(guest.container)).toEqual([]);
+    guest.unmount();
+    const signedIn = renderWithMe(<UserMenu />, { me: userMe('user') });
+    const trigger = signedIn.container.querySelector('[data-testid="user-menu-trigger"]');
+    expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(domProblemsFor(signedIn.container)).toEqual([]);
+  });
+});
+
+function domProblemsFor(container: Element): string[] {
+  const problems: string[] = [];
+  for (const element of Array.from(container.querySelectorAll(INTERACTIVE_SELECTOR))) {
+    if (!accessibleNameOf(element)) problems.push(`<${element.tagName.toLowerCase()}> 没有可访问名`);
+  }
+  return problems;
+}

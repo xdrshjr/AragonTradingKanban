@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api, ApiError } from '@/lib/api';
+import { isGuest, useAuthActions, useAuthUi, useCan, useGenerationGate, useMe } from '@/lib/auth';
 import { copy } from '@/lib/copy';
 import { exportFilenameHint, triggerDownload } from '@/lib/download';
 import { modifierLabel, useHotkeys } from '@/lib/keyboard';
@@ -138,6 +139,16 @@ export function WorkspaceClient({
 
   const selectedReportId = activeReportId ?? initialReportId ?? initialDetail?.report.id ?? null;
 
+  // ★X6（§24.3.9 / §24.4.2）：入口按权限裁剪。服务端才是授权依据——这里只是不把“必然 401/403”的入口摆出来。
+  const me = useMe();
+  const openAuth = useAuthUi((state) => state.openAuth);
+  const { signOut } = useAuthActions(() => router.refresh());
+  const gate = useGenerationGate();
+  const canSchedule = useCan('schedule.manage');
+  const canCost = useCan('cost.read');
+  const canAdmin = useCan('admin.overview.read');
+  const canDeepAsk = useCan('ask.deep');
+
   const detailQuery = useQuery<ReportDetail | null>({
     queryKey: ['report', selectedReportId],
     queryFn: () => (selectedReportId ? api.report(selectedReportId) : Promise.resolve(null)),
@@ -212,7 +223,8 @@ export function WorkspaceClient({
   const schedulesQuery = useQuery<ScheduleListResponse>({
     queryKey: ['schedules'],
     queryFn: () => api.schedules(),
-    enabled: capabilities.features.schedule !== false,
+    // `/schedules` 只给 `schedule.manage`（管理员）：游客 / 普通用户发这个请求只会换来 401/403。
+    enabled: capabilities.features.schedule !== false && canSchedule,
     staleTime: 60_000,
   });
 
@@ -430,7 +442,11 @@ export function WorkspaceClient({
         await api.patchReport(reportId, { archived });
         await queryClient.invalidateQueries({ queryKey: ['reports', instrument.id] });
         notify.success(archived ? '已归档' : '已取消归档');
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'forbidden' && error.detail.reason === 'only_version') {
+          notify.info(copy.errors.archiveOnlyVersion);
+          return;
+        }
         notify.error('归档失败');
       }
     },
@@ -553,10 +569,21 @@ export function WorkspaceClient({
         notify.info('已有一次生成在进行中');
         return;
       }
-      void generation.start(instrument.id, options);
+      // ★X6：热键 / 历史横幅的“基于此版本更新”也走同一道前置闸（游客 → 登录框；额度 0 → 额度对话框）。
+      gate(() => void generation.start(instrument.id, options), instrument.symbol);
     },
-    [generation, instrument.id],
+    [gate, generation, instrument.id, instrument.symbol],
   );
+
+  const account = useMemo(() => {
+    if (me.authMode === 'open') return undefined;
+    if (isGuest(me)) return { onSignIn: () => openAuth('login', { type: 'generic' }) };
+    return {
+      onOpenAccount: () => router.push('/account'),
+      onOpenAdmin: canAdmin ? () => router.push('/admin') : undefined,
+      onSignOut: () => void signOut().then(() => notify.info(copy.auth.signedOut)),
+    };
+  }, [canAdmin, me, openAuth, router, signOut]);
 
   /** `Esc`: close the topmost layer, never more than one per press. */
   const closeTopLayer = useCallback(() => {
@@ -641,8 +668,9 @@ export function WorkspaceClient({
           void toggleWatchlist(instrumentId, railInstrumentIds.has(instrumentId) || inWatchlist)
         }
         features={{
-          askDeep: capabilities.features.askDeep === true,
-          schedule: capabilities.features.schedule !== false,
+          // 深度追问要登录并走额度（`ask.deep`）；游客只剩零成本的引用式检索。
+          askDeep: capabilities.features.askDeep === true && canDeepAsk,
+          schedule: capabilities.features.schedule !== false && canSchedule,
           search: capabilities.features.fullTextSearch !== false,
           // ★v14（U1 / §23.5.4）：`false` 时**不渲染**「报告库」入口（不留死链）。
           reportLibrary: capabilities.features.reportLibrary === true,
@@ -682,7 +710,8 @@ export function WorkspaceClient({
         chart={chartView}
         onChartViewChange={changeChartView}
         onOpenCost={() => setCostOpen(true)}
-        costEnabled={capabilities.features.costLedger === true}
+        costEnabled={capabilities.features.costLedger === true && canCost}
+        account={account}
         // ★v14（U1 / 评审 R-2）：命令面板的「报告库」入口与「最近 5 份报告」。
         onOpenLibrary={() => router.push('/reports')}
         recentReports={recentReportsQuery.data}

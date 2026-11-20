@@ -4,8 +4,9 @@ import { ArrowRight, FileText, LineChart, Layers } from 'lucide-react';
 
 import { RecentReports } from '@/components/library/RecentReports';
 import { LandingSearch } from '@/components/shell/LandingSearch';
-import { api } from '@/lib/api';
+import { UserMenu } from '@/components/auth/UserMenu';
 import { copy } from '@/lib/copy';
+import { serverApi } from '@/lib/serverApi';
 import type { LibraryResponse, WatchlistEntry } from '@/lib/types';
 
 export const metadata: Metadata = {
@@ -29,6 +30,8 @@ export const dynamic = 'force-dynamic';
  * 两个请求都**失败也不炸**：首页是读路径，读不到就是空态。
  */
 async function loadHome(): Promise<{ reports: LibraryResponse; watchlist: WatchlistEntry[] }> {
+  // ★X6：带着访客的 Cookie 去取——自选是"我的"（登录）或"平台精选"（游客），首屏就要对。
+  const api = await serverApi();
   const [reports, watchlist] = await Promise.all([
     api
       .reportLibrary({ scope: 'latest', limit: 6, includeActive: true, withCounts: true })
@@ -75,12 +78,15 @@ export default async function LandingPage() {
               <span className="text-[11.5px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>
             </span>
           </div>
-          <Link
-            href="/reports"
-            className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
-          >
-            {copy.library.open}
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/reports"
+              className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
+            >
+              {copy.library.open}
+            </Link>
+            <UserMenu />
+          </div>
         </header>
 
         <section className="mt-16 text-center">

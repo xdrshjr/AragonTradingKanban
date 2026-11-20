@@ -22,7 +22,10 @@ from ..logging import get_logger
 from ..models import Run
 from ..schemas.cost import EstimateRequest, EstimateResponse
 from ..schemas.run import CancelResponse, EventsTokenResponse, RunOut, RunUsage
-from ..services import cost_service
+from ..security import deps, objects
+from ..security.principal import Principal
+from ..services import audit_service, cost_service
+from ..services.audit_service import AuditTarget
 from ..services.run_manager import RunManager, get_manager, stream_events
 from ..services.sse_token import TOKEN_TTL_SEC, issue_sse_token, sign_sse_token, verify_sse_token
 
@@ -30,7 +33,28 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 logger = get_logger("runs")
 
 
-def to_run_out(run: Run) -> RunOut:
+#: ★v15（§24.3.9(b)）：成本与引擎细节是运营信息，只给"拥有者 / 管理员"看。
+_REDACTED_RUN_FIELDS = (
+    "costUsd",
+    "costUsdEst",
+    "costSource",
+    "agentProvider",
+    "agentModel",
+    "failureFingerprint",
+    "exitCode",
+)
+
+
+def to_run_out(run: Run, principal: Principal | None = None) -> RunOut:
+    """`principal=None` = trusted internal caller (full body). Otherwise 7 operational
+    fields are blanked unless the caller owns the run or may manage any run."""
+    out = _to_run_out(run)
+    if principal is not None and not objects.can_manage_run(principal, run):
+        return out.model_copy(update={name: None for name in _REDACTED_RUN_FIELDS} | {"costKnown": False})
+    return out
+
+
+def _to_run_out(run: Run) -> RunOut:
     return RunOut(
         id=run.id,
         instrumentId=run.instrument_id,
@@ -115,8 +139,10 @@ def estimate_run(payload: EstimateRequest, db: Session = Depends(get_db)) -> Est
 
 
 @router.get("/{run_id}", response_model=RunOut)
-def get_run(run_id: str, db: Session = Depends(get_db)) -> RunOut:
-    return to_run_out(_load(db, run_id))
+def get_run(
+    run_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> RunOut:
+    return to_run_out(_load(db, run_id), principal)
 
 
 @router.post("/{run_id}/events-token", response_model=EventsTokenResponse)
@@ -196,6 +222,7 @@ async def cancel_run(
     run_id: str,
     db: Session = Depends(get_db),
     manager: RunManager = Depends(get_manager),
+    principal: Principal = Depends(deps.get_principal),
 ) -> CancelResponse:
     """Return 202-equivalent immediately; the state machine converges to `cancelled`.
 
@@ -203,5 +230,12 @@ async def cancel_run(
     lie about having finished. The worker sets the terminal state.
     """
     run = _load(db, run_id)
+    # ★v15：拥有者或 `report.manage_any`；`created_by IS NULL`（历史/系统 run）仅管理员。
+    objects.assert_can_manage_run(principal, run)
     manager.request_cancel(db, run.id)
+    if not (principal.kind == "user" and run.created_by == principal.user_id):
+        audit_service.record(
+            db, principal, "run.cancel_other", AuditTarget("run", run.id, None), {"instrumentId": run.instrument_id}
+        )
+        db.commit()
     return CancelResponse(status="cancelling", runId=run.id)

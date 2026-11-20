@@ -158,6 +158,7 @@ def test_the_new_capabilities_fields_reach_the_wire_model() -> None:
         "limits",
         "engine",
         "runtime",
+        "redacted",  # ★v15（§24.3.9(g)）：追加，非 `engine.probe` 主体的脱敏标记
     }
     runtime_fields = set(RuntimeCapabilityOut.model_fields)
     assert {"eventLoop", "loopOk", "loopReason", "hardDeadlineSec", "sessionSave", "sessionDirMb"} <= runtime_fields

@@ -16,8 +16,12 @@ from ..db.session import get_db
 from ..errors import DuplicateSchedule, InstrumentNotFound, NotFound
 from ..models import Instrument, Schedule
 from ..schemas.schedule import ScheduleCreate, ScheduleListResponse, ScheduleOut, SchedulePatch
+from ..security import deps
+from ..security.principal import Principal
+from ..services import audit_service
 from ..services import cron as cron_module
 from ..services import scheduler as scheduler_service
+from ..services.audit_service import AuditTarget
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -36,6 +40,18 @@ def to_schedule_out(session: Session, schedule: Schedule) -> ScheduleOut:
         createdAt=schedule.created_at,
         updatedAt=schedule.updated_at,
     )
+
+
+def _audit(db: Session, principal: Principal, action: str, schedule: Schedule, detail: dict | None = None) -> None:
+    """★v15（§24.3.10）：`schedule.create|update|delete`——定时刷新会花钱，谁动的要留痕。"""
+    audit_service.record(
+        db,
+        principal,
+        action,
+        AuditTarget("schedule", schedule.id, scheduler_service.symbol_of(db, schedule.instrument_id)),
+        {"cron": schedule.cron, "enabled": bool(schedule.enabled), **(detail or {})},
+    )
+    db.commit()
 
 
 def _load(db: Session, schedule_id: str) -> Schedule:
@@ -64,7 +80,11 @@ def list_schedules(db: Session = Depends(get_db)) -> ScheduleListResponse:
 
 
 @router.post("", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
-def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> ScheduleOut:
+def create_schedule(
+    payload: ScheduleCreate,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
+) -> ScheduleOut:
     # Validate the expression **before** the duplicate check: `422 invalid_cron`
     # names the actual defect, while `409 duplicate_schedule` on a typo'd cron sends
     # the reader hunting for a schedule that has nothing to do with their mistake.
@@ -87,15 +107,22 @@ def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)) -> S
             expression,
             enabled=payload.enabled,
             min_age_hours=payload.minAgeHours,
+            owner_id=principal.user_id,  # ★v15：创建者；ticker 触发的 run 以它作 `created_by`
         )
     except IntegrityError as exc:  # the partial unique index is the real guard
         db.rollback()
         raise DuplicateSchedule() from exc
+    _audit(db, principal, "schedule.create", schedule)
     return to_schedule_out(db, schedule)
 
 
 @router.patch("/{schedule_id}", response_model=ScheduleOut)
-def patch_schedule(schedule_id: str, payload: SchedulePatch, db: Session = Depends(get_db)) -> ScheduleOut:
+def patch_schedule(
+    schedule_id: str,
+    payload: SchedulePatch,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
+) -> ScheduleOut:
     schedule = _load(db, schedule_id)
     if payload.enabled:
         _assert_no_duplicate(db, schedule.instrument_id, exclude_id=schedule.id)
@@ -110,12 +137,23 @@ def patch_schedule(schedule_id: str, payload: SchedulePatch, db: Session = Depen
     except IntegrityError as exc:
         db.rollback()
         raise DuplicateSchedule() from exc
+    _audit(db, principal, "schedule.update", updated)
     return to_schedule_out(db, updated)
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_schedule(schedule_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_schedule(
+    schedule_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> Response:
     schedule = _load(db, schedule_id)
+    # 先写审计（flush，不提交），随后与删除同一事务提交：快照在删除前取。
+    audit_service.record(
+        db,
+        principal,
+        "schedule.delete",
+        AuditTarget("schedule", schedule.id, scheduler_service.symbol_of(db, schedule.instrument_id)),
+        {"cron": schedule.cron},
+    )
     db.delete(schedule)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

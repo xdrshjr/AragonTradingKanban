@@ -122,6 +122,74 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
 
 ---
 
+## 用户与权限（v15）
+
+站点现在有**账号**：游客只读、登录用户有每日额度、管理员管理人与站点、一个唯一的根管理员（root）管理管理员。设计与验收口径见 `docs/plans/user-auth-permissions/spec.md`。
+
+**三种身份与一个脚本凭据**
+
+| 身份 | 能做什么 |
+| --- | --- |
+| 游客（无会话） | 浏览全站：报告、行情、检索、导出、`cite` 追问；**不能**生成 / 整理 / 加自选。写操作一律 `401` |
+| `user` | 游客能做的 + 生成报告、`deep` 追问（各有**每日额度**，默认 3 / 10，北京时间 0 点重置）、个人自选、整理**自己**的报告；额度用完可「申请额外额度」 |
+| `admin` | `user` + 整理任何人的报告、定时刷新、成本只读、引擎自检、**后台**（概览、用户、邀请码、额度申请、审计、设置、平台精选）。管理员对 `user` 可停用 / 重置密码 / 踢下线 / 调额度 / 解锁 / 删除，**不能**动其它管理员 |
+| `root`（唯一） | `admin` + 任命 / 降级管理员、改月度预算。不可被降级、停用、删除（`403 root_protected`） |
+| `service`（脚本） | 带 `API_TOKEN` 的 `Authorization: Bearer`。可触发生成、整理报告、读概览 / 审计、维护平台精选；**不能**管人、额度、邀请码、注册模式与月度预算（令牌泄露的最坏后果被限死） |
+
+- **会话**：HttpOnly Cookie（`aragon_sid`），库里只存 `sha256(令牌)`。不勾「记住我」是浏览器会话 Cookie（服务端 12 小时到期）；勾选后绝对 30 天、空闲 7 天；每人最多 10 个活会话。停用 / 改角色 / 改密**下一次请求立即生效**，不用等会话过期。
+- **注册**：三个模式，管理员在「系统设置」里随时切换、**无需重启**：`open`（图形验证码）/ `invite`（只许邀请码；邀请码注册免验证码，是受限用户的保底通道）/ `closed`。邀请码永远只产生普通用户。
+- **登录防护**：连错 3 次要验证码，连错 5 次锁 15 分钟（对不存在的用户名同样成立，响应与真用户**逐字相同**）；同 IP 限速。管理员可在后台解锁，或离线 `python -m app.cli unlock <用户名>`。
+- **额度**：日额度先用、赠送余额后用；失败 / 取消 / 超时的生成**自动退还**；管理员 / root / 脚本 / 定时刷新不扣额度。另有**全站日总量上限**（默认 60，设置里可调，`0` = 不限）——它是没设月度预算时唯一的「人头」护栏。
+- **审计**：所有后台动作与登录 / 锁定 / 改密写入只追加的 `audit_log`（保留 365 天），后台「审计日志」可筛选；日志与审计里**永不**出现密码、令牌、验证码答案。
+- **`AUTH_MODE=open`**：旧的无鉴权行为（所有请求都是全权限的 `service`）。仅用于本地演示与测试；启动时 API 会打一条 ERROR 横幅。**不要**在任何别人能访问的机器上用它。
+
+**第一次登录**
+
+1. 空库启动时自动创建根管理员：用户名 `jdqqjr`，初始密码见 `.env.example` 的 `ROOT_ADMIN_PASSWORD`（需求里公开的那一个）。
+2. 用它登录会被**强制先改密**（`AUTH_FORCE_ROOT_PASSWORD_CHANGE=1`，默认）：改完之前除 `/auth/me`、`/auth/password`、`/auth/logout` 外的接口都是 `403 password_change_required`。
+3. ⚠️ `ROOT_ADMIN_PASSWORD` **只在第一次引导（库里还没有 root）时读取一次**。之后改这个环境变量**什么都不会发生**——否则谁能改 `.env` 谁就能悄悄重置 root 密码。改 root 密码：登录后在账号页改；忘了见下一节。
+
+**上线（nginx 之后）必做**：systemd 单元里 `TRUST_PROXY=1`、`COOKIE_SECURE=1`（`deploy/systemd/aragon-trading-api.service` 已写好）。不设 `TRUST_PROXY` 则所有访客都是 `127.0.0.1`，共用一个登录限速桶；不设 `COOKIE_SECURE` 则 Cookie 缺 `Secure`。`deploy/ops/status.sh` 会逐项核对并打印 `auth: enforced` / `trust_proxy: 1`、root 是否仍是默认口令。**`API_TOKEN` 若曾以 `NEXT_PUBLIC_API_TOKEN` 的形式构建进过前端，视为已泄露，先轮换再上线**（前端已不再读它；设置它等于把管理员级凭据公开给所有访客）。
+
+### 找回密码、注销账号、导出（v16）
+
+没有邮件 / 短信通道，所以普通用户的「忘记密码」靠**恢复码**自助闭环：
+
+- **恢复码**：注册成功时**只展示一次**（`XXXXX-XXXXX-XXXXX-XXXXX`，约 100 bit 熵；库里只存 `sha256`）。弹窗要求勾选「我已保存」才能继续，可复制或下载 `.txt`。没保存也能登录，账号页会常驻一条提示；老用户 / 丢了响应的人在账号页「恢复码」卡输入当前密码即可**重新生成**（旧码立即作废）。
+- **找回**：登录页「忘记密码？」→ `/recover`：用户名 + 恢复码 + 新密码 + 图形验证码。成功后**全部会话被吊销**、锁定解除、**旧恢复码作废并当场签发新码**（要再保存一次），**不会自动登录**。所有「码 / 用户」类失败的响应**逐字节相同**（防枚举），失败会写审计 `auth.recovery.failure` 并出现在后台概览「安全事件（24h）」。
+- **root 不适用**：根管理员继续走离线 CLI（上一节）；`python -m app.cli clear-recovery <用户名>` 可吊销某账号的恢复码。管理员可在「系统设置」里整体关闭自助找回（`authRecoveryEnabled`，初始值取 `AUTH_RECOVERY_ENABLED`）。
+- **自助注销**：账号页底部「危险区」，需要**同时**输入密码与用户名。立即生效：会话全吊销、个人自选清空、待处理额度申请自动拒绝、用户名释放；账本与审计保留。root 不可注销。
+- **管理员导出**：「用户」「审计」页的 CSV 导出（UTF-8 带 BOM、与当前筛选一致、单次上限 50 000 行、公式注入已转义、**不含任何凭据列**）；每次导出都写审计并限频（6 次 / 分钟）。用户表可多选后**批量赠送额度**（−50 ~ 50，全成全败）。
+- **保留期**：已吊销 / 已过期的会话在 `AUTH_SESSION_RETAIN_DAYS`（默认 30 天）后由清扫循环删除，活会话不受影响。
+- **HSTS**：`deploy/nginx/aragon-trading.conf` 在 server 级加了 `Strict-Transport-Security: max-age=15552000`（180 天，**不含** `includeSubDomains` / `preload`）；上线后用 `curl -I https://<域名>` 核对。
+
+### 忘记 root 密码
+
+没有邮件找回，也没有任何 HTTP 后门：**能在持有数据库文件的那台机器上跑命令，就是授权**。
+
+```text
+cd api
+python -m app.cli reset-root-password            # 交互输入（不回显、输两遍）
+python -m app.cli reset-root-password --password "新的强密码"   # 脚本用；会留在 shell 历史里
+python -m app.cli create-admin <用户名>           # 再建一个管理员（无终端时生成临时密码，只打印一次）
+python -m app.cli unlock <用户名>                 # 解除登录锁定
+```
+
+- 重置会：**吊销 root 的全部会话**、解除锁定、置**强制下次登录改密**、写审计 `root.password.cli_reset`（`actor=system`，不含密码）。新密码仍要满足密码策略（至少 8 位、至少两类字符、不是弱口令）。
+- 退出码：`0` 成功 / `1` 被拒（密码太弱、用户名不存在…）/ `2` 环境没就绪（库打不开、还没迁移、还没有 root——先启动一次服务让它自动引导）。
+- 服务运行中也可执行：被吊销的会话在服务的**下一次请求**就失效。生产上用服务账号执行：`sudo -u aragon /opt/aragon-trading/api/.venv/bin/python -m app.cli reset-root-password`（工作目录 `/opt/aragon-trading/api`）。
+
+### 回环主机对齐（`localhost` ≠ `127.0.0.1`）
+
+浏览器把 `localhost` 与 `127.0.0.1` 当成**两个不同的主机**，登录 Cookie 不会在它们之间共享。开发期最常见的症状：「登录成功，但立刻掉线」。
+
+- 前端已自动处理：若页面主机与 `NEXT_PUBLIC_API_BASE` 的主机都属于 `{localhost, 127.0.0.1, [::1]}` 且不相等，API 地址的主机名会被换成页面当前的主机名（端口、协议不变）。`ALLOW_ORIGINS` 默认已同时含两种写法。
+- 所以**打开页面时用哪个都行，但别中途混用**（书签、`start-all.ps1` 打开的 `http://localhost:3000`、手敲的 `http://127.0.0.1:3000` 各是各的会话）。
+- 生产走 nginx 同源（`https://aragontrading.online`），不会触发这条。
+- 用 curl 验证登录时同样要保持主机名一致：`curl -c jar -b jar http://127.0.0.1:8000/api/v1/auth/login …`。
+
+---
+
 ## 环境变量
 
 全部有默认值，`.env` 不存在也能启动（详见 `.env.example` 的注释）。
@@ -130,8 +198,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-all.ps1
 | --- | --- | --- |
 | `PY_API_PORT` | `8000` | API 端口 |
 | `DATABASE_URL` | `sqlite:///api/data/app.db` | 可换 Postgres |
-| `ALLOW_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | CORS |
-| `API_TOKEN` | 空 | 非空时启用 Bearer；SSE 例外，走 60 秒 `?token=` 短签名 |
+| `ALLOW_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | CORS 白名单。Cookie 会话下**不许含 `*`**（启动即报错）；同源部署（nginx）留空 |
+| `API_TOKEN` | 空 | v15 起是**脚本用的 `service` 凭据**（`Authorization: Bearer`），不再是整站密码：匿名 / 错误的 Bearer 按游客处理。SSE 走 60 秒 `?token=`（用 `SESSION_SECRET` 签名）。**只放服务端** |
+| `NEXT_PUBLIC_API_TOKEN` | — | ⚠️ **已废弃**：`NEXT_PUBLIC_*` 会被编进浏览器包，设置它等于把 `API_TOKEN` 公开给所有访客。前端不再读取，请勿定义 |
+| `AUTH_MODE` | `enforced` | `open` = 旧的无鉴权行为（所有请求为全权限 `service`），仅限本地演示 / 测试，启动打 ERROR 横幅 |
+| `ROOT_ADMIN_USERNAME` / `ROOT_ADMIN_PASSWORD` | `jdqqjr` / 见 `.env.example` | **仅在库里还没有 root 时读取一次**；之后改它无效（忘记密码见「忘记 root 密码」） |
+| `AUTH_FORCE_ROOT_PASSWORD_CHANGE` | `1` | 默认口令首次登录强制改密；`0` 时界面出现不可关闭的红色横幅 |
+| `SESSION_SECRET` | 空 | SSE 令牌签名密钥；空 = 首次启动生成并存库（重启不变） |
+| `COOKIE_SECURE` | `auto` | `auto`（https 或受信代理的 https 才加 `Secure`）/ `1` / `0`。本地 http 下加了 `Secure` 浏览器会直接丢 Cookie |
+| `TRUST_PROXY` | `0` | `1` 时信任 nginx 的 `X-Forwarded-For/Proto/Host`（取最右一跳）。**nginx 之后必须为 1**（systemd 单元已设），否则所有访客共用 `127.0.0.1` 的限速桶；API 可被公网直连时绝不能设 1 |
+| `QUOTA_TZ` | `Asia/Shanghai` | 「每日额度」的自然日所在时区 |
+| `AUTH_MAX_SESSIONS_PER_USER` | `10` | 超出踢最旧的会话 |
+| `AUTH_SESSION_ABS_DAYS` / `AUTH_SESSION_IDLE_DAYS` | `30` / `7` | 「记住我」的绝对 / 空闲有效期；不记住是浏览器会话 Cookie + 服务端 12 小时 |
+| `AUTH_SESSION_RETAIN_DAYS` | `30` | 死会话（已吊销 / 空闲过期）在库里再保留多少天后被清扫；活会话不受影响 |
+| `AUTH_RECOVERY_ENABLED` | `1` | 自助找回（恢复码）的**初始**开关；后台「系统设置」可随时覆盖，无需重启 |
+| `RATE_LIMIT_ENABLED` | `1` | `0` 关闭进程内限速器，仅供测试 |
+| `AUDIT_RETENTION_DAYS` | `365` | 审计日志保留期，每天清一次 |
+| `AUTH_TEST_HOOKS` | `0` | `1` 才会挂载 `GET /auth/_test/captcha-answer`（交出验证码答案，仅 e2e 用，**绝不能**在可访问的机器上开） |
 | `AGENT_MODE` | `auto` | `auto` 由预检决定 / `real` 缺能力直接报错 / `mock` 永不联网 |
 | `FORCE_PREFLIGHT` | `0` | `1` 时忽略 60 秒能力缓存 |
 | `ARAGON_REQUIRED_TOOLS` | `read_file,glob,grep,list_dir,submit_result` | allow 列表基线，运行时与 `info.tools` 求交集 |
@@ -522,8 +605,15 @@ api/app/
                     sse_token（run 与 ask 共用的短签名）
                     numeric_claims（数字分类与接地的唯一真源）· block_dates（区间抽取）
                     cost_service（账本 / 预估 / 预算闸门）
+                    user_service · session_service · auth_service · invite_service · captcha（v15 账号与会话）
+                    quota_service · quota_requests（额度账本 / 预留 / 退还 / 申请）· settings_service（带校验的设置）
+                    audit_service（只追加审计）· admin_user_service · admin_overview · featured_service（后台）
+                    bootstrap（根管理员引导，只读一次环境变量）
+  security/         policy（逐路由默认拒绝的策略表）· deps（主体解析 / enforce）· objects（对象级规则与管理员矩阵）
+                    permissions（读 contracts/permissions.json）· passwords（scrypt）· csrf · ratelimit
+  cli.py            离线恢复：reset-root-password · create-admin · unlock（见「忘记 root 密码」）
   routers/          health · capabilities · symbols · instruments · reports · runs · watchlist
-                    asks · search · schedules · cost（v6）
+                    asks · search · schedules · cost（v6）· auth · me · admin（v15）
   db/               session（WAL + 外键）· models/ · migrations/（唯一 schema 真源）
 web/
   app/              落地页 · [symbol] 工作台（RSC 直出 + ?report&section&block 深链）

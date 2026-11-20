@@ -54,3 +54,7 @@ Thumbs.db
 .deploy-backups/
 .backups/
 .aragon-home/
+
+# stray local artefacts (pytest stdout dumps, one-off patch scripts)
+api/pytest-out*.txt
+**/_patch_tmp.py

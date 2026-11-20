@@ -22,11 +22,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db.session import get_db
-from ..errors import ReportNotFound, Unauthorized
+from ..errors import Forbidden, ReportNotFound, Unauthorized
 from ..models import Report, ReportAsk
 from ..schemas.ask import AskListResponse, AskOut, AskQueuedResponse, AskRequest
 from ..schemas.run import CancelResponse, EventsTokenResponse
-from ..services import ask_service, report_service
+from ..security import deps, objects
+from ..security.principal import Principal
+from ..services import ask_service, quota_service, report_service
 from ..services.sse_token import TOKEN_TTL_SEC, issue_sse_token, verify_sse_token
 
 router = APIRouter(tags=["asks"])
@@ -61,14 +63,20 @@ async def ask_report(
     payload: AskRequest,
     response: Response,
     db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
 ) -> AskOut | AskQueuedResponse:
     """`cite` answers inline (200) — `deep` queues a task and returns 202 (§18.5.1)."""
+    # ★v15：`cite` 公开（零成本、不计额度、按 IP 限速）；`deep` 要 `ask.deep`（guest → 401）+ `deep_ask` 额度。
+    if payload.mode == "deep" and not principal.can("ask.deep"):
+        if principal.kind == "guest":
+            raise Unauthorized(reason="no_session")
+        raise Forbidden(permission="ask.deep")
     report = _load_report(db, report_id)
     question = ask_service.normalize_question(payload.question)
     settings = get_settings()
 
     if payload.mode == "cite":
-        ask = ask_service.ask_cite(db, report, question)
+        ask = ask_service.ask_cite(db, report, question, user_id=principal.user_id)
         return ask_service.to_ask_out(ask)
 
     # ── deep ────────────────────────────────────────────────────────────────
@@ -76,7 +84,12 @@ async def ask_report(
 
     if report.status in DEEP_BLOCKED_STATUSES:
         raise ReportNotReady(detail={"status": report.status})
-    used = ask_service.daily_count(db, report.id, mode="deep")
+    # 额度是用户级、确定的，排在"每报告每日上限"这类名额类错误之前（与生成同一条优先级纪律）。
+    quota_service.precheck(db, principal, "deep_ask")
+    # ★v15：每 (报告, 用户) 计数；非 `user` 主体（service/open 模式）保持旧的全站口径。
+    used = ask_service.daily_count(
+        db, report.id, mode="deep", user_id=principal.user_id if principal.kind == "user" else None
+    )
     if used >= settings.ask_daily_limit:
         raise TooManyAsks(
             detail={
@@ -87,7 +100,7 @@ async def ask_report(
             }
         )
 
-    ask = await asyncio.to_thread(ask_service.create_deep_ask, db, report, question)
+    ask = await asyncio.to_thread(ask_service.create_deep_ask, db, report, question, principal)
     ask_service.schedule_deep(ask.id)
     # Deep is asynchronous: 202 is the contract, and a client branching on it must
     # never see 200 (§18.5.1).
@@ -105,30 +118,35 @@ def list_asks(
     report_id: str,
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    principal: Principal = Depends(deps.get_principal),
 ) -> AskListResponse:
     _load_report(db, report_id)
-    rows = (
-        db.execute(
-            select(ReportAsk)
-            .where(ReportAsk.report_id == report_id)
-            .order_by(ReportAsk.created_at.desc())
-            .limit(limit)
-        )
-        .scalars()
-        .all()
-    )
+    query = select(ReportAsk).where(ReportAsk.report_id == report_id)
+    if not principal.is_admin:
+        # ★v15：只返回"我的"；guest 没有"我的" ⇒ 空列表 200。`user_id IS NULL` 的历史追问仅管理员可见。
+        if principal.user_id is None:
+            return AskListResponse(items=[], total=0)
+        query = query.where(ReportAsk.user_id == principal.user_id)
+    rows = db.execute(query.order_by(ReportAsk.created_at.desc()).limit(limit)).scalars().all()
     return AskListResponse(items=[ask_service.to_ask_out(row) for row in rows], total=len(rows))
 
 
 @router.get("/asks/{ask_id}", response_model=AskOut)
-def get_ask(ask_id: str, db: Session = Depends(get_db)) -> AskOut:
-    return ask_service.to_ask_out(_load_ask(db, ask_id))
+def get_ask(
+    ask_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> AskOut:
+    ask = _load_ask(db, ask_id)
+    objects.assert_can_access_ask(principal, ask)  # 他人 → 404（不泄露"存在但不是你的"）
+    return ask_service.to_ask_out(ask)
 
 
 @router.post("/asks/{ask_id}/events-token", response_model=EventsTokenResponse)
-def ask_events_token(ask_id: str, db: Session = Depends(get_db)) -> EventsTokenResponse:
-    """Bound to the **ask** id (★V4-P1-4). This endpoint itself needs the Bearer."""
-    _load_ask(db, ask_id)
+def ask_events_token(
+    ask_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> EventsTokenResponse:
+    """Bound to the **ask** id (★V4-P1-4). ★v15（RV-5）：对象级校验**只在这里**做一次——
+    非拥有者拿不到令牌就拿不到流；`/events` 本身只验令牌（EventSource 不能带 Authorization）。"""
+    objects.assert_can_access_ask(principal, _load_ask(db, ask_id))
     token, expires_in = issue_sse_token(ask_id)
     return EventsTokenResponse(token=token, expiresIn=expires_in or TOKEN_TTL_SEC)
 
@@ -172,7 +190,10 @@ async def ask_events(
 
 
 @router.post("/asks/{ask_id}/cancel", response_model=CancelResponse)
-def cancel_ask(ask_id: str, db: Session = Depends(get_db)) -> CancelResponse:
+def cancel_ask(
+    ask_id: str, db: Session = Depends(get_db), principal: Principal = Depends(deps.get_principal)
+) -> CancelResponse:
     ask = _load_ask(db, ask_id)
+    objects.assert_can_access_ask(principal, ask)
     ask_service.request_cancel(db, ask)
     return CancelResponse(status="cancelling", runId=ask.id)

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "roles": {
+    "guest": ["report.read", "market.read", "search.read", "ask.cite", "export.read"],
+    "user":  ["@guest", "report.generate", "ask.deep", "watchlist.own", "report.manage_own", "account.self", "quota.request"],
+    "admin": ["@user", "report.manage_any", "schedule.manage", "cost.read", "engine.probe",
+              "admin.overview.read", "admin.users.read", "admin.users.manage", "admin.invites.manage",
+              "admin.quota.manage", "admin.audit.read", "admin.settings.manage", "admin.featured.manage"],
+    "root":  ["@admin", "admin.admins.manage", "cost.manage"]
+  },
+  "service": { "inherits": "admin", "minus": [
+    "admin.admins.manage", "account.self", "quota.request", "watchlist.own",
+    "admin.users.manage", "admin.quota.manage", "admin.invites.manage", "admin.settings.manage",
+    "cost.manage", "report.manage_own"
+  ] }
+}

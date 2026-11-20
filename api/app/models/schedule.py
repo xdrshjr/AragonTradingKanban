@@ -31,6 +31,8 @@ class Schedule(Base):
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+    #: ★v15（0007_users_auth / §24.6.2）：创建者；ticker 触发的 run 以它作 `created_by`。
+    owner_id: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         # "at most one enabled schedule per instrument" is a DB fact, not a hope.
