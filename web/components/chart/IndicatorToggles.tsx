@@ -2,6 +2,11 @@
 
 import { cn } from '@/lib/cn';
 import { copy } from '@/lib/copy';
+import {
+  DEFAULT_CHART_PREFERENCES,
+  loadChartPreferences,
+  saveChartPreferences,
+} from '@/lib/chartPreferences';
 
 export interface IndicatorState {
   ma5: boolean;
@@ -12,7 +17,9 @@ export interface IndicatorState {
   volume: boolean;
 }
 
-const OPTIONS: { key: keyof IndicatorState; label: string; color?: string }[] = [
+const OPTIONS: {
+  key: keyof IndicatorState; label: string; color?: string;
+}[] = [
   { key: 'ma5', label: 'MA5', color: 'var(--warn)' },
   { key: 'ma10', label: 'MA10', color: 'var(--info)' },
   { key: 'ma20', label: 'MA20', color: '#a78bfa' },
@@ -23,43 +30,31 @@ const OPTIONS: { key: keyof IndicatorState; label: string; color?: string }[] = 
 
 /** Toggle set the panel starts from before localStorage is consulted. */
 export const DEFAULT_INDICATORS: IndicatorState = {
-  ma5: true,
-  ma10: false,
-  ma20: true,
-  ma60: true,
-  boll: false,
-  volume: true,
+  ma5: DEFAULT_CHART_PREFERENCES.main.ma5,
+  ma10: DEFAULT_CHART_PREFERENCES.main.ma10,
+  ma20: DEFAULT_CHART_PREFERENCES.main.ma20,
+  ma60: DEFAULT_CHART_PREFERENCES.main.ma60,
+  boll: DEFAULT_CHART_PREFERENCES.main.boll,
+  volume: DEFAULT_CHART_PREFERENCES.volume,
 };
 
-const STORAGE_KEY = 'aragon.indicators.v1';
-
-/** §6.3 requires the toggles to survive a reload; a corrupt value never throws. */
+/** Keep the legacy API while reading the single versioned preference store. */
 export function loadIndicators(): IndicatorState {
-  if (typeof window === 'undefined') return DEFAULT_INDICATORS;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_INDICATORS;
-    const parsed = JSON.parse(raw) as Partial<IndicatorState>;
-    return {
-      ma5: typeof parsed.ma5 === 'boolean' ? parsed.ma5 : DEFAULT_INDICATORS.ma5,
-      ma10: typeof parsed.ma10 === 'boolean' ? parsed.ma10 : DEFAULT_INDICATORS.ma10,
-      ma20: typeof parsed.ma20 === 'boolean' ? parsed.ma20 : DEFAULT_INDICATORS.ma20,
-      ma60: typeof parsed.ma60 === 'boolean' ? parsed.ma60 : DEFAULT_INDICATORS.ma60,
-      boll: typeof parsed.boll === 'boolean' ? parsed.boll : DEFAULT_INDICATORS.boll,
-      volume: typeof parsed.volume === 'boolean' ? parsed.volume : DEFAULT_INDICATORS.volume,
-    };
-  } catch {
-    return DEFAULT_INDICATORS;
-  }
+  const { main, volume } = loadChartPreferences();
+  return {
+    ma5: main.ma5, ma10: main.ma10,
+    ma20: main.ma20, ma60: main.ma60,
+    boll: main.boll, volume,
+  };
 }
 
+/** Update only the six legacy switches without resetting newer preferences. */
 export function saveIndicators(state: IndicatorState): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    /* private mode: persistence is a convenience, not a requirement */
-  }
+  const previous = loadChartPreferences();
+  const { volume, ...main } = state;
+  saveChartPreferences({
+    ...previous, main: { ...previous.main, ...main }, volume,
+  });
 }
 
 export function IndicatorToggles({
@@ -70,7 +65,8 @@ export function IndicatorToggles({
   onChange: (state: IndicatorState) => void;
 }) {
   return (
-    <div role="group" aria-label={copy.chart.indicators} className="flex flex-wrap items-center gap-1">
+    <div role="group" aria-label={copy.chart.indicators}
+      className="flex flex-wrap items-center gap-1">
       {OPTIONS.map((option) => {
         const active = state[option.key];
         return (
@@ -80,17 +76,21 @@ export function IndicatorToggles({
             aria-pressed={active}
             onClick={() => onChange({ ...state, [option.key]: !active })}
             className={cn(
-              'flex h-6 items-center gap-1 rounded-[var(--radius-sm)] border px-1.5 text-[11px] transition-colors',
+              'flex h-10 items-center gap-1 rounded-[var(--radius-sm)]',
+              'border px-1.5 text-[11px] transition-colors',
               active
-                ? 'border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)]'
-                : 'border-transparent text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)]',
+                ? 'border-[var(--border-strong)] bg-[var(--bg-surface-3)] '
+                  + 'text-[var(--text-primary)]'
+                : 'border-transparent text-[var(--text-tertiary)] '
+                  + 'hover:bg-[var(--bg-hover)]',
             )}
           >
             {option.color ? (
               <span
                 aria-hidden="true"
                 className="size-1.5 rounded-full"
-                style={{ background: active ? option.color : 'var(--border-strong)' }}
+                style={{ background: active ? option.color
+                  : 'var(--border-strong)' }}
               />
             ) : null}
             {option.label}

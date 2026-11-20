@@ -120,6 +120,9 @@ export function WorkspaceClient({
   const [online, setOnline] = useState(true);
   const [offlineBadge, setOfflineBadge] = useState<string | null>(null);
   const [instrument, setInstrument] = useState<Instrument>(initialInstrument);
+  useEffect(() => {
+    useUiStore.getState().clearChartFocus();
+  }, [instrument.id]);
   const [reports, setReports] = useState<ReportSummary[]>(initialReports);
   /** ★v6 G3：成本面板 + 预算闸门弹窗。 */
   const [costOpen, setCostOpen] = useState(false);
@@ -684,6 +687,7 @@ export function WorkspaceClient({
           search: capabilities.features.fullTextSearch !== false,
           // ★v14（U1 / §23.5.4）：`false` 时**不渲染**「报告库」入口（不留死链）。
           reportLibrary: capabilities.features.reportLibrary === true,
+          rangeQuery: capabilities.features.rangeQuery === true,
         }}
         history={{
           // ★P1-7：最新版 id 只有一个权威来源（上面那段 `latestReport`），组件不猜。

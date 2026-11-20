@@ -1,0 +1,18 @@
+export const chartCopy = {
+  legacy: '当前服务未支持完整图表数据',
+  invalid: '图表数据契约错误，请重试',
+  refreshingFailed: '刷新失败，保留旧数据',
+  returnBasis: '相邻同复权 K 线收盘比较；可能不同于交易所公布的除权参考涨跌幅',
+  partial: '计算边界周期不完整',
+  lastPeriod: '末周期可能未结束',
+  missingPrevious: '缺少有效前收基准',
+  missingStart: '缺少有效起点价格',
+  dataUpdated: '数据已更新，请重新测量',
+  boundary: '已到当前区间起点',
+  outside: '超出已加载区间',
+  noIntersection: '日期不在已加载区间',
+  logUnavailable: '当前价格包含非正数，无法使用对数坐标',
+  pngDescription: '导出当前图形与图例，不含工具栏、框选矩形及测量卡',
+  pngChanged: '导出期间图表已改变，请重试',
+  hfqAuto: '请求后复权；数据源返回自动复权，非可验证后复权',
+} as const;

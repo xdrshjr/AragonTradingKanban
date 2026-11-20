@@ -1,63 +1,43 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { cn } from '@/lib/cn';
 import { copy } from '@/lib/copy';
-import { deltaArrow, epochToDate, num } from '@/lib/format';
-import { api } from '@/lib/api';
-import { useQuery } from '@tanstack/react-query';
-import type { BarsResponse, ChartAdjust, ChartRange, ChartTimeframe, ChartView } from '@/lib/types';
-
+import { deltaArrow, epochToDate } from '@/lib/format';
+import { chartBarsQuery } from '@/lib/chartQuery';
 import {
-  DEFAULT_INDICATORS,
-  IndicatorToggles,
-  loadIndicators,
-  saveIndicators,
-  type IndicatorState,
-} from './IndicatorToggles';
-import { Segmented } from '../ui/Tabs';
+  buildChartDataset, findDateIndex, calculateMeasurement, getLatestChartChange,
+  type ChartDataset, type ChartSelection, type ChartTool, type Measurement,
+} from '@/lib/chartDataset';
+import {
+  DEFAULT_CHART_PREFERENCES, loadChartPreferences, saveChartPreferences,
+  type ChartPreferences,
+} from '@/lib/chartPreferences';
+import {
+  formatPrice, formatPercent, formatVolume, formatAmount, volumeUnitLabel,
+} from '@/lib/chartFormat';
+import { useUiStore } from '@/lib/store';
+import { isEditableTarget } from '@/lib/keyboard';
+import type { BarsResponse, ChartView } from '@/lib/types';
+import type { CandleChartHandle } from './CandleChart';
+import type { ChartRuntime } from './ChartController';
+import { ChartToolbar } from './ChartToolbar';
+import { ChartReadout, getDatasetPricePrecision } from './ChartReadout';
 import { Skeleton } from '../ui/Skeleton';
 import { Badge, Tag } from '../ui/Badge';
-import { IconButton } from '../ui/Button';
 
-const TIMEFRAMES = [
-  { value: '1d', label: '日' },
-  { value: '1w', label: '周' },
-  { value: '1m', label: '月' },
-] as const;
-
-const RANGES = [
-  { value: '1m', label: '1月' },
-  { value: '3m', label: '3月' },
-  { value: '6m', label: '6月' },
-  { value: '1y', label: '1年' },
-  { value: '3y', label: '3年' },
-] as const;
-
-const ADJUSTS = [
-  { value: 'qfq', label: '前复权' },
-  { value: 'none', label: '不复权' },
-  { value: 'hfq', label: '后复权' },
-] as const;
-
-type TimeframeValue = ChartTimeframe;
-type RangeValue = ChartRange;
-type AdjustValue = ChartAdjust;
-
-/**
- * ★X6 / AC-35 / AC-202：K 线图（lightweight-charts，≈155 kB 源码）改为 `next/dynamic`。
- *
- * 它本来就只能在浏览器里画（canvas，`CandleChart` 在 effect 里挂载），所以服务端渲染的 HTML
- * 没有任何差别；变的只是这 ≈40 kB gzip 不再计入 `/[symbol]` 首屏 JS——首屏预算是硬线，而基线
- * （M44）在加入任何认证代码**之前**就已经是 249.1 kB > 245 kB。占位骨架与图表同样撑满容器，无布局跳动。
- */
-const CandleChart = dynamic(() => import('./CandleChart').then((module) => module.CandleChart), {
-  ssr: false,
-  loading: () => <Skeleton className="m-3 min-h-[200px] flex-1" />,
+const CandleChart = dynamic(() => import('./CandleChart')
+  .then(module => module.CandleChart), {
+  ssr: false, loading: () => <Skeleton className="m-3 min-h-[220px]" />,
 });
+const ChartSettings = dynamic(() => import('./ChartSettings')
+  .then(module => module.ChartSettings), { ssr: false });
+const ChartDataTable = dynamic(() => import('./ChartDataTable')
+  .then(module => module.ChartDataTable), { ssr: false });
 
 export interface PricePanelProps {
   instrumentId: string;
@@ -67,221 +47,426 @@ export interface PricePanelProps {
   timezone?: string;
   lastPrice?: number | null;
   changePct?: number | null;
-  /** ★PCD-2：报价的来源，用来提示"报价与 K 线来自不同数据源"。 */
   quoteSource?: string | null;
   onCloseDrawer?: () => void;
-  /** ★v6 G2a：当前框选的区间（来自 URL），用于提示条与再框一次替换的语义。 */
   brushRange?: { from: string; to: string } | null;
-  /** 框选完成 → 上行给 `WorkspaceClient`（它写 URL，`ReportPanel` 消费）。 */
   onBrushRange?: (range: { from: string; to: string } | null) => void;
-  /**
-   * ★PCD-3：图表口径受控时由 `WorkspaceClient` 拥有（写 URL，并让左栏的选中行
-   * 跟着它走）。不传则组件自己管——`Web/tests/price-panel.test.tsx` 就是这样渲染的。
-   */
   chartView?: ChartView;
   onChartViewChange?: (next: ChartView) => void;
+  rangeQueryEnabled?: boolean;
+  /** undefined renders inline; null keeps the query owner without a canvas. */
+  portalTarget?: HTMLElement | null;
+  expanded?: boolean;
+  onExpandedChange?: (open: boolean) => void;
+  escapeRef?: { current: ((event: KeyboardEvent) => boolean) | null };
 }
 
-export function PricePanel({
-  instrumentId,
-  symbol,
-  name,
-  currency,
-  timezone = 'Asia/Shanghai',
-  lastPrice,
-  changePct,
-  quoteSource = null,
-  onCloseDrawer,
-  brushRange = null,
-  onBrushRange,
-  chartView,
-  onChartViewChange,
-}: PricePanelProps) {
-  const [localView, setLocalView] = useState<ChartView>({ timeframe: '1d', range: '1y', adjust: 'qfq' });
-  const [showSettings, setShowSettings] = useState(false);
-  const [indicatorState, setIndicatorState] = useState<IndicatorState>(DEFAULT_INDICATORS);
+const LATEST: ChartSelection = { index: null, origin: 'latest' };
 
-  const view = chartView ?? localView;
-  const { timeframe, range, adjust } = view;
-  const updateView = useCallback(
-    (patch: Partial<ChartView>) => {
-      const next = { ...view, ...patch };
-      // Keep the local copy in sync even when controlled: it is what the uncontrolled
-      // case reads, and it costs nothing.
-      setLocalView(next);
-      onChartViewChange?.(next);
-    },
-    [onChartViewChange, view],
-  );
-  const setTimeframe = useCallback((value: TimeframeValue) => updateView({ timeframe: value }), [updateView]);
-  const setRange = useCallback((value: RangeValue) => updateView({ range: value }), [updateView]);
-  const setAdjust = useCallback((value: AdjustValue) => updateView({ adjust: value }), [updateView]);
-
-  // localStorage is read after mount (never during render) to stay hydration-safe,
-  // and every change is written back so the toggles survive a reload (§6.3).
-  useEffect(() => {
-    setIndicatorState(loadIndicators());
-  }, []);
-
-  const updateIndicators = useCallback((next: IndicatorState) => {
-    setIndicatorState(next);
-    saveIndicators(next);
-  }, []);
-
-  const barsQuery = useQuery<BarsResponse>({
-    queryKey: ['bars', instrumentId, timeframe, range, adjust],
-    queryFn: () => api.bars(instrumentId, timeframe, range, adjust),
-    staleTime: 60_000,
-    retry: 1,
+function usePanelState(props: PricePanelProps) {
+  const [localView, setLocalView] = useState<ChartView>({
+    timeframe: '1d', range: '1y', adjust: 'qfq',
   });
+  const view = props.chartView ?? localView;
+  const key = [props.instrumentId, view.timeframe, view.range, view.adjust]
+    .join('/');
+  const chart = useRef<CandleChartHandle>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tableOpen, setTableOpen] = useState(false);
+  const [selected, setSelected] = useState({ key, value: LATEST });
+  const selection = selected.key === key ? selected.value : LATEST;
+  const [tool, setTool] = useState<ChartTool>('pan');
+  const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [message, setMessage] = useState('');
+  const [ready, setReady] = useState(0);
+  const [measureFrom, setMeasureFrom] = useState('');
+  const [measureTo, setMeasureTo] = useState('');
+  const theme = useUiStore(state => state.resolvedTheme);
+  const onSelection = useCallback((value: ChartSelection) => {
+    setSelected(current => current.key === key
+      && current.value.index === value.index
+      && current.value.origin === value.origin ? current : { key, value });
+  }, [key]);
+  return { props, view, key, chart, settingsOpen, setSettingsOpen,
+    tableOpen, setTableOpen, selection, tool, setTool, measurement,
+    setMeasurement, message, setMessage, ready, setReady,
+    measureFrom, setMeasureFrom, measureTo, setMeasureTo,
+    theme, onSelection, setLocalView };
+}
+type PanelState = ReturnType<typeof usePanelState>;
 
-  const bars = useMemo(() => barsQuery.data?.bars ?? [], [barsQuery.data]);
-  const indicators = barsQuery.data?.indicators ?? {};
-  const latest = bars[bars.length - 1];
-
-  // ★BUG-2 / R-3: one pair, one source. The candles' own price axis prints
-  // `bars[-1].c` (CandleChart leaves `lastValueVisible` on), so pairing a bars
-  // close with a quote `changePct` rendered a data point that never existed
-  // ("1,729.52 ▼2.2%" on bars that were +0.46%). Preferring `quote` instead would
-  // only move the contradiction next to the axis label, so the pair stays on bars
-  // whenever there are bars to draw — price, change and the date Tag all follow
-  // it — and falls back to `quote` as a whole pair only when the chart is empty
-  // (no axis label, hence nothing to contradict).
-  const pairSource: 'bars' | 'quote' | 'none' = latest ? 'bars' : lastPrice != null ? 'quote' : 'none';
-
-  const lastClose = pairSource === 'bars' && latest ? latest.c : pairSource === 'quote' ? (lastPrice ?? null) : null;
-  const change = useMemo(() => {
-    if (pairSource === 'bars' && latest) {
-      if (bars.length < 2) return null;
-      const previous = bars[bars.length - 2];
-      if (!previous) return null;
-      return (latest.c / previous.c - 1) * 100;
+function usePanelDataset(state: PanelState) {
+  const bridge = useMemo(() => ({ key: state.key, revision: 0,
+    lastResponse: null as BarsResponse | null,
+    runtime: { current: null as ChartRuntime | null },
+  }), [state.key]);
+  const barsQuery = useQuery(chartBarsQuery(
+    state.props.instrumentId, state.view));
+  const response = barsQuery.data;
+  const dataset = useMemo(() => {
+    if (!response?.chart) return null;
+    if (bridge.lastResponse !== response) {
+      bridge.lastResponse = response; bridge.revision += 1;
     }
-    if (pairSource === 'quote') return changePct ?? null;
-    return null;
-  }, [bars, changePct, latest, pairSource]);
+    return buildChartDataset(response, bridge.revision);
+  }, [bridge, response]);
+  const datasetRef = useRef(dataset);
+  datasetRef.current = dataset;
+  return { bridge, barsQuery, response, dataset, datasetRef };
+}
+type DatasetState = ReturnType<typeof usePanelDataset>;
 
-  const changeTone = (change ?? 0) >= 0 ? 'text-[var(--chart-up)]' : 'text-[var(--chart-down)]';
+function hasPositivePrices(dataset: ChartDataset | null,
+  preferences: ChartPreferences) {
+  if (!dataset) return true;
+  const overlays = (['ma5', 'ma10', 'ma20', 'ma60'] as const)
+    .filter(k => preferences.main[k]);
+  const values = dataset.bars.flatMap(b => [b.o, b.h, b.l, b.c]);
+  overlays.forEach(k => values.push(...dataset.indicators[k]
+    .filter((v): v is number => v !== null)));
+  if (preferences.main.ema) ['ema12', 'ema26'].forEach(k =>
+    values.push(...dataset.indicators[k as 'ema12']
+      .filter((v): v is number => v !== null)));
+  if (preferences.main.boll) ['bollUpper', 'bollMiddle', 'bollLower']
+    .forEach(k => values.push(...dataset.indicators[k as 'bollUpper']
+      .filter((v): v is number => v !== null)));
+  return values.every(value => value > 0);
+}
 
-  // ★PCD-2：两个端点落在不同 provider 上时，屏幕上就有两个价，而以前没有任何提示。
-  // `bars` 一侧的 `meta.warnings` 已经带了一条可读文案（后端），这里再给一眼可见的徽标。
-  const barsSource = barsQuery.data?.meta.source ?? null;
-  const sourceDiverges = Boolean(
-    quoteSource && barsSource && quoteSource !== barsSource && barsQuery.data?.meta.reasonCode === 'divergent_source',
-  );
+function usePanelPreferences(state: PanelState, data: DatasetState) {
+  const [preferences, setPreferences] = useState(DEFAULT_CHART_PREFERENCES);
+  useEffect(() => { setPreferences(loadChartPreferences()); }, []);
+  const changePreferences = useCallback((next: ChartPreferences) => {
+    setPreferences(next); saveChartPreferences(next);
+  }, []);
+  const canUseLog = useMemo(() => hasPositivePrices(data.dataset, preferences),
+    [data.dataset, preferences]);
+  const setMessage = state.setMessage;
+  const invalidLog = useCallback(() => {
+    setMessage('当前价格包含非正数，无法使用对数坐标');
+  }, [setMessage]);
+  useEffect(() => {
+    if (!canUseLog && preferences.scale === 'log') {
+      changePreferences({ ...preferences, scale: 'linear' }); invalidLog();
+    }
+  }, [canUseLog, changePreferences, invalidLog, preferences]);
+  const effectivePreferences = !canUseLog && preferences.scale === 'log'
+    ? { ...preferences, scale: 'linear' as const } : preferences;
+  return { preferences, effectivePreferences, canUseLog,
+    changePreferences, invalidLog };
+}
+type PreferenceState = ReturnType<typeof usePanelPreferences>;
 
-  const retry = useCallback(() => {
-    void barsQuery.refetch();
-  }, [barsQuery]);
+function usePanelLifecycle(state: PanelState, data: DatasetState) {
+  const { key, chart, props, setTool, setMeasurement, setMessage,
+    setMeasureFrom, setMeasureTo, measurement } = state;
+  const lastDataset = useRef(data.dataset);
+  useEffect(() => {
+    setTool('pan'); setMeasurement(null); setMessage('');
+    setMeasureFrom(''); setMeasureTo('');
+  }, [key, setTool, setMeasurement, setMessage, setMeasureFrom, setMeasureTo]);
+  useEffect(() => {
+    if (lastDataset.current && data.dataset !== lastDataset.current
+      && measurement) {
+      setMeasurement(null); setMessage('数据已更新，请重新测量');
+    }
+    lastDataset.current = data.dataset;
+  }, [data.dataset, measurement, setMeasurement, setMessage]);
+  useEffect(() => {
+    if (props.escapeRef) props.escapeRef.current = event =>
+      chart.current?.consumeEscape(event) ?? false;
+    return () => { if (props.escapeRef) props.escapeRef.current = null; };
+  }, [chart, props.escapeRef]);
+}
 
-  return (
-    <section
-      aria-label="K 线面板"
-      className="flex h-full min-w-0 flex-col overflow-hidden border-r border-[var(--border-subtle)] bg-[var(--bg-canvas)]"
-      data-print="hide"
-    >
-      <header className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--border-subtle)] px-3 py-2">
-        <div className="flex min-w-0 flex-col">
-          <span className="flex items-baseline gap-1.5">
-            <span className="truncate text-[13px] font-semibold text-[var(--text-primary)]">{name}</span>
-            <span className="mono shrink-0 text-[10.5px] text-[var(--text-tertiary)]">{symbol}</span>
-          </span>
-          <span className="flex items-baseline gap-1.5">
-            <span className="num text-[15px] font-semibold tracking-tight text-[var(--text-primary)]">
-              {lastClose === null ? '—' : num(lastClose, 2)}
-            </span>
-            <span className={cn('num text-[11px] font-medium', changeTone)}>{deltaArrow(change)}</span>
-            <span className="text-[10px] text-[var(--text-tertiary)]">{currency}</span>
-          </span>
-        </div>
+function useReportFocus(state: PanelState, data: DatasetState) {
+  const chartFocus = useUiStore(store => store.chartFocus);
+  const clearChartFocus = useUiStore(store => store.clearChartFocus);
+  const { chart, ready, props, setMessage } = state;
+  const { dataset } = data;
+  useEffect(() => {
+    if (!chartFocus || !dataset || props.portalTarget === null) return;
+    const first = dataset.stats.findIndex(stat =>
+      stat.periodEnd >= chartFocus.from && stat.periodStart <= chartFocus.to);
+    if (first < 0) setMessage('日期不在已加载区间');
+    else {
+      if (!chart.current?.controller) return;
+      let last = first;
+      while (last + 1 < dataset.stats.length
+        && dataset.stats[last + 1]!.periodStart <= chartFocus.to) last += 1;
+      const width = Math.max(Math.min(10, dataset.bars.length),
+        last - first + 7);
+      const center = (first + last) / 2;
+      chart.current.controller.setViewport({
+        from: center - width / 2, to: center + width / 2,
+      });
+    }
+    clearChartFocus();
+  }, [chartFocus, clearChartFocus, dataset, ready, props.portalTarget,
+    chart, setMessage]);
+}
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <Segmented options={TIMEFRAMES} value={timeframe} onChange={setTimeframe} ariaLabel={copy.chart.timeframe} />
-          <Segmented options={RANGES} value={range} onChange={setRange} ariaLabel={copy.chart.range} />
-          <IconButton
-            label={copy.chart.indicators}
-            aria-expanded={showSettings}
-            onClick={() => setShowSettings((value) => !value)}
-          >
-            <Settings2 className="size-3.5" />
-          </IconButton>
-          {onCloseDrawer ? <IconButton label={copy.chart.closeDrawer} onClick={onCloseDrawer}>×</IconButton> : null}
-        </div>
-      </header>
+function getVisibleDates(data: ChartDataset, runtime: ChartRuntime | null) {
+  const limit = (index: number) => Math.max(0,
+    Math.min(data.stats.length - 1, index));
+  const start = limit(Math.floor(runtime?.viewport?.from ?? 0));
+  const end = limit(Math.ceil(runtime?.viewport?.to ?? data.stats.length - 1));
+  return `${data.stats[start]?.periodStart} ~ ${data.stats[end]?.periodEnd}`;
+}
 
-      {showSettings ? (
-        <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-1)] px-3 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Segmented options={ADJUSTS} value={adjust} onChange={setAdjust} ariaLabel={copy.chart.adjust} />
-            <IndicatorToggles state={indicatorState} onChange={updateIndicators} />
-          </div>
-        </div>
-      ) : null}
+function pngCapture(state: PanelState, dataset: ChartDataset,
+  handle: CandleChartHandle, runtime: ChartRuntime | null) {
+  const { props, view } = state;
+  const css = getComputedStyle(document.documentElement);
+  return { panes: handle.capturePanes(),
+    title: `${props.name} ${props.symbol} · ${props.currency}`,
+    subtitle: `${getVisibleDates(dataset, runtime)} · ${view.timeframe} `
+      + `请求${view.adjust}/实际${dataset.chart.effectiveAdjust} · `
+      + `${volumeUnitLabel(dataset.chart.volumeUnit)} · 当前图形与图例`,
+    source: dataset.meta.source,
+    watermark: [dataset.meta.source === 'synthetic' ? '合成行情 · 仅供演示' : '',
+      dataset.meta.cached ? '缓存' : '', dataset.meta.stale ? '数据陈旧' : '',
+      ...dataset.meta.warnings].filter(Boolean).join(' · '),
+    background: css.getPropertyValue('--bg-canvas').trim(),
+    textColor: css.getPropertyValue('--text-primary').trim(),
+  };
+}
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        {barsQuery.isLoading ? (
-          <div className="flex flex-1 flex-col gap-2 p-3">
-            <Skeleton className="h-4 w-32" />
-            <Skeleton className="flex-1" />
-          </div>
-        ) : barsQuery.isError ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-            <p className="text-[12.5px] text-[var(--text-secondary)]">{copy.chart.error}</p>
-            <p className="text-[11px] text-[var(--text-tertiary)]">
-              {barsQuery.error instanceof Error ? barsQuery.error.message : ''}
-            </p>
-            <button
-              type="button"
-              onClick={retry}
-              className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-2 py-1 text-[11.5px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-            >
-              {copy.chart.retry}
-            </button>
-          </div>
-        ) : bars.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center p-6 text-[12px] text-[var(--text-tertiary)]">
-            {copy.chart.empty}
-          </div>
-        ) : (
-          <CandleChart
-            bars={bars}
-            indicators={indicators}
-            timezone={timezone}
-            showVolume={indicatorState.volume}
-            showBoll={indicatorState.boll}
-            showMa={{ ma5: indicatorState.ma5, ma10: indicatorState.ma10, ma20: indicatorState.ma20, ma60: indicatorState.ma60 }}
-            brushEnabled={Boolean(onBrushRange)}
-            onBrushRange={onBrushRange}
-          />
-        )}
-      </div>
+function usePanelExports(state: PanelState, data: DatasetState,
+  settings: PreferenceState) {
+  const [exporting, setExporting] = useState(false);
+  const identity = useRef({
+    preferences: settings.preferences, theme: state.theme,
+  });
+  identity.current = { preferences: settings.preferences, theme: state.theme };
+  const download = async (format: 'csv' | 'png') => {
+    const { dataset, datasetRef } = data;
+    if (!dataset || exporting) return;
+    const handle = state.chart.current;
+    const runtime = handle?.getRuntime() ?? null;
+    const frozenIdentity = identity.current;
+    const viewport = JSON.stringify(runtime?.viewport);
+    setExporting(true);
+    try {
+      const exports = await import('@/lib/chartExport');
+      if (format === 'csv') exports.downloadChartCsv(dataset);
+      else await exports.downloadChartPng({
+        filename: exports.chartExportFilename(state.props.symbol,
+          dataset.meta, 'png'),
+        isCurrent: () => datasetRef.current === dataset
+          && state.chart.current === handle && Boolean(handle?.controller)
+          && JSON.stringify(state.chart.current?.getRuntime()?.viewport)
+            === viewport
+          && identity.current.preferences === frozenIdentity.preferences
+          && identity.current.theme === frozenIdentity.theme,
+        capture: () => pngCapture(state, dataset, handle!, runtime),
+      });
+      state.setMessage(`${format.toUpperCase()} 已导出`);
+    } catch (error) {
+      state.setMessage(error instanceof Error ? error.message : '导出失败，请重试');
+    } finally { setExporting(false); }
+  };
+  return { exporting, download };
+}
 
-      {/* ★v6 G2a：框选提示。区间反查的**结果**在报告头下方（`RangeHint`），
-          这里只负责说你可以框一段、以及当前框的是哪一段 —— 两者不重复。 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-[var(--border-subtle)] px-3 py-1 text-[10px] text-[var(--text-tertiary)]">
-        <span>{copy.range.brushHint}</span>
-        {brushRange ? (
-          <span className="num truncate text-[var(--accent)]">
-            {brushRange.from} ~ {brushRange.to}
-          </span>
-        ) : null}
-      </div>
+function useWorkbench(props: PricePanelProps) {
+  const state = usePanelState(props);
+  const data = usePanelDataset(state);
+  const preferences = usePanelPreferences(state, data);
+  const exports = usePanelExports(state, data, preferences);
+  usePanelLifecycle(state, data);
+  useReportFocus(state, data);
+  const latest = data.response?.bars.at(-1);
+  const latestChange = latest
+    ? getLatestChartChange(data.response)
+    : props.lastPrice != null ? props.changePct ?? null : null;
+  const lastPrice = latest ? latest.c : props.lastPrice ?? null;
+  const date = latest ? data.response?.chart?.stats.at(-1)?.periodEnd
+    ?? epochToDate(latest.ts, props.timezone) : null;
+  return { ...state, ...data, ...preferences, ...exports,
+    latest, latestChange, lastPrice, date,
+    enabled: Boolean(data.dataset?.bars.length) };
+}
+type Workbench = ReturnType<typeof useWorkbench>;
 
-      <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-[var(--border-subtle)] px-3 py-1.5 text-[10px] text-[var(--text-tertiary)]">
-        <span>{copy.chart.dataSource}：{barsQuery.data?.meta.source ?? '—'}</span>
-        <span aria-hidden="true">·</span>
-        <span className="num">{barsQuery.data?.meta.barsCount ?? 0} 根</span>
-        {barsQuery.data?.meta.cached ? <Badge tone="neutral">{copy.chart.cached}</Badge> : null}
-        {barsQuery.data?.meta.source === 'synthetic' ? <Badge tone="warn">{copy.chart.synthetic}</Badge> : null}
-        {/* ★PCD-2：`/quote` 与 `/bars` 各自走链，来源可以不同。钉住那个赢家被否决了
-            （解钉只会变成某个端点 503），所以这里把分叉说出来，而不是静默。 */}
-        {sourceDiverges ? (
-          <Badge tone="warn" title={copy.chart.sourceDivergentHint}>
-            {copy.chart.sourceDivergent}
-          </Badge>
-        ) : null}
-        {latest ? <Tag>{epochToDate(latest.ts, timezone)}</Tag> : null}
-      </footer>
-    </section>
-  );
+function locateDate(state: Workbench, date: string) {
+  const { dataset } = state;
+  if (!dataset) return;
+  const index = findDateIndex(dataset, date);
+  if (index < 0) return;
+  state.chart.current?.controller?.locate(index);
+  const stat = dataset.stats[index]!;
+  const outside = date < dataset.stats[0]!.periodStart
+    || date > dataset.stats.at(-1)!.periodEnd;
+  state.setMessage(outside ? `超出已加载区间，已定位至 ${stat.periodEnd}`
+    : date < stat.periodStart ? `休市日，已定位至 ${stat.periodEnd}` : '');
+}
+
+function PanelHeader({ state }: { state: Workbench }) {
+  const { props, latestChange, lastPrice, latest, dataset } = state;
+  return <header className="chart-header">
+    <div><strong>{props.name}</strong> <span className="mono">
+      {props.symbol}</span></div>
+    <div className="chart-latest-price">
+      <strong>{formatPrice(lastPrice,
+        dataset ? getDatasetPricePrecision(dataset) : undefined)}</strong>
+      <span className={cn((latestChange ?? 0) > 0 ? 'chart-positive'
+        : (latestChange ?? 0) < 0 ? 'chart-negative' : '')}>
+        {deltaArrow(latestChange, latestChange === 0 ? 2 : 1)}
+      </span> <span>{props.currency}</span>
+      {!latest && props.lastPrice != null ? <Badge>独立报价</Badge> : null}
+    </div>
+    {props.onCloseDrawer ? <button type="button" className="chart-close-drawer"
+      onClick={props.onCloseDrawer}
+      aria-label={copy.chart.closeDrawer}>×</button>
+      : null}
+  </header>;
+}
+
+function PanelToolbar({ state: s }: { state: Workbench }) {
+  return <ChartToolbar view={s.view} onViewChange={next => {
+    s.setLocalView(next); s.props.onChartViewChange?.(next);
+  }} tool={s.tool} onToolChange={s.setTool} disabled={!s.enabled}
+    rangeQueryEnabled={s.props.rangeQueryEnabled}
+    onZoomIn={() => s.chart.current?.controller?.zoom(.8)}
+    onZoomOut={() => s.chart.current?.controller?.zoom(1.25)}
+    onFit={() => s.chart.current?.controller?.fit()}
+    onLatest={() => s.chart.current?.controller?.latest()}
+    onLocate={date => locateDate(s, date)}
+    onSettings={() => s.setSettingsOpen(true)}
+    onExpand={() => s.props.onExpandedChange?.(!s.props.expanded)}
+    onToggleTable={() => s.setTableOpen(open => !open)}
+    tableOpen={s.tableOpen} expanded={s.props.expanded}
+    exporting={s.exporting} onCsv={() => void s.download('csv')}
+    onPng={() => void s.download('png')}
+    onRefresh={() => void s.barsQuery.refetch()}
+    isRefreshing={s.barsQuery.isFetching} />;
+}
+
+function PanelNotices({ state: s }: { state: Workbench }) {
+  return <>
+    {s.barsQuery.isError ? <div role="status" className="chart-notice">
+      {s.response ? '刷新失败，保留旧数据' : copy.chart.error}：
+      {s.barsQuery.error instanceof Error ? s.barsQuery.error.message : ''}
+      <button type="button" onClick={() => void s.barsQuery.refetch()}>
+        {copy.chart.retry}</button>
+    </div> : null}
+    {s.message ? <p role="status" className="chart-notice">
+      {s.message}</p> : null}
+  </>;
+}
+
+function PanelCharts({ state: s }: { state: Workbench }) {
+  return <>
+    {s.dataset && s.enabled ? <ChartReadout dataset={s.dataset}
+      preferences={s.effectivePreferences} selection={s.selection}
+      onLatest={() => s.chart.current?.controller
+        ?.setSelection(null, 'latest')} />
+      : null}
+    {s.latest ? <CandleChart ref={s.chart} key={s.key} bars={s.response!.bars}
+      indicators={s.response!.indicators} dataset={s.dataset}
+      preferences={s.effectivePreferences} selection={s.selection} tool={s.tool}
+      onSelection={s.onSelection} onToolChange={s.setTool}
+      onMeasurement={s.setMeasurement} onBrushRange={s.props.onBrushRange}
+      rangeQueryEnabled={s.props.rangeQueryEnabled} onMessage={s.setMessage}
+      runtimeRef={s.bridge.runtime}
+      onReady={() => s.setReady(value => value + 1)} />
+      : s.response ? <p className="chart-empty">{copy.chart.empty}</p> : null}
+  </>;
+}
+
+function PanelMeasurement({ state: s }: { state: Workbench }) {
+  const { measurement: m, dataset } = s;
+  return <>
+    {s.enabled && s.tool === 'measure' ? <form className="chart-measure-form"
+      onSubmit={event => {
+        event.preventDefault();
+        if (dataset && s.measureFrom && s.measureTo) s.setMeasurement(
+          calculateMeasurement(dataset, findDateIndex(dataset, s.measureFrom),
+            findDateIndex(dataset, s.measureTo)));
+      }}>
+      <label>测量起始日期<input type="date" value={s.measureFrom}
+        onChange={event => s.setMeasureFrom(event.target.value)}
+        required /></label>
+      <label>测量终止日期<input type="date" value={s.measureTo}
+        onChange={event => s.setMeasureTo(event.target.value)}
+        required /></label>
+      <button type="submit" className="chart-tool-button">计算测量</button>
+    </form> : null}
+    {m && dataset ? <div className="chart-measurement" role="status">
+      <strong>首末收盘收益 {formatPercent(m.returnPct)}</strong>
+      <span>{m.from} ~ {m.to} · {m.count} 根</span>
+      <span>最高 {formatPrice(m.high)} · 最低 {formatPrice(m.low)}</span>
+      <span>累计量 {formatVolume(m.volume, dataset.chart)} ·
+        累计额 {formatAmount(m.amount, s.props.currency)}</span>
+      {m.returnPct === null ? <span>缺少有效起点价格</span> : null}
+      <button type="button" onClick={() => s.setMeasurement(null)}>清除测量</button>
+    </div> : null}
+  </>;
+}
+
+function PanelBody({ state: s }: { state: Workbench }) {
+  return <div className="chart-scroll-body">
+    {s.barsQuery.isLoading ? <Skeleton className="m-3 h-80" /> : null}
+    {s.response && !s.response.chart ? <p className="chart-notice">
+      当前服务未支持完整图表数据，正在使用简化模式</p> : null}
+    <PanelCharts state={s} /><PanelMeasurement state={s} />
+    {s.tableOpen && s.dataset ? <ChartDataTable dataset={s.dataset}
+      preferences={s.effectivePreferences} selection={s.selection}
+      onSelect={index => s.chart.current?.controller?.setSelection(index,
+        'keyboard')} /> : null}
+  </div>;
+}
+
+function PanelFooter({ state: s }: { state: Workbench }) {
+  const { response, dataset, view, date } = s;
+  const displayedSource = s.latest
+    ? response?.meta.source : s.props.lastPrice != null
+      ? s.props.quoteSource : null;
+  return <footer className="chart-footer">
+    <span>{copy.chart.dataSource}：{displayedSource ?? '—'}</span>
+    <span>{response?.meta.barsCount ?? 0} 根</span>
+    {response?.meta.cached ? <Badge>{copy.chart.cached}</Badge> : null}
+    {displayedSource === 'synthetic' ? <Badge tone="warn">
+      {copy.chart.synthetic}</Badge> : null}
+    {response?.meta.stale ? <Badge tone="warn">数据陈旧</Badge> : null}
+    {response?.meta.reasonCode === 'divergent_source' ? <Badge tone="warn">
+      {copy.chart.sourceDivergent}</Badge> : null}
+    {date ? <Tag>{date}</Tag> : null}
+    {dataset ? <span>请求{view.adjust} / 实际{dataset.chart.effectiveAdjust}</span>
+      : null}
+    {dataset?.chart.effectiveAdjust === 'auto' && view.adjust === 'hfq'
+      ? <span>请求后复权；数据源返回自动复权，非可验证后复权</span> : null}
+    {dataset?.chart.historyLimited ? <span>预热历史不足十年</span> : null}
+    {view.timeframe !== '1d' ? <span>末周期可能未结束</span> : null}
+    {response?.meta.warnings.map((warning, i) => <span key={i}>
+      {warning}</span>)}
+  </footer>;
+}
+
+/** Portal moves keep the owner, query, preferences and runtime snapshots. */
+export function PricePanel(props: PricePanelProps) {
+  const state = useWorkbench(props);
+  const content = <section aria-label="K 线面板" className="chart-workbench"
+    data-print="hide" tabIndex={-1} onKeyDown={event => {
+      if (event.key === 'Escape' && isEditableTarget(event.target)) {
+        event.stopPropagation();
+      }
+    }}>
+    <PanelHeader state={state} /><PanelToolbar state={state} />
+    <PanelNotices state={state} /><PanelBody state={state} />
+    {props.brushRange ? <div className="chart-notice">报告区间：
+      {props.brushRange.from} ~ {props.brushRange.to}
+      <button type="button" onClick={() => props.onBrushRange?.(null)}>
+        清除报告区间</button>
+    </div> : null}
+    <PanelFooter state={state} />
+    {state.settingsOpen ? <ChartSettings open={state.settingsOpen}
+      onOpenChange={state.setSettingsOpen} preferences={state.preferences}
+      onChange={state.changePreferences} canUseLog={state.canUseLog}
+      onInvalidLog={state.invalidLog} /> : null}
+  </section>;
+  if (props.portalTarget === null) return null;
+  return props.portalTarget
+    ? createPortal(content, props.portalTarget) : content;
 }

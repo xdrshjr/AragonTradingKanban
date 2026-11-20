@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkspaceClient } from '@/components/shell/WorkspaceClient';
 import { useUiStore } from '@/lib/store';
+import { copy } from '@/lib/copy';
+import { INDICATOR_KEYS } from '@/lib/chartDataset';
 import type {
   BarsResponse,
+  BlockRangeResponse,
   Capabilities,
   DiffResult,
   Instrument,
@@ -178,6 +181,11 @@ vi.mock('next/link', () => ({
   ),
 }));
 
+// URL tests need an enabled workbench; native canvas is covered separately.
+vi.mock('@/components/chart/CandleChart', () => ({
+  CandleChart: () => <div data-testid="workspace-chart" />,
+}));
+
 /* ── 通用 JSON 应答（一个 handler 兜住所有接口）────────────────────────── */
 
 function jsonResponse(payload: unknown): Response {
@@ -189,7 +197,8 @@ function jsonResponse(payload: unknown): Response {
   } as unknown as Response;
 }
 
-function barsPayload(): BarsResponse {
+function barsPayload(url: string): BarsResponse {
+  const query = new URL(url, 'http://localhost').searchParams;
   return {
     instrument: INSTRUMENT,
     bars: [],
@@ -197,11 +206,31 @@ function barsPayload(): BarsResponse {
     meta: {
       source: 'fixture',
       barsCount: 0,
-      adjust: 'qfq',
-      timeframe: '1d',
+      adjust: query.get('adjust') ?? 'qfq',
+      timeframe: query.get('timeframe') ?? '1d',
       cached: false,
       stale: false,
       warnings: [],
+    },
+  };
+}
+
+function chartBarsPayload(url: string): BarsResponse {
+  const ts = Date.UTC(2026, 10, 16, 7) / 1000;
+  const response = barsPayload(url);
+  return {
+    ...response,
+    bars: [{ ts, o: 100, h: 102, l: 99, c: 101, v: 1000, amount: null }],
+    indicators: Object.fromEntries(INDICATOR_KEYS.map(key => [key, [null]])),
+    meta: { ...response.meta, barsCount: 1, fromTs: ts, toTs: ts },
+    chart: {
+      version: 'chart/v1', calculationBarsCount: 1, warmupBarsCount: 0,
+      historyLimited: true, volumeUnit: 'unknown', volumeUnitSize: null,
+      amountCurrency: 'CNY', effectiveAdjust: 'qfq',
+      returnBasis: 'adjacent_close', indicatorConvention: 'aragon-chart-v1',
+      stats: [{ ts, periodStart: '2026-11-16', periodEnd: '2026-11-16',
+        leadingPartial: false, previousClose: null, change: null,
+        changePct: null, amplitudePct: null }],
     },
   };
 }
@@ -225,11 +254,20 @@ function payloadFor(url: string): unknown {
   const path = url.split('/api/v1')[1] ?? url;
   if (path.startsWith('/schedules')) return { items: [], total: 0 };
   if (path.startsWith('/watchlist')) return { items: [] };
-  if (path.includes('/bars')) return barsPayload();
+  if (path.includes('/bars')) return barsPayload(url);
   if (path.includes('/quote')) {
     return { instrumentId: INSTRUMENT.id, updatedAt: '2026-02-10T00:00:00Z' };
   }
   if (path.includes('/diff/')) return diffPayload();
+  if (/^\/reports\/[^/]+\/blocks\?/.test(path)) {
+    const query = new URL(url, 'http://localhost').searchParams;
+    return {
+      reportId: path.split('/')[2]!,
+      range: { from: query.get('from')!, to: query.get('to')! },
+      items: [], total: 0, truncated: false,
+      asOf: '2026-02-10T00:00:00Z', reason: null,
+    } satisfies BlockRangeResponse;
+  }
   if (path.includes('/reports/latest')) return LATEST_DETAIL;
   if (path.startsWith('/instruments/') && path.includes('/reports')) {
     return { items: REPORTS, total: REPORTS.length };
@@ -248,7 +286,7 @@ function renderWorkspace(props: Partial<Parameters<typeof WorkspaceClient>[0]> =
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  return render(
+  const element = (next: typeof props) => (
     <QueryClientProvider client={queryClient}>
       <WorkspaceClient
         initialInstrument={INSTRUMENT}
@@ -256,10 +294,17 @@ function renderWorkspace(props: Partial<Parameters<typeof WorkspaceClient>[0]> =
         initialDetail={LATEST_DETAIL}
         initialWatchlist={[]}
         capabilities={CAPABILITIES}
-        {...props}
+        {...next}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const result = render(element(props));
+  return {
+    ...result,
+    rerenderWorkspace: (next: typeof props) => result.rerender(
+      element({ ...props, ...next }),
+    ),
+  };
 }
 
 /** `syncUrl` 写的是 `?a=b` 这种相对 query；也容忍带路径的写法。 */
@@ -308,7 +353,7 @@ function expectPreserved(query: URLSearchParams) {
 }
 
 beforeEach(() => {
-  mocks.replace.mockClear();
+  mocks.replace.mockReset();
   mocks.push.mockClear();
   mocks.prefetch.mockClear();
   mocks.back.mockClear();
@@ -329,6 +374,7 @@ beforeEach(() => {
     overlayCollapsed: false,
     railCollapsedByUser: false,
     sourceDrawer: { open: false, activeSourceId: null },
+    chartFocus: null,
   });
 
   vi.stubGlobal(
@@ -426,5 +472,110 @@ describe('工作区 URL · 版本选择是唯一真源（AC-142 / R-74）', () =
     // 2) 面板显示的是旧版的那句话，而且历史版本横幅出现了（U2 的可见证据）。
     expect(await screen.findByText(oldHeadline)).toBeInTheDocument();
     expect(await screen.findByText(/正在查看历史版本 v2/)).toBeInTheDocument();
+  });
+});
+
+describe('专业图表与报告 URL 状态隔离', () => {
+  it('抽屉内日期输入 Escape 留给输入控件，不关闭行情抽屉', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      return jsonResponse(url.includes('/bars')
+        ? chartBarsPayload(url) : payloadFor(url));
+    }));
+    renderWorkspace();
+    await user.click(await screen.findByRole('button', {
+      name: copy.chart.openDrawer,
+    }));
+    const panel = within(await screen.findByRole('region', {
+      name: 'K 线面板',
+    }));
+    await user.click(panel.getByText('更多'));
+    const dateInput = panel.getByLabelText('定位日期');
+    await waitFor(() => expect(dateInput).toBeEnabled());
+    await user.click(dateInput);
+    expect(dateInput).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(useUiStore.getState().klineDrawerOpen).toBe(true);
+    expect(screen.getByRole('region', { name: 'K 线面板' }))
+      .toBeInTheDocument();
+  });
+
+  it('月 K、1 月窗口、后复权分别写参数并保留报告深链及区间', async () => {
+    const user = userEvent.setup();
+    const deepLink = `${INITIAL_SEARCH}&report=${OLD_ID}`
+      + '&section=thesis&block=paragraph-0';
+    mocks.search = deepLink;
+    window.history.replaceState({}, '', `/600519.SH${deepLink}`);
+    mocks.replace.mockImplementation((url: string) => {
+      window.history.replaceState({}, '', url);
+    });
+    renderWorkspace({
+      initialReportId: OLD_ID, initialDetail: OLD_DETAIL,
+      initialChartView: { timeframe: '1w', range: '6m', adjust: 'none' },
+    });
+    await user.click(await screen.findByRole('button', {
+      name: copy.chart.openDrawer,
+    }));
+    const panel = within(await screen.findByRole('region', {
+      name: 'K 线面板',
+    }));
+    await user.click(panel.getByRole('button', { name: '月' }));
+    expect(replaceCall().query.get('tf')).toBe('1m');
+    expect(replaceCall().query.get('win')).toBe('6m');
+    await user.click(panel.getByText('更多'));
+    await user.click(panel.getByRole('button', { name: '1月' }));
+    expect(replaceCall(1).query.get('win')).toBe('1m');
+    expect(replaceCall(1).query.get('tf')).toBe('1m');
+    await user.click(panel.getByRole('button', { name: '后复权' }));
+    const { query, options } = replaceCall(2);
+    expect(query.get('adj')).toBe('hfq');
+    expect(query.get('tf')).toBe('1m');
+    expect(query.get('win')).toBe('1m');
+    expect(query.get('report')).toBe(OLD_ID);
+    expect(query.get('section')).toBe('thesis');
+    expect(query.get('block')).toBe('paragraph-0');
+    expect(query.get('view')).toBe('full');
+    expect(query.get('range')).toBe('2025-03-01..2025-04-15');
+    expect(options).toEqual({ scroll: false });
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('清除报告区间只删除 range，保留图表周期、窗口及复权', async () => {
+    const user = userEvent.setup();
+    renderWorkspace({
+      initialChartView: { timeframe: '1w', range: '6m', adjust: 'none' },
+      initialRange: { from: '2025-03-01', to: '2025-04-15' },
+    });
+    await user.click(await screen.findByRole('button', {
+      name: copy.chart.openDrawer,
+    }));
+    const panel = within(await screen.findByRole('region', {
+      name: 'K 线面板',
+    }));
+    await user.click(panel.getByRole('button', { name: '清除报告区间' }));
+    expect(mocks.replace).toHaveBeenCalledTimes(1);
+    const { query } = replaceCall();
+    expect(query.has('range')).toBe(false);
+    expect(query.get('tf')).toBe('1w');
+    expect(query.get('win')).toBe('6m');
+    expect(query.get('adj')).toBe('none');
+    expect(query.get('view')).toBe('full');
+  });
+
+  it('切标的清除待消费 chartFocus，旧日期不进入新图表', async () => {
+    const { rerenderWorkspace } = renderWorkspace();
+    act(() => useUiStore.getState().focusChartRange(
+      '2025-03-01', '2025-04-15',
+    ));
+    expect(useUiStore.getState().chartFocus).not.toBeNull();
+    const next: Instrument = {
+      ...INSTRUMENT, id: 'CN:000001.SZ', symbol: '000001.SZ',
+      name: '平安银行', exchange: 'SZSE',
+    };
+    rerenderWorkspace({
+      initialInstrument: next, initialReports: [], initialDetail: null,
+    });
+    await waitFor(() => expect(useUiStore.getState().chartFocus).toBeNull());
   });
 });

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -29,6 +30,11 @@ class Adjust(StrEnum):
     none = "none"
     qfq = "qfq"
     hfq = "hfq"
+
+
+class BarsProfile(StrEnum):
+    standard = "standard"
+    chart = "chart"
 
 
 _RANGE_DAYS: dict[str, int] = {
@@ -70,6 +76,41 @@ class IndicatorsOut(BaseModel):
     macd: list[float | None] = []
     macdSignal: list[float | None] = []
     rsi14: list[float | None] = []
+    ema12: list[float | None] = []
+    ema26: list[float | None] = []
+    bollMiddle: list[float | None] = []
+    macdHistogram: list[float | None] = []
+    kdjK: list[float | None] = []
+    kdjD: list[float | None] = []
+    kdjJ: list[float | None] = []
+    atr14: list[float | None] = []
+    volumeMa5: list[float | None] = []
+    volumeMa10: list[float | None] = []
+
+
+class BarStatsOut(BaseModel):
+    ts: int
+    periodStart: str
+    periodEnd: str
+    leadingPartial: bool = False
+    previousClose: float | None = None
+    change: float | None = None
+    changePct: float | None = None
+    amplitudePct: float | None = None
+
+
+class ChartDetailsOut(BaseModel):
+    version: Literal["chart/v1"] = "chart/v1"
+    stats: list[BarStatsOut]
+    calculationBarsCount: int
+    warmupBarsCount: int
+    historyLimited: bool
+    volumeUnit: Literal["share", "lot", "unit", "unknown"]
+    volumeUnitSize: int | None
+    amountCurrency: str
+    effectiveAdjust: Literal["none", "qfq", "hfq", "auto", "synthetic"]
+    returnBasis: Literal["adjacent_close"] = "adjacent_close"
+    indicatorConvention: Literal["aragon-chart-v1"] = "aragon-chart-v1"
 
 
 class BarsMeta(BaseModel):
@@ -98,3 +139,4 @@ class BarsResponse(BaseModel):
     bars: list[BarOut]
     indicators: IndicatorsOut
     meta: BarsMeta
+    chart: ChartDetailsOut | None = None

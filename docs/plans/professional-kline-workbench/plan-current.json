@@ -1,0 +1,10 @@
+{
+  "kind": "plan",
+  "id": "current",
+  "path": "docs/plans/professional-kline-workbench",
+  "slug": "professional-kline-workbench",
+  "doc": "spec.md",
+  "deliverable": "docs/plans/professional-kline-workbench/spec.md",
+  "remoteStatus": "未写入：TASK_SERVER_URL 未注入",
+  "说明": "本文件仅为调度故障时的本地定位记录，不能冒充远端共享黑板。"
+}

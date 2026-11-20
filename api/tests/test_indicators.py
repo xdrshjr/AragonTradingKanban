@@ -78,6 +78,20 @@ def test_rsi_is_zero_for_a_monotonic_fall() -> None:
     assert series[-1] == pytest.approx(0.0, abs=1e-6)
 
 
+def test_standard_flat_rsi_and_snapshot_are_frozen() -> None:
+    closes = [100.0] * 40
+    assert indicators.rsi(closes)[14:] == [100.0] * 26
+    bundle = indicators.compute_indicator_bundle(closes)
+    assert len(bundle) == 9
+    assert bundle["rsi14"][-1] == 100.0
+    snapshot = indicators.snapshot_technicals(closes, closes, closes)
+    assert snapshot["rsi14"] == 100.0
+    assert set(snapshot) == {
+        "ma5", "ma20", "ma60", "rsi14", "macd", "macdSignal",
+        "bollUpper", "bollLower", "atr14",
+    }
+
+
 def test_rsi_stays_within_bounds() -> None:
     series = indicators.rsi(CLOSES, 14)
     for value in series:

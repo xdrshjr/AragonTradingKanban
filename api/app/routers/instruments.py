@@ -15,6 +15,7 @@ from ..schemas.bars import (
     Adjust,
     BarOut,
     BarsMeta,
+    BarsProfile,
     BarsResponse,
     IndicatorsOut,
     Range,
@@ -22,7 +23,7 @@ from ..schemas.bars import (
     range_to_epoch,
 )
 from ..schemas.instrument import InstrumentsResponse, QuoteOut
-from ..services import indicators
+from ..services import chart_history, indicators
 from ..services.market_data import cache
 from ..services.market_data.base import RESAMPLED_TIMEFRAMES, ProviderError, QuoteRow, resample_daily
 from ..services.market_data.registry import get_registry
@@ -80,9 +81,17 @@ async def bars(
     range: Range = Query(default=Range.y1),
     adjust: Adjust = Query(default=Adjust.qfq),
     force: bool = Query(default=False),
+    profile: BarsProfile = Query(default=BarsProfile.standard),
     db: Session = Depends(get_db),
 ) -> BarsResponse:
     instrument = _load(db, instrument_id)
+    if profile is BarsProfile.chart:
+        return await chart_history.load_chart_bars(
+            db, instrument, chart_history.ChartBarsRequest(
+                timeframe=timeframe.value, range=range.value,
+                adjust=adjust.value, force=force,
+            ),
+        )
     start_ts = range_to_epoch(range.value)
     # ★I-1 (found while implementing §评审结论 A′): 周/月 are **derived** from the daily
     # series, so they must be derived *above* the cache, not inside the provider

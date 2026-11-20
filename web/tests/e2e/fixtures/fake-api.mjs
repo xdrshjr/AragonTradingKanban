@@ -482,14 +482,14 @@ function tradingDays(count) {
   let cursor = end;
   while (out.length < count) {
     const weekday = new Date(cursor).getUTCDay();
-    if (weekday !== 0 && weekday !== 6) out.push(cursor);
+    if (weekday !== 0 && weekday !== 6) out.push(Math.floor(cursor / 1000));
     cursor -= day;
   }
   return out.reverse();
 }
 
-function buildBars() {
-  return tradingDays(BAR_COUNT).map((ts, index) => {
+function buildBars(count = BAR_COUNT) {
+  return tradingDays(count).map((ts, index) => {
     const o = round2(1_560 + Math.sin(index / 9) * 42 + index * 1.15);
     const c = round2(o + Math.sin(index / 5) * 14 + 1.2);
     const h = round2(Math.max(o, c) + 6 + Math.abs(Math.sin(index / 3)) * 6);
@@ -505,7 +505,7 @@ function movingAverage(values, window) {
   return values.map((_, index) => {
     if (index + 1 < window) return null;
     const slice = values.slice(index + 1 - window, index + 1);
-    return round2(slice.reduce((sum, value) => sum + value, 0) / window);
+    return slice.reduce((sum, value) => sum + value, 0) / window;
   });
 }
 
@@ -523,12 +523,70 @@ function exponentialMovingAverage(values, window) {
   let previous = null;
   return values.map((value, index) => {
     if (index + 1 < window) return null;
-    previous = previous === null ? value : value * k + previous * (1 - k);
-    return round2(previous);
+    previous = previous === null
+      ? values.slice(0, window).reduce((sum, entry) => sum + entry, 0) / window
+      : value * k + previous * (1 - k);
+    return previous;
   });
 }
 
-function buildIndicators(bars) {
+function relativeStrength(closes, flatValue) {
+  const values = closes.map(() => null);
+  let gain = 0;
+  let loss = 0;
+  for (let index = 1; index < closes.length; index += 1) {
+    const delta = closes[index] - closes[index - 1];
+    if (index <= 14) {
+      gain += Math.max(0, delta) / 14;
+      loss += Math.max(0, -delta) / 14;
+    } else {
+      gain = (gain * 13 + Math.max(0, delta)) / 14;
+      loss = (loss * 13 + Math.max(0, -delta)) / 14;
+    }
+    if (index < 14) continue;
+    values[index] = gain === 0 && loss === 0 ? flatValue
+      : loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  }
+  return values;
+}
+
+function stochasticKdj(bars) {
+  const kdjK = bars.map(() => null);
+  const kdjD = bars.map(() => null);
+  const kdjJ = bars.map(() => null);
+  let previousK = 50;
+  let previousD = 50;
+  for (let index = 8; index < bars.length; index += 1) {
+    const window = bars.slice(index - 8, index + 1);
+    const high = Math.max(...window.map(bar => bar.h));
+    const low = Math.min(...window.map(bar => bar.l));
+    const rsv = high === low ? 50 : 100 * (bars[index].c - low) / (high - low);
+    const k = previousK * 2 / 3 + rsv / 3;
+    const d = previousD * 2 / 3 + k / 3;
+    kdjK[index] = k;
+    kdjD[index] = d;
+    kdjJ[index] = 3 * k - 2 * d;
+    previousK = k;
+    previousD = d;
+  }
+  return { kdjK, kdjD, kdjJ };
+}
+
+function averageTrueRange(bars) {
+  const ranges = bars.map((bar, index) => index === 0 ? bar.h - bar.l
+    : Math.max(bar.h - bar.l, Math.abs(bar.h - bars[index - 1].c),
+      Math.abs(bar.l - bars[index - 1].c)));
+  let previous = null;
+  return ranges.map((value, index) => {
+    if (index < 13) return null;
+    previous = previous === null
+      ? ranges.slice(0, 14).reduce((sum, entry) => sum + entry, 0) / 14
+      : (previous * 13 + value) / 14;
+    return previous;
+  });
+}
+
+function buildIndicators(bars, chart = false) {
   const closes = bars.map((bar) => bar.c);
   const ma5 = movingAverage(closes, 5);
   const ma10 = movingAverage(closes, 10);
@@ -536,40 +594,117 @@ function buildIndicators(bars) {
   const ma60 = movingAverage(closes, 60);
   const deviation = standardDeviation(closes, 20, ma20);
   const bollUpper = ma20.map((mean, index) =>
-    mean === null || deviation[index] === null ? null : round2(mean + 2 * deviation[index]),
+    mean === null || deviation[index] === null ? null : mean + 2 * deviation[index],
   );
   const bollLower = ma20.map((mean, index) =>
-    mean === null || deviation[index] === null ? null : round2(mean - 2 * deviation[index]),
+    mean === null || deviation[index] === null ? null : mean - 2 * deviation[index],
   );
   const ema12 = exponentialMovingAverage(closes, 12);
   const ema26 = exponentialMovingAverage(closes, 26);
   const macd = closes.map((_, index) =>
-    ema12[index] === null || ema26[index] === null ? null : round2(ema12[index] - ema26[index]),
+    ema12[index] === null || ema26[index] === null ? null : ema12[index] - ema26[index],
   );
-  const macdFilled = macd.map((value) => value ?? 0);
-  const macdSignal = exponentialMovingAverage(macdFilled, 9).map((value, index) =>
-    macd[index] === null ? null : value,
-  );
-  const rsi14 = closes.map((value, index) => {
-    if (index < 14) return null;
-    let gain = 0;
-    let loss = 0;
-    for (let i = index - 13; i <= index; i += 1) {
-      const delta = closes[i] - closes[i - 1];
-      if (delta >= 0) gain += delta;
-      else loss -= delta;
-    }
-    if (loss === 0) return 100;
-    return round2(100 - 100 / (1 + gain / loss));
-  });
-  return { ma5, ma10, ma20, ma60, bollUpper, bollLower, macd, macdSignal, rsi14 };
+  const validSignal = exponentialMovingAverage(macd.slice(25), 9);
+  const macdSignal = bars.map((_, index) => index < 25
+    ? null : validSignal[index - 25]);
+  const rsi14 = relativeStrength(closes, chart ? 50 : 100);
+  const standard = {
+    ma5, ma10, ma20, ma60, bollUpper, bollLower, macd, macdSignal, rsi14,
+  };
+  if (!chart) return standard;
+  return {
+    ...standard, ema12, ema26, bollMiddle: ma20,
+    macdHistogram: macdSignal.map((value, index) => value === null
+      ? null : 2 * (macd[index] - value)),
+    ...stochasticKdj(bars), atr14: averageTrueRange(bars),
+    volumeMa5: movingAverage(bars.map(bar => bar.v), 5),
+    volumeMa10: movingAverage(bars.map(bar => bar.v), 10),
+  };
 }
 
 const INDICATORS = buildIndicators(BARS);
 
+function sessionDate(ts) {
+  return new Date((ts + 8 * 3600) * 1000).toISOString().slice(0, 10);
+}
+
+function periodKey(date, timeframe) {
+  if (timeframe === '1m') return date.slice(0, 7);
+  if (timeframe === '1d') return date;
+  const monday = new Date(`${date}T00:00:00Z`);
+  monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+  return monday.toISOString().slice(0, 10);
+}
+
+function aggregatePeriods(timeframe, dailyBars = BARS) {
+  const periods = new Map();
+  for (const bar of dailyBars) {
+    const date = sessionDate(bar.ts);
+    const key = periodKey(date, timeframe);
+    const previous = periods.get(key);
+    if (!previous) {
+      periods.set(key, { bar: { ...bar }, periodStart: date, periodEnd: date });
+      continue;
+    }
+    Object.assign(previous.bar, {
+      ts: bar.ts, h: Math.max(previous.bar.h, bar.h),
+      l: Math.min(previous.bar.l, bar.l), c: bar.c,
+      v: previous.bar.v + bar.v,
+      amount: previous.bar.amount === null || bar.amount === null ? null
+        : previous.bar.amount + bar.amount,
+    });
+    previous.periodEnd = date;
+  }
+  return [...periods.values()];
+}
+
+function chartBarsResponse(timeframe, adjust, range, dailyBars = BARS) {
+  const periods = aggregatePeriods(timeframe, dailyBars);
+  const allBars = periods.map(period => period.bar);
+  const allIndicators = buildIndicators(allBars, true);
+  const days = { '1m': 31, '3m': 92, '6m': 183, '1y': 366,
+    '3y': 1096, '5y': 1827 }[range] ?? 366;
+  const cutoff = sessionDate(dailyBars.at(-1).ts - days * 86400);
+  const start = periods.findIndex(period => period.periodEnd >= cutoff);
+  const warmup = start < 0 ? periods.length : start;
+  const stats = periods.map((period, index) => {
+    const previousClose = allBars[index - 1]?.c ?? null;
+    const change = previousClose > 0 ? period.bar.c - previousClose : null;
+    return { ts: period.bar.ts, periodStart: period.periodStart,
+      periodEnd: period.periodEnd, leadingPartial: false, previousClose,
+      change, changePct: change === null ? null : 100 * change / previousClose,
+      amplitudePct: previousClose > 0
+        ? 100 * (period.bar.h - period.bar.l) / previousClose : null };
+  });
+  const bars = allBars.slice(warmup);
+  return { instrument: INSTRUMENT, bars,
+    indicators: Object.fromEntries(Object.entries(allIndicators)
+      .map(([key, values]) => [key, values.slice(warmup)])),
+    chart: { version: 'chart/v1', stats: stats.slice(warmup),
+      calculationBarsCount: allBars.length, warmupBarsCount: warmup,
+      historyLimited: true, volumeUnit: 'unit', volumeUnitSize: null,
+      amountCurrency: INSTRUMENT.currency, effectiveAdjust: 'synthetic',
+      returnBasis: 'adjacent_close', indicatorConvention: 'aragon-chart-v1' },
+    meta: { source: 'synthetic', barsCount: bars.length,
+      fromTs: bars[0]?.ts ?? null, toTs: bars.at(-1)?.ts ?? null,
+      adjust, timeframe, cached: false, stale: false, reasonCode: 'ok',
+      warnings: ['fake-api：确定性 fixture，非真实行情'] } };
+}
+
 function barsResponse(id, query) {
   const timeframe = query.get('timeframe') ?? '1d';
   const adjust = query.get('adjust') ?? 'qfq';
+  if (query.get('profile') === 'chart') {
+    const fixtureCount = {
+      performance: 2600, short: 12, inserted: 121, withdrawn: 119,
+    }[
+      query.get('chartFixture')
+    ];
+    const dailyBars = fixtureCount ? buildBars(fixtureCount) : BARS;
+    return chartBarsResponse(
+      timeframe, adjust, query.get('range') ?? '1y', dailyBars,
+    );
+  }
   return {
     instrument: INSTRUMENT,
     bars: BARS,
@@ -1015,7 +1150,7 @@ const routes = [
       dayHigh: last.h,
       dayLow: last.l,
       volume: last.v,
-      updatedAt: new Date(last.ts).toISOString(),
+      updatedAt: new Date(last.ts * 1000).toISOString(),
       source: 'synthetic',
     });
   }],

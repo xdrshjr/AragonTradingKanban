@@ -88,6 +88,44 @@ export interface Indicators {
   macd: IndicatorSeries;
   macdSignal: IndicatorSeries;
   rsi14: IndicatorSeries;
+  ema12?: IndicatorSeries;
+  ema26?: IndicatorSeries;
+  bollMiddle?: IndicatorSeries;
+  macdHistogram?: IndicatorSeries;
+  kdjK?: IndicatorSeries;
+  kdjD?: IndicatorSeries;
+  kdjJ?: IndicatorSeries;
+  atr14?: IndicatorSeries;
+  volumeMa5?: IndicatorSeries;
+  volumeMa10?: IndicatorSeries;
+}
+
+export type BarsProfile = 'standard' | 'chart';
+
+/** Mirror of the backend chart/v1 contract; dates are trading dates. */
+export interface BarStats {
+  ts: number;
+  periodStart: string;
+  periodEnd: string;
+  leadingPartial: boolean;
+  previousClose: number | null;
+  change: number | null;
+  changePct: number | null;
+  amplitudePct: number | null;
+}
+
+export interface ChartDetails {
+  version: 'chart/v1';
+  stats: BarStats[];
+  calculationBarsCount: number;
+  warmupBarsCount: number;
+  historyLimited: boolean;
+  volumeUnit: 'share' | 'lot' | 'unit' | 'unknown';
+  volumeUnitSize: number | null;
+  amountCurrency: string;
+  effectiveAdjust: 'none' | 'qfq' | 'hfq' | 'auto' | 'synthetic';
+  returnBasis: 'adjacent_close';
+  indicatorConvention: 'aragon-chart-v1';
 }
 
 export interface BarsMeta {
@@ -131,6 +169,7 @@ export interface BarsResponse {
   bars: Bar[];
   indicators: Partial<Indicators>;
   meta: BarsMeta;
+  chart?: ChartDetails | null;
 }
 
 /* ── report document (aragon.research.report/v1) ─────────────────────────── */

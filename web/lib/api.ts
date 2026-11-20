@@ -307,9 +307,13 @@ export function createApi(ctx: ApiContext = {}) {
 
     instrument: (id: string) => request<{ items: Instrument[] }>(`/instruments?ids=${encodeURIComponent(id)}`),
 
-    bars: (id: string, timeframe = '1d', range = '1y', adjust = 'qfq') =>
+    bars: (
+      id: string, timeframe = '1d', range = '1y', adjust = 'qfq',
+      options?: { profile?: 'standard' | 'chart' },
+    ) =>
       request<BarsResponse>(
-        `/instruments/${encodeURIComponent(id)}/bars?timeframe=${timeframe}&range=${range}&adjust=${adjust}`,
+        `/instruments/${encodeURIComponent(id)}/bars?timeframe=${timeframe}&range=${range}&adjust=${adjust}`
+          + (options?.profile ? `&profile=${options.profile}` : ''),
       ),
 
     quote: (id: string) => request<Quote>(`/instruments/${encodeURIComponent(id)}/quote`),

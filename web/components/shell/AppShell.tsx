@@ -63,6 +63,8 @@ const ScheduleDialog = dynamic(
 const CommandPalette = dynamic(() => import('./CommandPalette').then((module) => module.CommandPalette), {
   ssr: false,
 });
+const ChartExpandedView = dynamic(() => import('../chart/ChartExpandedView')
+  .then(module => module.ChartExpandedView), { ssr: false });
 
 /**
  * ★v7（AC-35 回归门）：生成覆盖层同样是个**浮层**，而且只在一个 run 进行中或刚结束时存在。
@@ -110,6 +112,7 @@ export interface AppShellProps {
     search?: boolean;
     /** ★v14（U1）：报告库是否可用（`features.reportLibrary` 的**实测**结论）。 */
     reportLibrary?: boolean;
+    rangeQuery?: boolean;
   };
   askDailyLimit?: number;
   askMaxQuestionChars?: number;
@@ -245,6 +248,16 @@ export function AppShell({
   const [viewportWidth, setViewportWidth] = useState(1440);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [chartExpanded, setChartExpanded] = useState(false);
+  const [desktopTarget, setDesktopTarget] = useState<HTMLDivElement | null>(null);
+  const [drawerTarget, setDrawerTarget] = useState<HTMLDivElement | null>(null);
+  const [expandedTarget, setExpandedTarget] = useState<HTMLDivElement | null>(null);
+  const chartEscape = useRef<((event: KeyboardEvent) => boolean) | null>(null);
+  const consumeChartEscape = useCallback((event: KeyboardEvent) =>
+    chartEscape.current?.(event) ?? false, []);
+  const chartEntry = useRef<HTMLButtonElement>(null);
+  const getChartEntry = useCallback(() => chartEntry.current
+    ?? document.querySelector<HTMLElement>('[aria-label="K 线面板"]'), []);
   // A `next/dynamic` chunk is downloaded when the component *renders*, so mounting
   // these dialogs eagerly would defeat the split. They are mounted on first open and
   // then kept mounted, so focus return and close animations keep working.
@@ -388,6 +401,7 @@ export function AppShell({
           <UserMenu />
           {klineCollapsed ? (
             <IconButton
+              ref={chartEntry}
               label={klineDrawerOpen ? copy.chart.closeDrawer : copy.chart.openDrawer}
               onClick={() => setKlineDrawer(!klineDrawerOpen)}
             >
@@ -426,22 +440,8 @@ export function AppShell({
 
         {!klineCollapsed && widths.kline > 0 && activeInstrument ? (
           <>
-            <div style={{ width: widths.kline }} className="min-w-0 shrink-0">
-              <PricePanel
-                instrumentId={activeInstrument.id}
-                symbol={activeInstrument.symbol}
-                name={activeInstrument.name}
-                currency={activeInstrument.currency}
-                timezone={activeInstrument.tz}
-                lastPrice={quoteQuery.data?.last}
-                changePct={quoteQuery.data?.changePct}
-                quoteSource={quoteQuery.data?.source ?? null}
-                brushRange={reading?.range ?? null}
-                onBrushRange={reading?.onBrushRange}
-                chartView={chart}
-                onChartViewChange={onChartViewChange}
-              />
-            </div>
+            <div ref={setDesktopTarget} style={{ width: widths.kline }}
+              className="min-w-0 shrink-0" />
             <Splitter
               label={copy.a11y.dragChart}
               value={percentages.kline}
@@ -491,23 +491,30 @@ export function AppShell({
         </div>
 
         {klineCollapsed && klineDrawerOpen && activeInstrument ? (
-          <div className="fixed inset-y-[var(--header-h)] right-0 z-30 w-[min(560px,92vw)] border-l border-[var(--border-strong)] bg-[var(--bg-canvas)] shadow-[var(--shadow-pop)]">
-            <PricePanel
-              instrumentId={activeInstrument.id}
-              symbol={activeInstrument.symbol}
-              name={activeInstrument.name}
-              currency={activeInstrument.currency}
-              timezone={activeInstrument.tz}
-              lastPrice={quoteQuery.data?.last}
-              changePct={quoteQuery.data?.changePct}
-              quoteSource={quoteQuery.data?.source ?? null}
-              onCloseDrawer={() => setKlineDrawer(false)}
-              chartView={chart}
-              onChartViewChange={onChartViewChange}
-            />
-          </div>
+          <div ref={setDrawerTarget} className="fixed inset-y-[var(--header-h)] right-0 z-30 w-[min(560px,92vw)] border-l border-[var(--border-strong)] bg-[var(--bg-canvas)] shadow-[var(--shadow-pop)]" />
         ) : null}
       </main>
+
+      {activeInstrument ? <PricePanel
+        instrumentId={activeInstrument.id} symbol={activeInstrument.symbol}
+        name={activeInstrument.name} currency={activeInstrument.currency}
+        timezone={activeInstrument.tz} lastPrice={quoteQuery.data?.last}
+        changePct={quoteQuery.data?.changePct}
+        quoteSource={quoteQuery.data?.source ?? null}
+        brushRange={reading?.range ?? null} onBrushRange={reading?.onBrushRange}
+        rangeQueryEnabled={features?.rangeQuery === true
+          && Boolean(reportDetail?.report.id)}
+        chartView={chart} onChartViewChange={onChartViewChange}
+        portalTarget={chartExpanded ? expandedTarget
+          : klineCollapsed ? drawerTarget : desktopTarget}
+        expanded={chartExpanded} onExpandedChange={setChartExpanded}
+        escapeRef={chartEscape}
+        onCloseDrawer={klineCollapsed && !chartExpanded
+          ? () => setKlineDrawer(false) : undefined}
+      /> : null}
+      {chartExpanded ? <ChartExpandedView open={chartExpanded}
+        onOpenChange={setChartExpanded} onTarget={setExpandedTarget}
+        consumeEscape={consumeChartEscape} returnFocus={getChartEntry} /> : null}
 
       <GenerationOverlay
         hidden={assistantOpen}
