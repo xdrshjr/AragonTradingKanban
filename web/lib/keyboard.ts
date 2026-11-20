@@ -103,6 +103,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
     if (handlers.enabled === false) return;
 
     const listener = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       const id = matchHotkey(event);
       if (!id) return;
       // Scope check: a letter key inside a text field is text, not a command.

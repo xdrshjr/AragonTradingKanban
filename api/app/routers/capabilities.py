@@ -40,6 +40,7 @@ from ..security import deps
 from ..security.principal import Principal
 from ..services import (
     agent_probe,
+    ask_context,
     ask_service,
     cost_service,
     numeric_claims,
@@ -241,6 +242,7 @@ def _capabilities(db: Session) -> CapabilitiesResponse:
             # `cite` never spawns a process, so it is available in every mode.
             ask=True,
             askDeep=ask_service.ask_deep_available(),
+            askConversation=ask_context.available(db),
             fullTextSearch=bool(settings.search_fts) and search_index.fts_ready(db),
             pinyinSearch=pinyin_on,
             schedule=bool(settings.scheduler_enabled),

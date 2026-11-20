@@ -1,0 +1,19 @@
+{
+  "record": {
+    "kind": "plan",
+    "id": "current",
+    "path": "docs/plans/terminal-experience",
+    "slug": "terminal-experience",
+    "doc": "spec.md",
+    "deliverable": "docs/plans/terminal-experience/spec.md"
+  },
+  "registration": {
+    "status": "unavailable",
+    "attempted": true,
+    "attempts": 3,
+    "reason": "当前进程未注入 TASK_SERVER_URL，任务工具在连接服务器前即失败。本文件只是本地定位副本，不代表服务器黑板写入成功。",
+    "recovery": "恢复调度环境后，执行 spec.md 第 11 节的 put 命令，再运行 get --kind plan 验证。"
+  },
+  "stage": "方案设计",
+  "date": "2026-11-20"
+}

@@ -330,6 +330,99 @@ def test_ask_events_endpoint_404s_for_an_unknown_id(client) -> None:
     assert client.get("/api/v1/asks/ask_missing").status_code == 404
 
 
+def test_cite_rejects_context_without_creating_an_ask(client, seeded):
+    response = client.post(
+        f"/api/v1/reports/{seeded['reportId']}/ask",
+        json={"question": "毛利率", "contextAskIds": ["old"]},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_ask_context"
+    assert client.get(f"/api/v1/reports/{seeded['reportId']}/asks").json()["items"] == []
+
+
+def test_mine_scope_in_open_mode_reads_only_local_records(client, seeded):
+    from app.db.session import SessionLocal
+    from app.models import ReportAsk
+
+    local = client.post(f"/api/v1/reports/{seeded['reportId']}/ask", json={"question": "毛利率"}).json()
+    with SessionLocal() as db:
+        db.add(ReportAsk(id="owned", report_id=seeded["reportId"], question="私有", mode="cite",
+                         status="done", created_at="2026-11-20T00:00:00Z", user_id="u1"))
+        db.commit()
+    listed = client.get(f"/api/v1/reports/{seeded['reportId']}/asks?scope=mine")
+    assert [item["id"] for item in listed.json()["items"]] == [local["id"]]
+    assert client.get(f"/api/v1/reports/{seeded['reportId']}/asks?scope=all").status_code == 422
+
+
+@pytest.mark.parametrize("role", ["user", "admin", "root"])
+def test_mine_keeps_personal_history_private_for_every_browser_role(
+    client, seeded, request, monkeypatch, role,
+):
+    from app.db.session import SessionLocal
+    from app.models import ReportAsk
+
+    actor = request.getfixturevalue("make_user")("context_reader", role=role)
+    with SessionLocal() as db:
+        for ask_id, owner in [("own", actor.id), ("other", "u2"), ("local", None)]:
+            db.add(ReportAsk(id=ask_id, report_id=seeded["reportId"], question=ask_id, mode="cite",
+                            status="done", created_at="2026-11-20T00:00:00Z", user_id=owner))
+        db.commit()
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced")
+    monkeypatch.setattr(get_settings(), "session_secret", "context-tests-secret")
+    request.getfixturevalue("login_as")(client, actor)
+    body = client.get(f"/api/v1/reports/{seeded['reportId']}/asks?scope=mine").json()
+    assert [item["id"] for item in body["items"]] == ["own"]
+
+
+def test_enforced_service_and_guest_cannot_enumerate_mine(client, seeded, monkeypatch):
+    client.post(f"/api/v1/reports/{seeded['reportId']}/ask", json={"question": "毛利率"})
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced")
+    monkeypatch.setattr(get_settings(), "session_secret", "context-tests-secret")
+    monkeypatch.setattr(get_settings(), "api_token", "context-tests-token")
+    for headers in ({}, {"authorization": "Bearer context-tests-token"}):
+        body = client.get(f"/api/v1/reports/{seeded['reportId']}/asks?scope=mine", headers=headers).json()
+        assert body == {"items": [], "total": 0}
+
+
+def test_invalid_context_does_not_reserve_quota_or_create_row(
+    client, seeded, make_user, login_as, monkeypatch,
+):
+    from sqlalchemy import func, select
+
+    from app.db.session import SessionLocal
+    from app.models import QuotaLedger, ReportAsk
+
+    actor = make_user("context_sender")
+    monkeypatch.setattr(get_settings(), "auth_mode", "enforced")
+    monkeypatch.setattr(get_settings(), "session_secret", "context-tests-secret")
+    login_as(client, actor)
+    response = client.post(f"/api/v1/reports/{seeded['reportId']}/ask",
+                           json={"question": "继续", "mode": "deep", "contextAskIds": ["missing"]})
+    assert response.status_code == 404
+    with SessionLocal() as db:
+        assert db.execute(select(func.count()).select_from(ReportAsk)).scalar_one() == 0
+        assert db.execute(select(func.count()).select_from(QuotaLedger)).scalar_one() == 0
+
+
+def test_deep_context_is_persisted_and_written_into_real_fake_cli_workspace(client, seeded, deep_env):
+    first = client.post(f"/api/v1/reports/{seeded['reportId']}/ask", json={"question": "毛利率", "mode": "deep"})
+    first_id = first.json()["askId"]
+    _wait_for_status(client, first_id, states=("done",))
+    second = client.post(f"/api/v1/reports/{seeded['reportId']}/ask",
+                         json={"question": "刚才的判断有什么依据？", "mode": "deep", "contextAskIds": [first_id]})
+    assert second.status_code == 202, second.text
+    assert second.json()["contextAskIds"] == [first_id]
+    final = _wait_for_status(client, second.json()["askId"], states=("done", "failed"))
+    assert final["status"] == "done", final
+    assert final["contextAskIds"] == [first_id]
+    workspace = get_settings().asks_dir / second.json()["askId"]
+    context = json.loads((workspace / "conversation-context.json").read_bytes())
+    assert context["turns"][0]["askId"] == first_id
+    prompt = (workspace / f"ask-{second.json()['askId']}.md").read_text(encoding="utf-8")
+    assert "conversation-context.json" in prompt
+    assert "先读取" in prompt
+
+
 # ── 输入校验 ────────────────────────────────────────────────────────────────
 
 

@@ -15,6 +15,13 @@ export const metadata: Metadata = {
   description:
     '一次生成、反复查看的投研报告工作台：结构化文档、K 线联动、版本化管理，AI 只在生成时消耗一次成本。',
   applicationName: 'Aragon Research Terminal',
+  icons: {
+    icon: [
+      { url: '/brand/aragon-icon-32.png', sizes: '32x32' },
+      { url: '/brand/aragon-icon-192.png', sizes: '192x192' },
+    ],
+    apple: [{ url: '/brand/aragon-apple-180.png', sizes: '180x180' }],
+  },
   robots: { index: false, follow: false },
 };
 

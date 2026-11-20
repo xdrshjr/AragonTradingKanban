@@ -834,7 +834,10 @@ export interface Capabilities {
   aragon: AragonCapability;
   agentMode: 'real' | 'mock';
   dataProviders: { id: string; available: boolean }[];
-  features: Record<string, boolean>;
+  features: Record<string, boolean> & {
+    /** Older APIs omit this; only true enables mine history and context. */
+    askConversation?: boolean;
+  };
   limits: Record<string, unknown>;
   /** ★v6 G4: a new top-level object (model/provider stay in `aragon`). */
   engine?: EngineCapability | null;
@@ -890,6 +893,11 @@ export interface ApiErrorBody {
 /* ── ask / search / diff / schedule (mirrors api/app/schemas/*) ──────────── */
 
 export type AskMode = 'cite' | 'deep';
+export interface AskRequest {
+  question: string;
+  mode?: AskMode;
+  contextAskIds?: string[];
+}
 export type AskStatus = 'queued' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 export type MetricToneDirection = 'up' | 'down' | 'neutral';
 
@@ -921,6 +929,8 @@ export interface AskOut {
   id: string;
   reportId: string;
   question: string;
+  /** Absent on older APIs; new APIs return the effective context ids. */
+  contextAskIds?: string[];
   mode: AskMode;
   status: AskStatus;
   grounded: boolean;
@@ -943,6 +953,7 @@ export interface AskQueuedResponse {
   askId: string;
   status: AskStatus;
   streamUrl: string;
+  contextAskIds?: string[];
 }
 
 export interface AskListResponse {

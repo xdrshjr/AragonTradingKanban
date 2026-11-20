@@ -22,20 +22,12 @@ import { SourceDrawer } from './SourceDrawer';
 import { VersionSwitcher } from './VersionSwitcher';
 import { MetricGrid } from './blocks/MetricsBlock';
 import { GenerateButton } from '../generation/GenerateButton';
+import { ReportAssistant } from '../ask/ReportAssistant';
 
-/**
- * ★A1 / AC-35: the ask drawer never enters the first-load chunk. Readers who never
- * ask never download it (§18.3.6).
- */
 /** ★A5：顶层容器 id —— 与后端 `numeric_claims.extract_claims()` 里的 block_id 逐字一致。 */
 const HEADLINE_BLOCK_ID = 'headline';
 const SUMMARY_BLOCK_ID = 'summary';
 const RISK_LIST_BLOCK_ID = 'riskList';
-
-const AskPanel = dynamic(() => import('../ask/AskPanel').then((module) => module.AskPanel), {
-  ssr: false,
-  loading: () => null,
-});
 
 /**
  * ★v6 G2b / AC-52: the full-text container is a **separate async chunk** too. It
@@ -74,6 +66,9 @@ export type ReadingMode = 'tabs' | 'full';
 
 export interface ReportPanelProps {
   instrumentName: string;
+  instrumentSymbol?: string;
+  conversationAvailable?: boolean;
+  askMaxQuestionChars?: number;
   timezone?: string;
   reports: ReportSummary[];
   detail: ReportDetail | null;
@@ -134,6 +129,9 @@ export interface ReportPanelProps {
  */
 export function ReportPanel({
   instrumentName,
+  instrumentSymbol = '',
+  conversationAvailable = false,
+  askMaxQuestionChars = 500,
   timezone,
   reports,
   detail,
@@ -163,11 +161,11 @@ export function ReportPanel({
 }: ReportPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabsRef = useRef<HTMLDivElement | null>(null);
-  const askTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [activeSection, setActiveSection] = useState<string>('all');
   const [showToc, setShowToc] = useState(false);
-  const [askOpen, setAskOpen] = useState(false);
-  const [askMounted, setAskMounted] = useState(false);
+  const askOpen = useUiStore((state) => state.assistantOpen);
+  const setAskOpen = useUiStore((state) => state.setAssistantOpen);
+  const lastAskTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [highlightBlockId, setHighlightBlockId] = useState<string | null>(null);
   const modeButtonRef = useRef<HTMLButtonElement | null>(null);
   const openSourceDrawer = useUiStore((state) => state.openSourceDrawer);
@@ -195,8 +193,8 @@ export function ReportPanel({
   const corrupt = detail?.integrity === 'corrupt';
 
   useEffect(() => {
-    if (askOpen) setAskMounted(true);
-  }, [askOpen]);
+    if (!detail?.doc) setAskOpen(false);
+  }, [detail?.doc, setAskOpen]);
 
   const sections = useMemo(() => {
     if (!doc) return [];
@@ -453,10 +451,14 @@ export function ReportPanel({
             </IconButton>
             {/* A1: the ask entry. Lazy panel; this button is its focus-return target. */}
             <IconButton
-              ref={askTriggerRef}
+              ref={lastAskTriggerRef}
               label={copy.ask.open}
               aria-expanded={askOpen}
-              onClick={() => setAskOpen((value) => !value)}
+              aria-controls="aragon-ai-assistant"
+              onClick={(event) => {
+                lastAskTriggerRef.current = event.currentTarget;
+                setAskOpen(!askOpen);
+              }}
             >
               <MessageCircleQuestion className="size-3.5" />
             </IconButton>
@@ -686,6 +688,7 @@ export function ReportPanel({
             {sources.length > 0 ? (
               <button
                 type="button"
+                data-report-source-trigger=""
                 onClick={() => openSourceDrawer(sources[0]!.id)}
                 className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"
               >
@@ -697,18 +700,18 @@ export function ReportPanel({
         )}
       </div>
 
-      {/* Mounted on first open: the chunk must not be fetched just because a
-          report is on screen (AC-35 is a runtime promise, not only a build one). */}
-      {summary && askMounted ? (
-        <AskPanel
+      {summary && doc ? (
+        <ReportAssistant
           reportId={summary.id}
-          open={askOpen}
-          onOpenChange={setAskOpen}
+          conversationAvailable={conversationAvailable}
+          questionMaxChars={askMaxQuestionChars}
+          reportLabel={`${instrumentName} · ${instrumentSymbol} · 报告 v${summary.version}${isHistorical ? ' · 基于当前历史版本' : ''}`}
           deepAvailable={deepAvailable}
           dailyLimit={askDailyLimit}
           onJumpToBlock={jumpToBlock}
+          reportRootRef={scrollRef}
           onJumpToSource={openSourceDrawer}
-          triggerRef={askTriggerRef}
+          triggerRef={lastAskTriggerRef}
         />
       ) : null}
 

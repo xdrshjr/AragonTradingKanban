@@ -97,9 +97,8 @@ def test_both_prompts_carry_a_version_marker(path: Path) -> None:
     """两个提示词都要有版本标记：指纹要能区分两版提示词（§20.4 的改动表）。"""
     match = report_validator.PROMPT_VERSION_RE.search(body(path))
     assert match is not None, f"{path.name} 缺少 `<!-- version: N -->`"
-    # ★v14（P0-3）：7 → 8 = 提示词契约升了一版（新增 base_digest 段与它的硬指令），
-    # 不是 system 正文改了。两个 system 提示词必须一致。
-    assert int(match.group(1)) == 8
+    # 追问增加多轮上下文边界，独立递增版本；研究提示词维持原契约。
+    assert int(match.group(1)) == (9 if path == ASK else 8)
 
 
 def test_prompt_quality_matches_the_file_on_disk() -> None:

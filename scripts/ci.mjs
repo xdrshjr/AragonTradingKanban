@@ -27,8 +27,8 @@ try {
   if (!Array.isArray(contract.codes) || !Array.isArray(contract.httpCodes) || !Array.isArray(contract.sseEvents)) {
     throw new Error('codes / httpCodes / sseEvents 必须都是数组');
   }
-  if (contract.codes.length !== 18) {
-    throw new Error(`run 码应为 18 条，实为 ${contract.codes.length}`);
+  if (!contract.codes.length || new Set(contract.codes).size !== contract.codes.length) {
+    throw new Error('run 码必须非空且不重复；数量与后端一致性由契约测试验证');
   }
 } catch (error) {
   process.stderr.write(`\u001b[31m✗ contracts/run_error_codes.json 不可用：${error.message}\u001b[0m\n`);

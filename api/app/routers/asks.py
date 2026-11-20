@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -22,13 +23,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db.session import get_db
-from ..errors import Forbidden, ReportNotFound, Unauthorized
+from ..errors import Forbidden, InvalidAskContext, ReportNotFound, Unauthorized
 from ..models import Report, ReportAsk
 from ..schemas.ask import AskListResponse, AskOut, AskQueuedResponse, AskRequest
 from ..schemas.run import CancelResponse, EventsTokenResponse
 from ..security import deps, objects
 from ..security.principal import Principal
-from ..services import ask_service, quota_service, report_service
+from ..services import ask_context, ask_service, quota_service, report_service
 from ..services.sse_token import TOKEN_TTL_SEC, issue_sse_token, verify_sse_token
 
 router = APIRouter(tags=["asks"])
@@ -75,6 +76,9 @@ async def ask_report(
     question = ask_service.normalize_question(payload.question)
     settings = get_settings()
 
+    if payload.mode == "cite" and payload.contextAskIds:
+        raise InvalidAskContext(detail={"reason": "mode_mismatch"})
+
     if payload.mode == "cite":
         ask = ask_service.ask_cite(db, report, question, user_id=principal.user_id)
         return ask_service.to_ask_out(ask)
@@ -84,6 +88,9 @@ async def ask_report(
 
     if report.status in DEEP_BLOCKED_STATUSES:
         raise ReportNotReady(detail={"status": report.status})
+    context = ask_context.load_context(
+        db, report, payload.contextAskIds, principal
+    )
     # 额度是用户级、确定的，排在"每报告每日上限"这类名额类错误之前（与生成同一条优先级纪律）。
     quota_service.precheck(db, principal, "deep_ask")
     # ★v15：每 (报告, 用户) 计数；非 `user` 主体（service/open 模式）保持旧的全站口径。
@@ -100,7 +107,10 @@ async def ask_report(
             }
         )
 
-    ask = await asyncio.to_thread(ask_service.create_deep_ask, db, report, question, principal)
+    ask = await asyncio.to_thread(
+        ask_service.create_deep_ask, db, report, question, principal,
+        context_ask_ids=context.ids,
+    )
     ask_service.schedule_deep(ask.id)
     # Deep is asynchronous: 202 is the contract, and a client branching on it must
     # never see 200 (§18.5.1).
@@ -110,6 +120,7 @@ async def ask_report(
         askId=ask.id,
         status="queued",
         streamUrl=f"/api/v1/asks/{ask.id}/events",
+        contextAskIds=ask.context_ask_ids,
     )
 
 
@@ -119,15 +130,25 @@ def list_asks(
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     principal: Principal = Depends(deps.get_principal),
+    scope: Literal["mine"] | None = Query(default=None),
 ) -> AskListResponse:
     _load_report(db, report_id)
     query = select(ReportAsk).where(ReportAsk.report_id == report_id)
-    if not principal.is_admin:
+    if scope == "mine":
+        if principal.kind == "user":
+            query = query.where(ReportAsk.user_id == principal.user_id)
+        elif principal.open_mode:
+            query = query.where(ReportAsk.user_id.is_(None))
+        else:
+            return AskListResponse(items=[], total=0)
+    elif not principal.is_admin:
         # ★v15：只返回"我的"；guest 没有"我的" ⇒ 空列表 200。`user_id IS NULL` 的历史追问仅管理员可见。
         if principal.user_id is None:
             return AskListResponse(items=[], total=0)
         query = query.where(ReportAsk.user_id == principal.user_id)
-    rows = db.execute(query.order_by(ReportAsk.created_at.desc()).limit(limit)).scalars().all()
+    rows = db.execute(query.order_by(
+        ReportAsk.created_at.desc(), ReportAsk.id.desc()
+    ).limit(limit)).scalars().all()
     return AskListResponse(items=[ask_service.to_ask_out(row) for row in rows], total=len(rows))
 
 

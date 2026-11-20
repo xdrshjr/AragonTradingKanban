@@ -74,7 +74,11 @@ export function RunStatusBadge({
     return (
       <button
         type="button"
-        onClick={() => setOverlayCollapsed(false)}
+        data-assistant-no-focus-return=""
+        onClick={() => {
+          useUiStore.getState().setAssistantOpen(false);
+          setOverlayCollapsed(false);
+        }}
         className="flex h-7 items-center gap-1.5 rounded-full border border-[var(--accent)]/35 bg-[var(--accent-weak)] px-2.5 text-[11.5px] text-[var(--accent)]"
         aria-live="polite"
       >

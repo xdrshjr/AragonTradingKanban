@@ -160,6 +160,7 @@ def test_capabilities_shape_is_stable(capability_client) -> None:
         "pdf": False,
         "ask": True,
         "askDeep": True,
+        "askConversation": True,
         "fullTextSearch": True,
         "pinyinSearch": False,
         # The suite runs with SCHEDULER_ENABLED=0 (the ticker is driven explicitly),
@@ -195,6 +196,17 @@ def test_feature_flags_follow_measurements(capability_client, monkeypatch) -> No
     assert body["features"]["fullTextSearch"] is False
     # `cite` still works — it never touches the index or the CLI.
     assert body["features"]["ask"] is True
+
+
+def test_conversation_capability_measures_migration_independently_of_engine(capability_client, monkeypatch):
+    from app.services import ask_context, ask_service
+
+    monkeypatch.setattr(ask_service, "ask_deep_available", lambda: False)
+    body = capability_client()
+    assert body["features"]["askConversation"] is True
+    assert body["features"]["askDeep"] is False
+    monkeypatch.setattr(ask_context, "available", lambda db: False)
+    assert capability_client()["features"]["askConversation"] is False
 
 
 def test_data_providers_are_listed_with_availability(capability_client) -> None:

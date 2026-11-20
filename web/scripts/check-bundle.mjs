@@ -82,6 +82,7 @@ const LAZY_PANELS = [
  * 出现都会误判，I-16 同型）。
  */
 const MUST_BE_LOADABLE = [
+  'AskPanel',
   'ReadingView',
   'RangeHint',
   'CostPanel',

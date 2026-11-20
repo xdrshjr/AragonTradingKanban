@@ -288,7 +288,13 @@ describe('useReturnFocus: Esc 关闭 + 焦点归还', () => {
     const triggerRef: { current: HTMLElement | null } = { current: null };
     return (
       <div>
-        <button type="button" ref={(node) => void (triggerRef.current = node)}>
+        <button type="button" ref={(node) => {
+          triggerRef.current = node;
+          // jsdom has no layout; this trigger represents a visible button.
+          if (node) vi.spyOn(node, 'getClientRects').mockReturnValue(
+            [new DOMRect(0, 0, 100, 30)] as unknown as DOMRectList,
+          );
+        }}>
           触发者
         </button>
         <Panel triggerRef={triggerRef} open={open} onClose={onClose} />

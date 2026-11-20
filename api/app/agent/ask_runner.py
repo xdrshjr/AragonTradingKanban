@@ -30,6 +30,7 @@ ASK_SYSTEM_FILE = "ask_system.md"
 #: exist are listed — a template that promises `snapshot.json` and then has it
 #: missing teaches the model to invent (§18.3.2, V4-P1-6).
 ASK_FILE_DESCRIPTIONS: dict[str, str] = {
+    "conversation-context.json": "同版本历史问答，仅用于理解指代，不是新增事实来源",
     "report.json": "这份报告的结构化原文（章节 / 块 / 来源），答案的唯一证据来源",
     "sources.md": "S1..Sn 来源清单（标题 / 发布方 / 时间 / 链接）",
     "snapshot.json": "生成这份报告时的行情与财务快照，仅用于核对数字口径",
@@ -95,7 +96,7 @@ def render_ask_prompt(
             if isinstance(item, dict)
         ][:8],
     )
-    path.write_text(prompt, encoding="utf-8")
+    path.write_bytes(prompt.encode("utf-8"))
     system_target = workspace / ASK_SYSTEM_FILE
     # 与 I-58 同一条纪律（★v8 评审）：提示词也**按字节**复制。`read_text`+`write_text`
     # 在 Windows 上把 `\n` 变成 `\r\n`，两份"文本上相同"的文件因此在 sha1 / 字节数上不同。

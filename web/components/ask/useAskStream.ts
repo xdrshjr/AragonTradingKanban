@@ -73,6 +73,7 @@ export function subscribeToAsk(askId: string, options: AskStreamOptions): () => 
   };
 
   const parse = (raw: MessageEvent<string>, type: AskStreamEventType, seq: number) => {
+    if (closed) return;
     let payload: Record<string, unknown> = {};
     try {
       payload = raw.data ? (JSON.parse(raw.data) as Record<string, unknown>) : {};
@@ -81,19 +82,28 @@ export function subscribeToAsk(askId: string, options: AskStreamOptions): () => 
     }
     // 按 seq 去重：重连时服务端会从 `after` 重放，同一帧可能来两次。
     if (seq > 0 && seq <= after) return;
-    if (seq > after) after = seq;
+    if (seq > after) {
+      after = seq;
+      attempt = 0;
+    }
     onEvent({ seq, type, payload, at: Date.now() });
   };
 
   const connect = async () => {
     if (closed) return;
-    let token = '';
+    let token: string;
     try {
       const issued = await api.askEventsToken(askId);
       token = issued.token;
-    } catch {
-      // 未启用鉴权时拿不到 token 也能连：中间件只在 ?token= 存在时才校验。
-      token = '';
+    } catch (error) {
+      if (closed) return;
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        close();
+        onError?.(error, 0);
+        return;
+      }
+      retry(error instanceof Error ? error : new Error(copy.ask.failed));
+      return;
     }
     if (closed) return;
 
@@ -101,7 +111,6 @@ export function subscribeToAsk(askId: string, options: AskStreamOptions): () => 
     source = new EventSource(buildAskEventsUrl(askId, token, after));
 
     source.onopen = () => {
-      attempt = 0;
       onOpen?.();
     };
 
@@ -114,23 +123,22 @@ export function subscribeToAsk(askId: string, options: AskStreamOptions): () => 
       });
     }
 
-    source.onerror = () => {
-      if (closed) return;
-      source?.close();
-      source = null;
-      if (attempt >= maxRetries) {
-        onError?.(new Error(copy.ask.failed), 0);
-        close();
-        return;
-      }
-      const delay = retryDelay(attempt);
-      attempt += 1;
-      onReconnect?.(attempt);
-      onError?.(new Error(copy.ask.thinking), delay);
-      retryTimer = setTimeout(() => {
-        void connect();
-      }, delay);
-    };
+    source.onerror = () => retry(new Error(copy.ask.failed));
+  };
+
+  const retry = (error: Error) => {
+    if (closed) return;
+    source?.close();
+    source = null;
+    if (attempt >= maxRetries) {
+      close();
+      onError?.(error, 0);
+      return;
+    }
+    const delay = retryDelay(attempt++);
+    onReconnect?.(attempt);
+    onError?.(error, delay);
+    retryTimer = setTimeout(() => void connect(), delay);
   };
 
   void connect();
@@ -140,7 +148,15 @@ export function subscribeToAsk(askId: string, options: AskStreamOptions): () => 
 
 /* ── 状态机 ──────────────────────────────────────────────────────────────── */
 
-export type AskPhase = 'idle' | 'submitting' | 'streaming' | 'cancelling' | 'done' | 'error' | 'cancelled';
+export type AskPhase =
+  | 'idle' | 'submitting' | 'streaming' | 'cancelling'
+  | 'verifying' | 'disconnected' | 'unverified' | 'submission-unknown'
+  | 'done' | 'error' | 'cancelled';
+
+/** Uncertain acceptance and unverified results retain the paid-request lock. */
+export function isAskActive(phase: AskPhase): boolean {
+  return !['idle', 'done', 'error', 'cancelled'].includes(phase);
+}
 
 export interface AskStageView {
   stage: string;
@@ -164,6 +180,7 @@ export interface AskStreamState {
   phase: AskPhase;
   mode: AskMode;
   question: string;
+  contextAskIds: string[];
   reportId: string;
   askId: string | null;
   result: AskOut | null;
@@ -181,6 +198,7 @@ export const initialAskStreamState: AskStreamState = {
   phase: 'idle',
   mode: 'cite',
   question: '',
+  contextAskIds: [],
   reportId: '',
   askId: null,
   result: null,
@@ -197,16 +215,18 @@ export type AskStreamAction =
   | { type: 'reset'; reportId: string }
   | { type: 'mode'; mode: AskMode }
   | { type: 'question'; question: string }
-  | { type: 'submit'; mode: AskMode; question: string }
-  | { type: 'queued'; askId: string }
+  | { type: 'submit'; mode: AskMode; question: string; contextAskIds?: string[] }
+  | { type: 'queued'; askId: string; contextAskIds?: string[] }
   | { type: 'settled'; result: AskOut }
   | { type: 'exception'; code: string; message: string }
-  | { type: 'quota'; limit: number; retryAfterMs: number | null }
+  | { type: 'quota'; limit: number; retryAfterMs: number | null;
+      code?: string; message?: string }
   | { type: 'confirmFallback' }
   | { type: 'declineFallback' }
   | { type: 'cancelling' }
   | { type: 'cancelled' }
   | { type: 'reconnect'; attempt: number }
+  | { type: 'phase'; phase: AskPhase; error?: AskStreamState['error'] }
   | { type: 'event'; event: AskStreamEvent };
 
 function numberOrNull(value: unknown): number | null {
@@ -243,7 +263,8 @@ export function toCitations(value: unknown): Citation[] {
 function phaseForResult(result: AskOut): AskPhase {
   if (result.status === 'cancelled') return 'cancelled';
   if (result.status === 'failed') return 'error';
-  return 'done';
+  if (result.status === 'done') return 'done';
+  return result.status === 'cancelling' ? 'cancelling' : 'streaming';
 }
 
 function resultError(result: AskOut): { code: string; message: string } | null {
@@ -262,7 +283,8 @@ function syntheticResult(state: AskStreamState, payload: Record<string, unknown>
     question: state.question,
     mode: state.mode,
     status: 'done',
-    grounded: payload.grounded !== false,
+    grounded: false,
+    contextAskIds: state.contextAskIds,
     confidence: numberOrNull(payload.confidence),
     citationsDropped: numberOrNull(payload.citationsDropped) ?? 0,
     answer: {
@@ -300,6 +322,7 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
         phase: 'submitting',
         mode: action.mode,
         question: action.question,
+        contextAskIds: action.contextAskIds ?? [],
         askId: null,
         result: null,
         stage: null,
@@ -311,16 +334,24 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
       };
 
     case 'queued':
-      return { ...state, phase: 'streaming', askId: action.askId, reconnectAttempt: 0 };
+      return {
+        ...state, phase: 'streaming', askId: action.askId,
+        contextAskIds: action.contextAskIds ?? state.contextAskIds,
+        reconnectAttempt: 0,
+      };
 
     case 'settled': {
       const phase = phaseForResult(action.result);
-      const consumed = state.mode === 'deep' && phase === 'done';
+      const consumed = state.mode === 'deep' && phase === 'done'
+        && state.phase !== 'done';
       return {
         ...state,
         phase,
         askId: action.result.id || state.askId,
         result: action.result,
+        question: action.result.question,
+        mode: action.result.mode,
+        contextAskIds: action.result.contextAskIds ?? [],
         error: resultError(action.result),
         quota: null,
         stage: phase === 'done' ? state.stage : null,
@@ -335,7 +366,9 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
       // 只提示，不改档：降级必须由用户按下确认（AC-27）。
       return {
         ...state,
-        phase: 'idle',
+        phase: 'error',
+        error: { code: action.code ?? 'too_many_asks',
+          message: action.message ?? copy.ask.quotaTitle },
         quota: { limit: action.limit, retryAfterMs: action.retryAfterMs },
       };
 
@@ -343,16 +376,23 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
       return { ...state, quota: null, mode: 'cite' };
 
     case 'declineFallback':
-      return { ...state, quota: null, phase: state.result ? phaseForResult(state.result) : 'idle' };
+      return { ...state, quota: null,
+        phase: state.result ? phaseForResult(state.result) : 'error' };
 
     case 'cancelling':
-      return { ...state, phase: 'cancelling' };
+      return { ...state, phase: 'cancelling', error: null };
 
     case 'cancelled':
       return { ...state, phase: 'cancelled', askId: null };
 
     case 'reconnect':
       return { ...state, reconnectAttempt: action.attempt };
+
+    case 'phase':
+      return {
+        ...state, phase: action.phase,
+        error: action.error === undefined ? state.error : action.error,
+      };
 
     case 'event': {
       const { event } = action;
@@ -394,13 +434,16 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
           };
 
         case 'ask.done':
-          return { ...state, phase: 'done', result: syntheticResult(state, payload), error: null };
+          return {
+            ...state, phase: 'verifying',
+            result: syntheticResult(state, payload), error: null,
+          };
 
         case 'ask.error': {
           const code = stringOrNull(payload.code) ?? 'internal';
           return {
             ...state,
-            phase: code === 'cancelled' ? 'cancelled' : 'error',
+            phase: 'verifying',
             error: { code, message: stringOrNull(payload.message) ?? copy.ask.failed },
           };
         }
@@ -419,16 +462,17 @@ export function askStreamReducer(state: AskStreamState, action: AskStreamAction)
 
 export interface UseAskStreamOptions {
   reportId: string;
-  /** `limits.askDailyLimit`，只用于文案，不做前端额度判定。 */
+  identityKey?: string;
   dailyLimit?: number;
-  /** `capabilities.features.askDeep`；false（mock 模式）时强制 cite。 */
   deepAvailable?: boolean;
   onDone?: (result: AskOut) => void;
+  onAuthFailure?: () => void;
 }
 
 export interface AskSubmitInput {
   question?: string;
   mode?: AskMode;
+  contextAskIds?: string[];
 }
 
 export interface UseAskStreamResult {
@@ -436,11 +480,14 @@ export interface UseAskStreamResult {
   setQuestion: (question: string) => void;
   setMode: (mode: AskMode) => void;
   submit: (input?: AskSubmitInput) => Promise<void>;
-  /** AC-27 的「改用引用检索」：确认后才真正以 cite 重发。 */
   confirmFallback: () => Promise<void>;
   declineFallback: () => void;
   cancel: () => Promise<void>;
   reset: () => void;
+  refresh: () => Promise<void>;
+  resume: (askId: string) => Promise<void>;
+  reconnect: () => Promise<void>;
+  acknowledgeDuplicateRisk: () => void;
   isActive: boolean;
   deepRemaining: number;
 }
@@ -449,174 +496,254 @@ function isQueued(value: AskOut | AskQueuedResponse): value is AskQueuedResponse
   return 'askId' in value && typeof value.askId === 'string';
 }
 
+/** Owns one paid request and its single EventSource, including uncertain states. */
 export function useAskStream(options: UseAskStreamOptions): UseAskStreamResult {
-  const { reportId, dailyLimit = 0, deepAvailable = true, onDone } = options;
+  const { reportId, identityKey = 'open', dailyLimit = 0 } = options;
+  const { deepAvailable = true, onDone } = options;
   const [state, dispatch] = useReducer(askStreamReducer, initialAskStreamState);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-  const onDoneRef = useRef(onDone);
-
-  useEffect(() => {
-    onDoneRef.current = onDone;
-  }, [onDone]);
-
-  /**
-   * 每次提交/重置都 +1：`await` 之后回来的请求如果发现代号变了，就必须放弃结果。
-   * 没有它，一个在组件卸载或换问题之后才解析的 `api.ask(...)` 会留下一条没人
-   * 关闭的 EventSource（连带重连定时器）。
-   */
-  const generationRef = useRef(0);
-  /** 最新的 `state.askId`，供异步回调判断"这条流还是不是当前这条"。 */
-  const askIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    askIdRef.current = state.askId;
-  }, [state.askId]);
+  const current = useRef(state);
+  current.current = state;
+  const doneCallback = useRef(onDone);
+  doneCallback.current = onDone;
+  const authCallback = useRef(options.onAuthFailure);
+  authCallback.current = options.onAuthFailure;
+  const connection = useRef<(() => void) | null>(null);
+  const epoch = useRef(0);
+  const requestId = useRef<string | null>(null);
+  const locked = useRef(false);
+  const cancelPending = useRef(false);
+  const snapshot = useRef<AskSubmitInput>({});
+  const identity = useRef(`${identityKey}:${reportId}`);
+  const nextIdentity = `${identityKey}:${reportId}`;
+  if (identity.current !== nextIdentity) {
+    identity.current = nextIdentity;
+    epoch.current += 1;
+    requestId.current = null;
+    locked.current = false;
+    cancelPending.current = false;
+  }
 
   const teardown = useCallback(() => {
-    unsubscribeRef.current?.();
-    unsubscribeRef.current = null;
+    connection.current?.();
+    connection.current = null;
   }, []);
-
-  useEffect(
-    () => () => {
-      // 卸载即作废：在途请求回来后不得再订阅。
-      generationRef.current += 1;
-      teardown();
-    },
-    [teardown],
-  );
-
-  // 换报告就重置：上一份报告的答案不能留在新报告的面板上（包括额度确认态）。
   useEffect(() => {
-    generationRef.current += 1;
+    epoch.current += 1;
     teardown();
+    locked.current = false;
+    cancelPending.current = false;
+    requestId.current = null;
     dispatch({ type: 'reset', reportId });
-  }, [reportId, teardown]);
-
-  // mock 模式没有 deep 能力：把已有选择退回去，避免发一个必被拒的请求。
+    return () => { epoch.current += 1; teardown(); };
+  }, [identityKey, reportId, teardown]);
   useEffect(() => {
     if (!deepAvailable) dispatch({ type: 'mode', mode: 'cite' });
   }, [deepAvailable]);
 
-  /** 拿到 `ask.done` 后再取一次完整 AskOut：SSE 只带摘要，正文/命中块在库里。 */
-  const refresh = useCallback(async (askId: string) => {
+  const readResult = useCallback(async (askId: string, generation: number) => {
+    const valid = () => epoch.current === generation
+      && requestId.current === askId;
     try {
       const result = await api.askById(askId);
-      // 迟到的结果不许覆盖新问题：只有"当前这条追问"才允许落状态。
-      if (askIdRef.current !== askId) return;
+      if (!valid()) return null;
+      const active = isAskActive(phaseForResult(result));
+      locked.current = active;
       dispatch({ type: 'settled', result });
-      onDoneRef.current?.(result);
-    } catch {
-      // 拉不到就保留 syntheticResult——流里的终态已经足够渲染。
-    }
-  }, []);
-
-  const streamOptions = useCallback(
-    (askId: string) => ({
-      onEvent: (event: AskStreamEvent) => {
-        dispatch({ type: 'event', event });
-        if (event.type === 'ask.done') void refresh(askId);
-      },
-      onReconnect: (attempt: number) => dispatch({ type: 'reconnect', attempt }),
-      onError: (error: Error, retryInMs: number) => {
-        if (retryInMs === 0) dispatch({ type: 'exception', code: 'stream_closed', message: error.message });
-      },
-    }),
-    [refresh],
-  );
-
-  const submit = useCallback(
-    async (input: AskSubmitInput = {}) => {
-      const question = (input.question ?? state.question).trim();
-      if (question.length === 0) return;
-      const requested = input.mode ?? state.mode;
-      const mode: AskMode = deepAvailable ? requested : 'cite';
-
-      teardown();
-      const generation = (generationRef.current += 1);
-      dispatch({ type: 'submit', mode, question });
-
-      try {
-        const created = await api.ask(reportId, { question, mode });
-        // 请求回来时如果已经换了问题 / 卸载了组件，这条流不能再订阅。
-        if (generationRef.current !== generation) return;
-        if (isQueued(created)) {
-          dispatch({ type: 'queued', askId: created.askId });
-          const unsubscribe = subscribeToAsk(created.askId, streamOptions(created.askId));
-          if (generationRef.current !== generation) {
-            unsubscribe();
-            return;
-          }
-          unsubscribeRef.current = unsubscribe;
-          return;
-        }
-        dispatch({ type: 'settled', result: created });
-        onDoneRef.current?.(created);
-      } catch (error) {
-        // AC-27：429 不静默兜底，把「改用引用检索」变成一次显式确认。
-        if (error instanceof ApiError && error.code === 'too_many_asks') {
-          dispatch({ type: 'quota', limit: dailyLimit, retryAfterMs: error.retryAfterMs });
-          return;
-        }
-        dispatch({
-          type: 'exception',
-          code: error instanceof ApiError ? error.code : 'unknown',
-          message: error instanceof Error && error.message ? error.message : copy.ask.failed,
-        });
+      if (!active) {
+        teardown();
+        doneCallback.current?.(result);
       }
-    },
-    [dailyLimit, deepAvailable, reportId, state.mode, state.question, streamOptions, teardown],
-  );
+      return result;
+    } catch (error) {
+      if (!valid()) return null;
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        authCallback.current?.();
+      }
+      locked.current = true;
+      dispatch({
+        type: 'phase', phase: 'unverified',
+        error: {
+          code: error instanceof ApiError ? error.code : 'unverified',
+          message: copy.ask.unverified,
+        },
+      });
+      return null;
+    }
+  }, [teardown]);
 
-  const confirmFallback = useCallback(async () => {
-    dispatch({ type: 'confirmFallback' });
-    await submit({ mode: 'cite' });
-  }, [submit]);
+  const attach = useCallback((askId: string, generation: number) => {
+    teardown();
+    const valid = () => epoch.current === generation
+      && requestId.current === askId;
+    connection.current = subscribeToAsk(askId, {
+      onEvent: (event) => {
+        if (!valid()) return;
+        dispatch({ type: 'event', event });
+        if (['ask.done', 'ask.error'].includes(event.type)) {
+          void readResult(askId, generation).then((result) => {
+            // The stream ended, but storage may still report an active task.
+            // Keep recovery visible instead of leaving a closed stream "live".
+            if (valid() && result && isAskActive(phaseForResult(result))) {
+              dispatch({ type: 'phase', phase: 'disconnected' });
+            }
+          });
+        }
+      },
+      onReconnect: (attempt) => {
+        if (valid()) dispatch({ type: 'reconnect', attempt });
+      },
+      onError: (error, delay) => {
+        if (!valid() || delay > 0) return;
+        const authFailed = error instanceof ApiError
+          && [401, 403].includes(error.status);
+        dispatch({ type: 'phase', phase: 'disconnected', error: {
+          code: error instanceof ApiError ? error.code : 'stream_closed',
+          message: authFailed ? copy.ask.authRequired : copy.ask.disconnected,
+        } });
+        if (authFailed) authCallback.current?.();
+        if (!authFailed) {
+          void readResult(askId, generation).then((result) => {
+            if (valid() && result && isAskActive(phaseForResult(result))) {
+              dispatch({ type: 'phase', phase: 'disconnected' });
+            }
+          });
+        }
+      },
+    });
+  }, [readResult, teardown]);
 
-  const declineFallback = useCallback(() => {
-    dispatch({ type: 'declineFallback' });
-  }, []);
+  const submit = useCallback(async (input: AskSubmitInput = {}) => {
+    if (locked.current) return;
+    const question = (input.question ?? current.current.question).trim();
+    if (!question) return;
+    const mode = deepAvailable ? input.mode ?? current.current.mode : 'cite';
+    const contextAskIds = mode === 'cite' ? [] : input.contextAskIds ?? [];
+    locked.current = true;
+    teardown();
+    const generation = ++epoch.current;
+    cancelPending.current = false;
+    requestId.current = null;
+    snapshot.current = { question, mode, contextAskIds: [...contextAskIds] };
+    dispatch({ type: 'submit', mode, question, contextAskIds });
+    try {
+      const created = await api.ask(reportId, { question, mode, contextAskIds });
+      if (epoch.current !== generation) return;
+      requestId.current = isQueued(created) ? created.askId : created.id;
+      if (isQueued(created)) {
+        dispatch({ type: 'queued', askId: created.askId,
+          contextAskIds: created.contextAskIds ?? [] });
+        attach(created.askId, generation);
+        return;
+      }
+      locked.current = isAskActive(phaseForResult(created));
+      dispatch({ type: 'settled', result: created });
+      if (!locked.current) doneCallback.current?.(created);
+    } catch (error) {
+      if (epoch.current !== generation) return;
+      const rejected = error instanceof ApiError && error.status >= 400
+        && error.status < 500 && error.status !== 408;
+      locked.current = !rejected;
+      if (error instanceof ApiError
+        && ['too_many_asks', 'quota_exceeded'].includes(error.code)) {
+        dispatch({ type: 'quota', limit: dailyLimit,
+          retryAfterMs: error.retryAfterMs,
+          code: error.code, message: error.message });
+        return;
+      }
+      dispatch({ type: 'phase', phase: rejected ? 'error' : 'submission-unknown',
+        error: { code: error instanceof ApiError ? error.code : 'network_error',
+          message: rejected && error instanceof Error ? error.message
+            : copy.ask.submissionUnknown } });
+    }
+  }, [attach, dailyLimit, deepAvailable, reportId, teardown]);
 
-  const cancel = useCallback(async () => {
-    const askId = state.askId;
+  const resume = useCallback(async (askId: string) => {
+    teardown();
+    locked.current = true;
+    const generation = ++epoch.current;
+    cancelPending.current = false;
+    requestId.current = askId;
+    dispatch({ type: 'submit', question: '', mode: 'deep' });
+    dispatch({ type: 'queued', askId });
+    dispatch({ type: 'phase', phase: 'verifying' });
+    const result = await readResult(askId, generation);
+    if (epoch.current !== generation || requestId.current !== askId) return;
+    if (result && isAskActive(phaseForResult(result))) attach(askId, generation);
+  }, [attach, readResult, teardown]);
+
+  const refresh = useCallback(async () => {
+    const askId = requestId.current;
+    const generation = epoch.current;
     if (!askId) return;
+    const result = await readResult(askId, generation);
+    if (epoch.current !== generation || requestId.current !== askId) return;
+    if (result && isAskActive(phaseForResult(result))) await resume(askId);
+  }, [readResult, resume]);
+  const reconnect = useCallback(async () => {
+    const askId = requestId.current;
+    if (askId) await resume(askId);
+  }, [resume]);
+  const cancel = useCallback(async () => {
+    const askId = requestId.current;
+    if (!askId || cancelPending.current) return;
+    cancelPending.current = true;
+    const generation = epoch.current;
     dispatch({ type: 'cancelling' });
     try {
       await api.cancelAsk(askId);
-    } catch {
-      // 可能已经终态；流会给出结论。
+      if (epoch.current !== generation || requestId.current !== askId) return;
+      await readResult(askId, generation);
+    } catch (error) {
+      if (epoch.current !== generation || requestId.current !== askId) return;
+      if (error instanceof ApiError && error.code === 'ask_not_active') {
+        await readResult(askId, generation);
+        return;
+      }
+      dispatch({ type: 'phase', phase: 'cancelling', error: {
+        code: 'cancel_unconfirmed',
+        message: copy.ask.cancelUnconfirmed,
+      } });
+    } finally {
+      if (epoch.current === generation && requestId.current === askId) {
+        cancelPending.current = false;
+      }
     }
-    teardown();
-    dispatch({ type: 'cancelled' });
-  }, [state.askId, teardown]);
-
+  }, [readResult]);
   const reset = useCallback(() => {
-    generationRef.current += 1;
+    if (locked.current) return;
+    epoch.current += 1;
+    requestId.current = null;
     teardown();
     dispatch({ type: 'reset', reportId });
   }, [reportId, teardown]);
-
-  const setQuestion = useCallback((question: string) => dispatch({ type: 'question', question }), []);
-
-  const setMode = useCallback(
-    (mode: AskMode) => {
-      if (mode === 'deep' && !deepAvailable) return;
-      dispatch({ type: 'mode', mode });
-    },
-    [deepAvailable],
-  );
-
-  const isActive = state.phase === 'submitting' || state.phase === 'streaming' || state.phase === 'cancelling';
+  const acknowledgeDuplicateRisk = useCallback(() => {
+    if (current.current.phase !== 'submission-unknown') return;
+    locked.current = false;
+    dispatch({ type: 'phase', phase: 'error', error: {
+      code: 'duplicate_risk_acknowledged',
+      message: copy.ask.duplicateAcknowledged,
+    } });
+  }, []);
+  const confirmFallback = useCallback(async () => {
+    if (!current.current.quota || locked.current) return;
+    dispatch({ type: 'confirmFallback' });
+    await submit({ ...snapshot.current, mode: 'cite', contextAskIds: [] });
+  }, [submit]);
+  const declineFallback = useCallback(() => {
+    dispatch({ type: 'declineFallback' });
+  }, []);
+  const setQuestion = useCallback((question: string) => {
+    dispatch({ type: 'question', question });
+  }, []);
+  const setMode = useCallback((mode: AskMode) => {
+    if (locked.current || (mode === 'deep' && !deepAvailable)) return;
+    dispatch({ type: 'mode', mode });
+  }, [deepAvailable]);
 
   return {
-    state,
-    setQuestion,
-    setMode,
-    submit,
-    confirmFallback,
-    declineFallback,
-    cancel,
-    reset,
-    isActive,
+    state, setQuestion, setMode, submit, confirmFallback, declineFallback,
+    cancel, reset, refresh, resume, reconnect, acknowledgeDuplicateRisk,
+    isActive: isAskActive(state.phase),
     deepRemaining: Math.max(0, dailyLimit - state.deepUsed),
   };
 }

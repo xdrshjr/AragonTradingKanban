@@ -5,6 +5,7 @@ import { ArrowRight, FileText, LineChart, Layers } from 'lucide-react';
 import { RecentReports } from '@/components/library/RecentReports';
 import { LandingSearch } from '@/components/shell/LandingSearch';
 import { UserMenu } from '@/components/auth/UserMenu';
+import { BrandMark } from '@/components/ui/BrandMark';
 import { copy } from '@/lib/copy';
 import { serverApi } from '@/lib/serverApi';
 import type { LibraryResponse, WatchlistEntry } from '@/lib/types';
@@ -66,19 +67,18 @@ export default async function LandingPage() {
   const { reports, watchlist } = await loadHome();
 
   return (
-    <main className="flex min-h-dvh flex-col items-center overflow-y-auto px-5 py-10">
-      <div className="w-full max-w-[760px]">
-        <header className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-text)]">
-              A
-            </span>
+    <main data-home-scroll tabIndex={0} aria-label="首页内容"
+      className="flex h-dvh min-h-0 w-full flex-col items-center overflow-y-auto px-5 py-10">
+      <div className="min-w-0 w-full max-w-[760px] shrink-0">
+        <header className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <BrandMark size={28} />
             <span className="flex items-baseline gap-1.5">
               <span className="text-[14px] font-semibold tracking-tight">{copy.brand}</span>
-              <span className="text-[11.5px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>
+              <span className="hidden text-[11.5px] text-[var(--text-tertiary)] sm:inline">{copy.brandSuffix}</span>
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/reports"
               className="text-[11.5px] text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"

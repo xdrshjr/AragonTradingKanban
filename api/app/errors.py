@@ -66,6 +66,12 @@ class InvalidQuery(AppError):
     message = "查询条件不合法"
 
 
+class InvalidAskContext(AppError):
+    code = "invalid_ask_context"
+    status_code = 422
+    message = "历史上下文已不可用，请开始新话题"
+
+
 class NotFound(AppError):
     code = "not_found"
     status_code = status.HTTP_404_NOT_FOUND

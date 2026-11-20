@@ -119,7 +119,7 @@ def _insert_ledger(connection, reason: str, ref: str | None, delta: int = -1) ->
 def test_upgrade_creates_seven_tables_five_columns_and_every_index(migrated) -> None:
     config, engine = migrated
     command.upgrade(config, "head")
-    assert _revision(engine) == "0008_account_recovery"  # ★v16：head 随 0008 前移
+    assert _revision(engine) == "0009_ask_context"
     assert set(sa.inspect(engine).get_table_names()) >= NEW_TABLES
     for table, names in NEW_INDEXES.items():
         assert names <= _indexes(engine, table), (table, names - _indexes(engine, table))
@@ -288,7 +288,7 @@ def test_downgrade_removes_everything_and_the_round_trip_replays(migrated) -> No
     assert "doc_sha1" in _columns(engine, "reports")
 
     command.upgrade(config, "head")
-    assert _revision(engine) == "0008_account_recovery"  # ★v16：head 随 0008 前移
+    assert _revision(engine) == "0009_ask_context"
     assert set(sa.inspect(engine).get_table_names()) >= NEW_TABLES
 
     command.downgrade(config, "base")
@@ -323,7 +323,7 @@ def test_downgrade_keeps_the_rows_of_the_tables_it_only_altered(migrated) -> Non
 
 def test_there_is_exactly_one_head_and_the_ids_are_the_real_ones() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
-    assert script.get_heads() == ["0008_account_recovery"]  # ★v16：head 随 0008 前移
+    assert script.get_heads() == ["0009_ask_context"]
     revision = script.get_revision("0007_users_auth")
     assert revision is not None
     assert revision.down_revision == "0006_report_library"

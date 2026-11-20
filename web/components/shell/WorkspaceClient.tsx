@@ -161,6 +161,10 @@ export function WorkspaceClient({
     // 所以只在那份 detail 真的属于当前 id 时才把它当首屏数据。
     initialData:
       initialDetail && initialDetail.report.id === selectedReportId ? initialDetail : undefined,
+    // Keep the displayed version and its assistant together until the next
+    // version arrives; never borrow a different instrument's document.
+    placeholderData: (previous) => previous?.report.instrumentId === instrument.id
+      ? previous : undefined,
     staleTime: Infinity,
   });
 
@@ -600,6 +604,10 @@ export function WorkspaceClient({
       state.toggleCommandPalette(false);
       return;
     }
+    if (state.assistantOpen) {
+      state.setAssistantOpen(false);
+      return;
+    }
     if (state.klineDrawerOpen) {
       state.setKlineDrawer(false);
       return;
@@ -609,6 +617,7 @@ export function WorkspaceClient({
 
   useEffect(() => {
     hydrateTheme();
+    return () => useUiStore.getState().setAssistantOpen(false);
   }, [hydrateTheme]);
 
   useHotkeys({
@@ -670,6 +679,7 @@ export function WorkspaceClient({
         features={{
           // 深度追问要登录并走额度（`ask.deep`）；游客只剩零成本的引用式检索。
           askDeep: capabilities.features.askDeep === true && canDeepAsk,
+          askConversation: capabilities.features.askConversation === true,
           schedule: capabilities.features.schedule !== false && canSchedule,
           search: capabilities.features.fullTextSearch !== false,
           // ★v14（U1 / §23.5.4）：`false` 时**不渲染**「报告库」入口（不留死链）。
@@ -688,6 +698,8 @@ export function WorkspaceClient({
         askDailyLimit={
           typeof capabilities.limits.askDailyLimit === 'number' ? capabilities.limits.askDailyLimit : 30
         }
+        askMaxQuestionChars={typeof capabilities.limits.askMaxQuestionChars === 'number'
+          ? capabilities.limits.askMaxQuestionChars : 500}
         compare={{
           diff: compareRequest.data ?? null,
           loading: compareRequest.isLoading,

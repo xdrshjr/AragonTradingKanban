@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 AskMode = Literal["cite", "deep"]
 AskStatus = Literal["queued", "running", "cancelling", "done", "failed", "cancelled"]
@@ -22,6 +22,17 @@ class AskRequest(BaseModel):
     #: generic `validation_error` and make the setting silently ineffective.
     question: str = Field(min_length=1, max_length=4000)
     mode: AskMode = "cite"
+    contextAskIds: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("contextAskIds")
+    @classmethod
+    def validate_context_ids(cls, ids: list[str]) -> list[str]:
+        """Reject empty, repeated or oversized context identifiers."""
+        if any(not item.strip() or len(item) > 64 for item in ids):
+            raise ValueError("contextAskIds 包含无效标识")
+        if len(set(ids)) != len(ids):
+            raise ValueError("contextAskIds 不允许重复")
+        return ids
 
 
 class Citation(BaseModel):
@@ -62,6 +73,7 @@ class AskOut(BaseModel):
     reportId: str
     question: str
     mode: AskMode
+    contextAskIds: list[str] = Field(default_factory=list)
     status: AskStatus
     grounded: bool = False
     confidence: float | None = None
@@ -90,3 +102,4 @@ class AskQueuedResponse(BaseModel):
     askId: str
     status: AskStatus
     streamUrl: str
+    contextAskIds: list[str] = Field(default_factory=list)

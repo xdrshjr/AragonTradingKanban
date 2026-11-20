@@ -35,6 +35,8 @@ interface UiState {
   sourceDrawer: SourceDrawerState;
   commandPaletteOpen: boolean;
   klineDrawerOpen: boolean;
+  assistantOpen: boolean;
+  setAssistantOpen: (open: boolean) => void;
   /** The generation card is minimised to its header row. */
   overlayCollapsed: boolean;
   chartFocus: { from: string; to: string } | null;
@@ -68,6 +70,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   sourceDrawer: { open: false, activeSourceId: null },
   commandPaletteOpen: false,
   klineDrawerOpen: false,
+  assistantOpen: false,
+  setAssistantOpen: (assistantOpen) => set({ assistantOpen }),
   overlayCollapsed: false,
   chartFocus: null,
 

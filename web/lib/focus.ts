@@ -20,8 +20,9 @@
 import { useEffect, useRef } from 'react';
 
 /** 把焦点还给元素；元素已卸载或不可聚焦时安静跳过（不抛、不降级到 body）。 */
-function restoreFocus(target: HTMLElement | null | undefined): void {
-  if (!target || !target.isConnected) return;
+export function restoreFocus(target: HTMLElement | null | undefined): void {
+  if (!target || !target.isConnected || target.matches(':disabled')) return;
+  if (target.getClientRects().length === 0) return;
   try {
     target.focus({ preventScroll: true });
   } catch {
@@ -39,11 +40,14 @@ export function useReturnFocus(
   triggerRef: React.RefObject<HTMLElement | null>,
   isOpen: boolean,
   onClose?: () => void,
+  options: { handleEscape?: boolean; returnFocus?: boolean } = {},
 ): void {
   const triggerRefRef = useRef(triggerRef);
   const onCloseRef = useRef(onClose);
   /** 上一轮是否处于打开态 —— 用来区分"刷新"与"真正的关闭"。 */
   const wasOpenRef = useRef(false);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   // 永远指向最新值：这两个 effect 不注册监听，只同步 ref。
   useEffect(() => {
@@ -58,7 +62,20 @@ export function useReturnFocus(
 
     if (!isOpen) {
       // 只在"打开过"之后归还焦点；初次挂载 (false → false) 不动焦点。
-      if (wasOpenRef.current) restoreFocus(triggerRefRef.current.current);
+      if (wasOpenRef.current && optionsRef.current.returnFocus !== false) {
+        if (optionsRef.current.handleEscape === false &&
+          document.activeElement?.closest('[data-assistant-no-focus-return]')) {
+          wasOpenRef.current = false;
+          return;
+        }
+        if (optionsRef.current.handleEscape === false) {
+          requestAnimationFrame(() => {
+            if (optionsRef.current.returnFocus !== false) {
+              restoreFocus(triggerRefRef.current.current);
+            }
+          });
+        } else restoreFocus(triggerRefRef.current.current);
+      }
       wasOpenRef.current = false;
       return;
     }
@@ -69,8 +86,13 @@ export function useReturnFocus(
       // A layered surface on top (source drawer, dialog) may have handled this key
       // already. Closing both on one Esc is the classic double-close bug.
       if (event.defaultPrevented) return;
+      if (event.isComposing || optionsRef.current.handleEscape === false) return;
+      event.preventDefault();
+      wasOpenRef.current = false;
       onCloseRef.current?.();
-      restoreFocus(triggerRefRef.current.current);
+      if (optionsRef.current.returnFocus !== false) {
+        restoreFocus(triggerRefRef.current.current);
+      }
     };
 
     window.addEventListener('keydown', listener);

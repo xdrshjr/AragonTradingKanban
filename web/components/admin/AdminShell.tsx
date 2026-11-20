@@ -12,6 +12,7 @@ import { copy, fill } from '@/lib/copy';
 import { copyAdmin } from '@/lib/copy.admin';
 
 import { UserMenu } from '../auth/UserMenu';
+import { BrandMark } from '../ui/BrandMark';
 import { adminKeys } from './keys';
 
 interface NavItem {
@@ -85,9 +86,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <header className="flex h-[var(--header-h)] shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-1)] px-4">
         <div className="flex min-w-0 items-center gap-3">
           <Link href="/" className="flex items-center gap-2" aria-label={`${copy.brand} ${copy.brandSuffix}`}>
-            <span className="flex size-6 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[12px] font-bold text-[var(--accent-text)]">
-              A
-            </span>
+            <BrandMark />
             <span className="hidden text-[13px] font-semibold tracking-tight sm:inline">{copy.brand}</span>
           </Link>
           <span aria-hidden="true" className="text-[var(--text-tertiary)]">

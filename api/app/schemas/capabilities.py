@@ -76,6 +76,7 @@ class FeaturesOut(BaseModel):
     pdf: bool = False
     ask: bool = True
     askDeep: bool = False
+    askConversation: bool = False
     fullTextSearch: bool = False
     pinyinSearch: bool = False
     schedule: bool = True

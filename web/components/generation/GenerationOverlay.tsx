@@ -30,6 +30,8 @@ const STAGES: { id: RunStageId; pct: number }[] = [
 const REPEAT_ALERT_THRESHOLD = 3;
 
 export interface GenerationOverlayProps {
+  hidden?: boolean;
+  aboveAssistant?: boolean;
   state: GenerationState;
   onCancel: () => void;
   onDismiss: () => void;
@@ -56,6 +58,8 @@ export function GenerationOverlay({
   onOpenReport,
   onOpenKeyDrawer,
   onOpenLog,
+  hidden = false,
+  aboveAssistant = false,
 }: GenerationOverlayProps) {
   // Collapse lives in the store so the header capsule can expand the card
   // (spec §6.3: clicking the running badge opens the progress overlay).
@@ -150,6 +154,10 @@ export function GenerationOverlay({
       aria-label={copy.generation.title}
       aria-live="polite"
       data-print="hide"
+      style={{
+        display: hidden ? 'none' : undefined,
+        bottom: aboveAssistant ? 'calc(92px + env(safe-area-inset-bottom, 0px))' : undefined,
+      }}
       className={cn(
         'fixed bottom-4 right-4 z-40 w-[340px] overflow-hidden rounded-[var(--radius-lg)]',
         'border border-[var(--border-strong)] bg-[var(--bg-surface-2)] shadow-[var(--shadow-pop)]',

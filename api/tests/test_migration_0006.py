@@ -110,7 +110,7 @@ def test_downgrade_removes_everything_and_upgrade_replays(migrated) -> None:
 
 def test_revision_ids_are_the_real_ones_not_abbreviations() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
-    assert script.get_current_head() == "0008_account_recovery"  # ★v16：head 随 0008 前移
+    assert script.get_current_head() == "0009_ask_context"
     revision = script.get_revision("0006_report_library")
     assert revision is not None
     assert revision.down_revision == "0005_engine_probes"

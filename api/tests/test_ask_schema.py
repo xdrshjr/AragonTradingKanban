@@ -42,6 +42,24 @@ MAX_REPORT_SCHEMA_DEPTH = 12
 ASK_TOOLS = ["read_file", "glob", "grep", "list_dir"]
 
 
+@pytest.mark.parametrize("ids", [None, [1], [""], [" "], ["x" * 65], ["a", "a"], [str(i) for i in range(7)]])
+def test_context_ids_reject_invalid_structure(ids) -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.ask import AskRequest
+
+    with pytest.raises(ValidationError):
+        AskRequest(question="问题", mode="deep", contextAskIds=ids)
+
+
+def test_context_ids_are_optional_and_preserved() -> None:
+    from app.schemas.ask import AskQueuedResponse, AskRequest
+
+    assert AskRequest(question="问题").contextAskIds == []
+    assert AskRequest(question="问题", mode="deep", contextAskIds=["a"]).contextAskIds == ["a"]
+    assert AskQueuedResponse(id="a", askId="a", status="queued", streamUrl="/events").contextAskIds == []
+
+
 def schema_depth(value, depth: int = 1) -> int:
     """Mirror of the CLI's `schemaDepth()` — raw document nesting, scalar = 1.
 

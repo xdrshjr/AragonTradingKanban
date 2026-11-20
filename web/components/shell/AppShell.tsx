@@ -32,6 +32,7 @@ import { PricePanel } from '../chart/PricePanel';
 import type { UseGenerationStreamResult } from '../generation/useGenerationStream';
 import { ReportPanel } from '../report/ReportPanel';
 import { IconButton } from '../ui/Button';
+import { BrandMark } from '../ui/BrandMark';
 import { Splitter, useSplitterHandlers } from '../ui/Splitter';
 import { RunStatusBadge } from './RunStatusBadge';
 import { SymbolRail, type RailItem } from './SymbolRail';
@@ -104,12 +105,14 @@ export interface AppShellProps {
   /** `capabilities.features` — every A1/A3/A4 entry is gated on a measurement. */
   features?: {
     askDeep?: boolean;
+    askConversation?: boolean;
     schedule?: boolean;
     search?: boolean;
     /** ★v14（U1）：报告库是否可用（`features.reportLibrary` 的**实测**结论）。 */
     reportLibrary?: boolean;
   };
   askDailyLimit?: number;
+  askMaxQuestionChars?: number;
   /** version comparison state, owned by `WorkspaceClient` (an A3 route state). */
   compare?: {
     diff: import('@/lib/types').DiffResult | null;
@@ -217,6 +220,7 @@ export function AppShell({
   generation,
   features,
   askDailyLimit = 30,
+  askMaxQuestionChars = 500,
   compare,
   focusSection,
   focusBlockId,
@@ -235,6 +239,7 @@ export function AppShell({
   account,
 }: AppShellProps) {
   const layout = useUiStore((state) => state.layout);
+  const assistantOpen = useUiStore((state) => state.assistantOpen);
   const hydrateLayout = useUiStore((state) => state.hydrateLayout);
   const { resetLayout, handleRailDelta, handleChartDelta } = useSplitterHandlers();
   const [viewportWidth, setViewportWidth] = useState(1440);
@@ -351,9 +356,7 @@ export function AppShell({
         data-print="hide"
       >
         <div className="flex items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[12px] font-bold text-[var(--accent-text)]">
-            A
-          </span>
+          <BrandMark />
           <span className="flex items-baseline gap-1.5">
             <span className="text-[13px] font-semibold tracking-tight text-[var(--text-primary)]">{copy.brand}</span>
             <span className="text-[11px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>
@@ -453,6 +456,7 @@ export function AppShell({
         <div className="min-w-0 flex-1">
           <ReportPanel
             instrumentName={activeInstrument?.name ?? ''}
+            instrumentSymbol={activeInstrument?.symbol ?? ''}
             timezone={activeInstrument?.tz}
             reports={reports}
             detail={reportDetail}
@@ -468,6 +472,8 @@ export function AppShell({
             onExport={onExport}
             deepAvailable={features?.askDeep ?? false}
             askDailyLimit={askDailyLimit}
+            askMaxQuestionChars={askMaxQuestionChars}
+            conversationAvailable={features?.askConversation === true}
             diffCount={compare?.diffCount}
             onCompare={compare ? compare.onOpen : undefined}
             initialSection={focusSection}
@@ -504,6 +510,8 @@ export function AppShell({
       </main>
 
       <GenerationOverlay
+        hidden={assistantOpen}
+        aboveAssistant={Boolean(reportDetail?.doc && reportDetail.report.id)}
         state={generation.state}
         agentMode={agentMode}
         onCancel={() => void generation.cancel()}

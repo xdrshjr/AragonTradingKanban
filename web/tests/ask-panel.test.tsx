@@ -1,9 +1,15 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AskPanel, type AskPanelProps } from '@/components/ask/AskPanel';
+import { AskAnswer } from '@/components/ask/AskAnswer';
+import { AskConversation } from '@/components/ask/AskConversation';
+import { AskPanelBoundary, AskPanelLoading } from '@/components/ask/AskPanelBoundary';
+import { AssistantLauncher } from '@/components/ask/AssistantLauncher';
+import { initialAskStreamState } from '@/components/ask/useAskStream';
+import type { AskTurnView } from '@/components/ask/useAskConversation';
 import { copy, fill } from '@/lib/copy';
 import type { AskHit, AskOut } from '@/lib/types';
 
@@ -72,12 +78,24 @@ interface HarnessProps {
   deepAvailable?: boolean;
   dailyLimit?: number;
   initialOpen?: boolean;
+  questionMaxChars?: number;
 }
 
 /** 用真的受控父层驱动 `open`/`onOpenChange`，这样才能测到"Esc 之后面板真的关掉了"。 */
-function Harness({ onJumpToBlock, onJumpToSource, deepAvailable = true, dailyLimit = 5, initialOpen = true }: HarnessProps) {
+function Harness({ onJumpToBlock, onJumpToSource, deepAvailable = true, dailyLimit = 5, initialOpen = true, questionMaxChars }: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (!open || event.defaultPrevented || event.isComposing) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, [open]);
 
   const props: AskPanelProps = {
     reportId: 'rp_1',
@@ -88,6 +106,7 @@ function Harness({ onJumpToBlock, onJumpToSource, deepAvailable = true, dailyLim
     onJumpToBlock: onJumpToBlock ?? (() => {}),
     onJumpToSource,
     triggerRef,
+    questionMaxChars,
   };
 
   return (
@@ -111,6 +130,224 @@ async function askCiteQuestion(user: ReturnType<typeof userEvent.setup>, text = 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('AI 助手 — 输入与浮窗', () => {
+  it('停止网络失败保留活动预览并明确提示停止未确认', () => {
+    render(<AskAnswer state={{ ...initialAskStreamState,
+      phase: 'streaming', streamText: '已收到的预览',
+      error: { code: 'cancel_unconfirmed', message: copy.ask.cancelUnconfirmed },
+    }} onJumpToBlock={vi.fn()} />);
+    expect(screen.getByText('已收到的预览')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(copy.ask.cancelUnconfirmed);
+  });
+
+  it('入口随可视视口平移，紧凑形态展开后隐藏入口', async () => {
+    const viewport = new EventTarget() as EventTarget & {
+      width: number; height: number; offsetLeft: number; offsetTop: number;
+    };
+    Object.assign(viewport, {
+      width: 390, height: 320, offsetLeft: 20, offsetTop: 30,
+    });
+    vi.stubGlobal('visualViewport', viewport);
+    const { rerender } = render(<AssistantLauncher open={false} onClick={vi.fn()} />);
+    const button = await screen.findByRole('button', { name: copy.ask.launcherOpen });
+    await waitFor(() => expect(button.style.getPropertyValue('--assistant-vh'))
+      .toBe('320px'));
+    expect(button.style.getPropertyValue('--assistant-top')).toBe('30px');
+    expect(button.style.getPropertyValue('--assistant-right'))
+      .toBe(`${window.innerWidth - 410}px`);
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(button).toHaveAttribute('aria-controls', 'aragon-ai-assistant');
+    rerender(<AssistantLauncher open onClick={vi.fn()} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('资源载入失败仍提供关闭和重新加载入口，不发送问题', async () => {
+    const fetchMock = vi.fn();
+    const close = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    function FailedChunk(): never { throw new Error('ChunkLoadError'); }
+    render(<AskPanelBoundary onClose={close}><FailedChunk /></AskPanelBoundary>);
+    expect(await screen.findByText(copy.ask.loadingFailed)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.ask.reloadPage })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole('button', { name: copy.ask.close }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('资源失败后可真正收起，重开保留恢复提示', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    function FailedChunk(): never { throw new Error('ChunkLoadError'); }
+    function BoundaryHarness() {
+      const [open, setOpen] = useState(true);
+      return <>
+        <button onClick={() => setOpen(true)}>重新打开助手</button>
+        <AskPanelBoundary open={open} onClose={() => setOpen(false)}>
+          <FailedChunk />
+        </AskPanelBoundary>
+      </>;
+    }
+    render(<BoundaryHarness />);
+    await screen.findByText(copy.ask.loadingFailed);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: copy.ask.close }));
+    expect(screen.queryByRole('region', { name: copy.ask.title })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '重新打开助手' }));
+    expect(await screen.findByText(copy.ask.loadingFailed)).toBeInTheDocument();
+  });
+
+  it('资源失败时收起也将焦点交还实际触发按钮', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    function FailedChunk(): never { throw new Error('ChunkLoadError'); }
+    function FocusHarness() {
+      const [open, setOpen] = useState(false);
+      const triggerRef = useRef<HTMLButtonElement | null>(null);
+      return <>
+        <button ref={triggerRef} onClick={() => setOpen(true)}>打开失败助手</button>
+        <AskPanelBoundary open={open} triggerRef={triggerRef}
+          onClose={() => setOpen(false)}><FailedChunk /></AskPanelBoundary>
+      </>;
+    }
+    render(<FocusHarness />);
+    const trigger = screen.getByRole('button', { name: '打开失败助手' });
+    vi.spyOn(trigger, 'getClientRects').mockReturnValue([
+      { width: 100, height: 32 },
+    ] as unknown as DOMRectList);
+    const user = userEvent.setup();
+    await user.click(trigger);
+    await screen.findByText(copy.ask.loadingFailed);
+    await user.click(screen.getByRole('button', { name: copy.ask.close }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('资源加载期间收起使用挂载前的触发按钮归还焦点', async () => {
+    function LoadingHarness() {
+      const [open, setOpen] = useState(false);
+      const [mounted, setMounted] = useState(false);
+      return <>
+        <button onClick={() => { setMounted(true); setOpen(true); }}>打开加载助手</button>
+        {mounted ? <AskPanelLoading open={open}
+          onClose={() => setOpen(false)} /> : null}
+      </>;
+    }
+    render(<LoadingHarness />);
+    const trigger = screen.getByRole('button', { name: '打开加载助手' });
+    vi.spyOn(trigger, 'getClientRects').mockReturnValue([
+      { width: 100, height: 32 },
+    ] as unknown as DOMRectList);
+    const user = userEvent.setup();
+    await user.click(trigger);
+    await screen.findByText(copy.ask.loadingPanel);
+    await user.click(screen.getByRole('button', { name: copy.ask.close }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('上翻阅读时不抢滚动位置，点击新回答提示才回底部', async () => {
+    const turn: AskTurnView = {
+      localId: 'local-1', askId: 'ask-1', question: QUESTION,
+      mode: 'cite', contextAskIds: [], phase: 'done',
+      result: CITE_ANSWER, preview: '', error: null,
+    };
+    const props = {
+      turns: [turn], streamState: initialAskStreamState,
+      historyStatus: 'ready' as const, historyEnabled: false,
+      identityKey: 'open', onSuggestion: vi.fn(), onReloadHistory: vi.fn(),
+      onStartWithoutHistory: vi.fn(), onRetry: vi.fn(), onRefreshTurn: vi.fn(),
+      onRefresh: vi.fn(), onReconnect: vi.fn(), onAcknowledgeDuplicate: vi.fn(),
+      onJumpToBlock: vi.fn(),
+    };
+    const { container, rerender } = render(<AskConversation {...props} />);
+    const messages = container.querySelector('[data-assistant-messages]')!;
+    Object.defineProperty(messages, 'scrollHeight', { value: 1200 });
+    Object.defineProperty(messages, 'clientHeight', { value: 300 });
+    const scroll = vi.spyOn(messages, 'scrollTo');
+    fireEvent.scroll(messages);
+    rerender(<AskConversation {...props} turns={[turn, {
+      ...turn, localId: 'local-2', askId: 'ask-2', question: '继续研究',
+    }]} />);
+    await screen.findByRole('button', { name: copy.ask.bottom });
+    expect(scroll).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole('button', { name: copy.ask.bottom }));
+    expect(scroll).toHaveBeenCalledWith({ top: 1200 });
+  });
+
+  it('收起再打开保留草稿，且不会自动发送问题', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.type(questionBox(), '待继续研究的问题');
+    await user.click(screen.getByRole('button', { name: copy.ask.close }));
+    expect(screen.queryByRole('region', { name: copy.ask.title })).toBeNull();
+    await user.click(screen.getByRole('button', { name: copy.ask.open }));
+    expect(questionBox()).toHaveValue('待继续研究的问题');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('连续发送后保留前轮回答和来源核对入口', async () => {
+    let count = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_input: FetchInput, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { question: string };
+      count += 1;
+      return jsonResponse({ ...CITE_ANSWER, id: `ask_${count}`,
+        question: body.question,
+        createdAt: `2026-11-20T10:00:0${count}Z` });
+    }));
+    const user = userEvent.setup();
+    render(<Harness />);
+    await askCiteQuestion(user);
+    await screen.findByRole('button', { name: /业务与竞争/ });
+    await askCiteQuestion(user, '还有哪些风险？');
+    await waitFor(() => expect(screen.getAllByRole('button', {
+      name: /业务与竞争/,
+    })).toHaveLength(2));
+    expect(screen.getByText(QUESTION.normalize('NFKC'))).toBeInTheDocument();
+    expect(screen.getByText('还有哪些风险?')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /引用 S3/ })).toHaveLength(2);
+  });
+
+  it('按 NFKC 后的码点验证上限，允许修改超限草稿', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<Harness questionMaxChars={2} />);
+
+    fireEvent.change(questionBox(), { target: { value: '㍿' } });
+    expect(questionBox()).toHaveValue('㍿');
+    expect(screen.getByRole('button', { name: copy.ask.submit }))
+      .toBeDisabled();
+    expect(screen.getByText('4/2')).toBeInTheDocument();
+    fireEvent.change(questionBox(), { target: { value: '😀😀' } });
+    expect(screen.getByRole('button', { name: copy.ask.submit }))
+      .toBeEnabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('输入法组合期间 Ctrl+Enter 不提交，结束后才允许发送', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<Harness />);
+    fireEvent.change(questionBox(), { target: { value: QUESTION } });
+    fireEvent.compositionStart(questionBox());
+    fireEvent.keyDown(questionBox(), {
+      key: 'Enter', ctrlKey: true, keyCode: 229, isComposing: true,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('面板 portal 到 body，建议问题仅填草稿，不自动请求', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(<Harness />);
+    expect(container.querySelector('[role="region"]')).toBeNull();
+    expect(panel().parentElement).toBe(document.body);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '总结核心结论' }));
+    expect(questionBox()).toHaveValue('总结核心结论');
+    expect(questionBox()).toHaveFocus();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('AskPanel — 引用检索（cite）', () => {
@@ -140,7 +377,9 @@ describe('AskPanel — 引用检索（cite）', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain('/api/v1/reports/rp_1/ask');
     expect(calls[0]?.method).toBe('POST');
-    expect(calls[0]?.body).toMatchObject({ question: QUESTION, mode: 'cite' });
+    expect(calls[0]?.body).toMatchObject({
+      question: QUESTION.normalize('NFKC'), mode: 'cite',
+    });
   });
 
   it('引用 chip 点击时交给 onJumpToSource', async () => {
@@ -161,6 +400,23 @@ describe('AskPanel — 引用检索（cite）', () => {
 });
 
 describe('AskPanel — 429 额度（AC-27）', () => {
+  it('用户额度拒绝显示真实原因，不以每报告上限冒充账户额度', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: {
+      code: 'quota_exceeded', message: '今日深度追问额度已用完',
+      requestId: 'quota-user', detail: { resource: 'deep_ask',
+        scope: 'user', limit: 2, usedToday: 2, bonus: 0 },
+    } }, 429)));
+    const user = userEvent.setup();
+    render(<Harness dailyLimit={30} />);
+    await user.type(questionBox(), QUESTION);
+    await user.click(screen.getByRole('radio', { name: copy.ask.modeDeep }));
+    await user.click(screen.getByRole('button', { name: copy.ask.deepSubmit }));
+    const quota = await screen.findByRole('alertdialog');
+    expect(within(quota).getByText('今日深度追问额度已用完'))
+      .toBeInTheDocument();
+    expect(quota).not.toHaveTextContent('30/30');
+  });
+
   it('不静默降级：先显示确认，用户确认后才以 mode=cite 重发', async () => {
     const calls: Recorded[] = [];
     const fetchMock = vi.fn(async (input: FetchInput, init?: RequestInit) => {
@@ -204,7 +460,8 @@ describe('AskPanel — 429 额度（AC-27）', () => {
     await user.click(screen.getByRole('button', { name: copy.ask.quotaAccept }));
     await waitFor(() => expect(calls).toHaveLength(2));
     expect((calls[1]?.body as { mode?: string }).mode).toBe('cite');
-    expect((calls[1]?.body as { question?: string }).question).toBe(QUESTION);
+    expect((calls[1]?.body as { question?: string }).question)
+      .toBe(QUESTION.normalize('NFKC'));
     expect(await screen.findByRole('button', { name: /业务与竞争/ })).toBeInTheDocument();
   });
 
@@ -389,6 +646,10 @@ describe('AskPanel — 可访问性（AC-36）', () => {
     render(<Harness initialOpen={false} />);
 
     const trigger = screen.getByRole('button', { name: copy.ask.open });
+    // jsdom has no layout; model this connected visible button explicitly.
+    vi.spyOn(trigger, 'getClientRects').mockReturnValue([
+      { width: 80, height: 32 },
+    ] as unknown as DOMRectList);
     expect(screen.queryByRole('region', { name: copy.ask.title })).toBeNull();
 
     await user.click(trigger);
@@ -398,7 +659,7 @@ describe('AskPanel — 可访问性（AC-36）', () => {
     await user.keyboard('{Escape}');
 
     await waitFor(() => expect(screen.queryByRole('region', { name: copy.ask.title })).toBeNull());
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it('答案区有 aria-live，控件都能用 Tab 到达（无焦点陷阱）', async () => {

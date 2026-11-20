@@ -31,6 +31,7 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { handleAskScenario } from './ask-scenarios.mjs';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.FAKE_API_PORT ?? 8010);
@@ -876,7 +877,8 @@ const RUN_EVENTS = [
 /* ── HTTP 基础设施 ────────────────────────────────────────────────────────── */
 
 const CORS = {
-  'access-control-allow-origin': '*',
+  'access-control-allow-origin': 'http://127.0.0.1:3010',
+  'access-control-allow-credentials': 'true',
   'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   'access-control-allow-headers': 'content-type,authorization',
   'access-control-max-age': '600',
@@ -1222,7 +1224,10 @@ const server = createServer(async (req, res) => {
   }
 
   const body = req.method === 'GET' ? {} : await readJson(req);
-  const ctx = { req, res, query: url.searchParams, body, params: [] };
+  const ctx = { req, res, path, query: url.searchParams, body, params: [] };
+  if (handleAskScenario(ctx, {
+    send, sendError, citeAnswer, libraryItem, capabilities: CAPABILITIES,
+  })) return;
 
   for (const [method, pattern, handler] of routes) {
     if (method !== req.method) continue;

@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 
 import pytest
 from sqlalchemy import select
@@ -275,3 +277,88 @@ def test_ask_cite_persists_one_row_and_never_spends_the_deep_quota(
     assert [citation.sourceId for citation in payload.answer.citations] == [
         source.sourceId for source in ask_service.answer_cite(report.doc, QUESTION_ANSWERED).answer.citations
     ]
+
+
+def test_deep_persists_effective_context_ids(session, instrument, sample_report, monkeypatch):
+    monkeypatch.setattr(ask_service, "ask_deep_available", lambda: True)
+    report = report_service.create_version(session, instrument, sample_report, status="ready")
+    row = ask_service.create_deep_ask(session, report, "继续", context_ask_ids=["first"])
+    assert json.loads(row.context_ask_ids_json) == ["first"]
+    assert ask_service.to_ask_out(row).contextAskIds == ["first"]
+
+
+def test_runner_reads_previous_answer_from_context_file(
+    session, instrument, sample_report, monkeypatch,
+):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.agent.runner_base import AgentResult
+
+    report = report_service.create_version(session, instrument, sample_report, status="ready")
+    previous = ask_service.ask_cite(session, report, QUESTION_ANSWERED)
+    monkeypatch.setattr(ask_service, "ask_deep_available", lambda: True)
+    current = ask_service.create_deep_ask(
+        session, report, "它的依据是什么？", context_ask_ids=[previous.id],
+    )
+
+    class ContextReadingRunner:
+        async def run(self, request, on_event):
+            payload = json.loads((request.workspace / "conversation-context.json").read_bytes())
+            turn = payload["turns"][0]
+            assert turn["askId"] == previous.id
+            assert turn["hits"][0]["excerpt"]
+            assert set(turn["sourceIds"]) <= block_text.legal_source_ids(report.doc)
+            return AgentResult(doc={"answer": "依据上一轮命中的报告原文。", "confidence": "high",
+                                    "citations": [{"sourceId": "S1", "claim": "报告依据"}]})
+
+        async def cancel(self):
+            pass
+
+    monkeypatch.setattr(ask_service, "make_runner", ContextReadingRunner)
+    monkeypatch.setattr(ask_service, "SessionLocal", sessionmaker(bind=session.get_bind(), expire_on_commit=False))
+    asyncio.run(ask_service.run_deep(current.id))
+    session.expire_all()
+    assert session.get(ReportAsk, current.id).status == "done"
+
+
+@pytest.fixture()
+def context_service_world(session, instrument, sample_report):
+    report = report_service.create_version(
+        session, instrument, sample_report, status="ready"
+    )
+    return session, report
+
+
+@pytest.mark.parametrize("stored", ['{broken', '["missing"]', '[1]', '"string"'])
+def test_invalid_runtime_context_emits_safe_failure_and_refunds_once(
+    context_service_world, make_user, monkeypatch, stored,
+):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import QuotaLedger
+    from app.security.principal import user_principal
+    from app.services import quota_service
+
+    session, report = context_service_world
+    user = make_user("context_owner")
+    actor = user_principal(user_id=user.id, username=user.username, role="user",
+                           session_id=None, must_change_password=False)
+    monkeypatch.setattr(ask_service, "ask_deep_available", lambda: True)
+    row = ask_service.create_deep_ask(session, report, "继续", actor)
+    row.context_ask_ids_json = stored
+    session.commit()
+    factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(ask_service, "SessionLocal", factory)
+    asyncio.run(ask_service.run_deep(row.id))
+    session.expire_all()
+    failed = session.get(ReportAsk, row.id)
+    assert failed.status == "failed"
+    assert failed.error_code == "invalid_ask_context"
+    assert stored not in failed.error_message
+    events = ask_service.replay_events(session, row.id)
+    assert events[-1]["payload"]["code"] == "invalid_ask_context"
+    quota_service.reconcile_refunds(session, user_id=user.id)
+    refunds = session.execute(select(QuotaLedger).where(
+        QuotaLedger.user_id == user.id, QuotaLedger.reason == "ask_refund"
+    )).scalars().all()
+    assert len(refunds) == 1

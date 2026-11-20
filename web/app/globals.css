@@ -253,9 +253,87 @@ button {
   text-decoration: underline;
 }
 
-/* ============================================================================
-   Print — the answer to "PDF export" without a headless browser (§2.2).
-   ========================================================================== */
+/* 固定工作台内的首页滚动与可视视口助手。 */
+[data-home-scroll] { height: 100vh; height: 100dvh; }
+
+.assistant-panel,
+.assistant-launcher {
+  --assistant-vh: 100dvh;
+  --assistant-vw: 100vw;
+  --assistant-top: 0px;
+  --assistant-right: 0px;
+  --assistant-safe: env(safe-area-inset-bottom, 0px);
+  position: fixed;
+  z-index: 30;
+  right: calc(var(--assistant-right) + 24px);
+}
+
+.assistant-launcher {
+  top: calc(var(--assistant-top) + var(--assistant-vh) - 80px - var(--assistant-safe));
+  display: flex;
+  width: 56px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-surface-2);
+  color: var(--accent);
+  box-shadow: var(--shadow-pop);
+  transition: border-color 160ms, background 160ms;
+}
+.assistant-launcher:hover { border-color: var(--accent); }
+.assistant-launcher:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.assistant-panel {
+  --assistant-gap: calc(92px + var(--assistant-safe));
+  --assistant-height: min(calc(var(--assistant-vh) * .8), calc(var(--assistant-vh) - var(--header-h, 52px) - 12px - var(--assistant-gap)));
+  top: calc(var(--assistant-top) + var(--assistant-vh) - var(--assistant-gap) - var(--assistant-height));
+  display: flex;
+  flex-direction: column;
+  width: 440px;
+  max-width: calc(var(--assistant-vw) - 48px);
+  height: var(--assistant-height);
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface-2);
+  box-shadow: var(--shadow-pop);
+  animation: assistant-enter 180ms var(--ease-panel, ease-out);
+}
+.assistant-panel[data-compact='true'] {
+  --assistant-gap: calc(12px + var(--assistant-safe));
+  --assistant-height: min(calc(var(--assistant-vh) * .8), calc(var(--assistant-vh) - 24px - var(--assistant-safe)));
+  right: calc(var(--assistant-right) + 12px);
+  width: calc(var(--assistant-vw) - 24px);
+  max-width: none;
+}
+.assistant-panel[data-compact='true'] .assistant-secondary,
+.assistant-panel[data-compact='true'] .assistant-suggestions { display: none; }
+.assistant-panel[data-short='true'] {
+  --assistant-height: calc(var(--assistant-vh) - 24px - var(--assistant-safe));
+}
+.assistant-panel[data-short='true'] .assistant-version { display: none; }
+.assistant-panel[data-short='true'] .assistant-composer { padding: 8px 12px; }
+@media (max-width: 639px), (max-height: 639px) {
+  .assistant-launcher {
+    right: calc(var(--assistant-right) + 12px);
+    top: calc(var(--assistant-top) + var(--assistant-vh) - 68px - var(--assistant-safe));
+  }
+}
+@keyframes assistant-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-panel { animation: none; }
+  .assistant-launcher { transition: none; }
+}
+
+/* Print */
 
 @media print {
   :root {
@@ -277,6 +355,10 @@ button {
 
   [data-print='hide'] {
     display: none !important;
+  }
+  [data-home-scroll] {
+    height: auto !important;
+    overflow: visible !important;
   }
 
   [data-print='full'] {

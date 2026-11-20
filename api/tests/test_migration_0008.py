@@ -56,7 +56,7 @@ def _indexes(engine: sa.Engine, table: str) -> set[str]:
 def test_upgrade_adds_two_nullable_columns_and_two_indexes(migrated) -> None:  # noqa: ANN001
     config, engine = migrated
     command.upgrade(config, "head")
-    assert _revision(engine) == "0008_account_recovery"
+    assert _revision(engine) == "0009_ask_context"
     columns = _columns(engine, "users")
     for name in NEW_COLUMNS:
         assert name in columns
@@ -92,7 +92,7 @@ def test_downgrade_drops_indexes_then_columns_and_the_round_trip_replays(migrate
     # 0007 自己的东西不能被连带删掉。
     assert {"ux_sessions_token", "ix_sessions_user_live"} <= _indexes(engine, "sessions")
     command.upgrade(config, "head")
-    assert _revision(engine) == "0008_account_recovery"
+    assert _revision(engine) == "0009_ask_context"
     assert set(_columns(engine, "users")) >= NEW_COLUMNS
     command.downgrade(config, "base")
     assert set(sa.inspect(engine).get_table_names()) == {"alembic_version"}
@@ -100,7 +100,7 @@ def test_downgrade_drops_indexes_then_columns_and_the_round_trip_replays(migrate
 
 def test_the_revision_chain_has_one_head() -> None:
     script = ScriptDirectory.from_config(_config_for("sqlite://"))
-    assert script.get_heads() == ["0008_account_recovery"]
+    assert script.get_heads() == ["0009_ask_context"]
     revision = script.get_revision("0008_account_recovery")
     assert revision is not None
     assert revision.down_revision == "0007_users_auth"

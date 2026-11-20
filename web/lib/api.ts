@@ -20,7 +20,7 @@
 import type {
   ApiErrorBody,
   AskListResponse,
-  AskMode,
+  AskRequest,
   AskOut,
   AskQueuedResponse,
   BarsResponse,
@@ -410,7 +410,7 @@ export function createApi(ctx: ApiContext = {}) {
 
     /* ── ask (A1) ────────────────────────────────────────────────────────── */
 
-    ask: (reportId: string, body: { question: string; mode?: AskMode }) =>
+    ask: (reportId: string, body: AskRequest) =>
       request<AskOut | AskQueuedResponse>(`/reports/${encodeURIComponent(reportId)}/ask`, {
         method: 'POST',
         body: { mode: 'cite', ...body },
@@ -421,8 +421,16 @@ export function createApi(ctx: ApiContext = {}) {
 
     askById: (askId: string) => request<AskOut>(`/asks/${encodeURIComponent(askId)}`),
 
-    reportAsks: (reportId: string, limit = 20) =>
-      request<AskListResponse>(`/reports/${encodeURIComponent(reportId)}/asks?limit=${limit}`),
+    reportAsks: (
+      reportId: string,
+      limit = 20,
+      options: { scope?: 'mine'; signal?: AbortSignal } = {},
+    ) => request<AskListResponse>(
+      `/reports/${encodeURIComponent(reportId)}/asks${queryString({
+        limit, scope: options.scope,
+      })}`,
+      { signal: options.signal },
+    ),
 
     askEventsToken: (askId: string) =>
       request<{ token: string; expiresIn: number }>(`/asks/${encodeURIComponent(askId)}/events-token`, {

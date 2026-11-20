@@ -3,10 +3,11 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area';
 import { Check, Copy, ExternalLink, X } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { cn } from '@/lib/cn';
 import { dateOnly } from '@/lib/format';
+import { restoreFocus } from '@/lib/focus';
 import { useUiStore } from '@/lib/store';
 import type { SourceRef } from '@/lib/types';
 
@@ -26,6 +27,7 @@ export function SourceDrawer({ sources }: { sources: SourceRef[] }) {
   const close = useUiStore((state) => state.closeSourceDrawer);
   const openSourceDrawer = useUiStore((state) => state.openSourceDrawer);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   const active = sources.find((source) => source.id === activeSourceId) ?? null;
 
@@ -46,7 +48,23 @@ export function SourceDrawer({ sources }: { sources: SourceRef[] }) {
         <DialogPrimitive.Content
           aria-describedby={undefined}
           data-print="hide"
+          onOpenAutoFocus={() => {
+            triggerRef.current = document.activeElement as HTMLElement | null;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = triggerRef.current;
+            const fallback = document.querySelector<HTMLElement>(
+              '[data-report-source-trigger]',
+            );
+            restoreFocus(trigger?.isConnected && trigger.getClientRects().length
+              && !trigger.matches(':disabled') ? trigger : fallback);
+          }}
           onPointerDownOutside={() => close()}
+          onEscapeKeyDown={(event) => {
+            event.preventDefault();
+            close();
+          }}
           className={cn(
             'fixed inset-y-0 right-0 z-40 flex h-full w-[min(360px,86vw)] flex-col',
             'border-l border-[var(--border-strong)] bg-[var(--bg-surface-2)] shadow-[var(--shadow-pop)] outline-none',

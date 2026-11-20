@@ -118,6 +118,7 @@ test('report renders blocks and citations open the source drawer', async ({ page
 
 test('keyboard navigation works without a mouse', async ({ page }) => {
   await page.goto('/CN:600519.SH');
+  await expect(page.locator('[data-assistant-launcher]')).toBeVisible();
 
   await page.keyboard.press('Control+k');
   await expect(page.getByRole('dialog', { name: /搜索标的、切换版本/ })).toBeVisible();

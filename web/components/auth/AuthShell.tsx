@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { copy } from '@/lib/copy';
+import { BrandMark } from '../ui/BrandMark';
 
 export interface AuthShellProps {
   title: string;
@@ -42,16 +43,12 @@ export function AuthShell({ title, subtitle, children, below, bare = false }: Au
         <div className="mb-6 flex items-center justify-center gap-2">
           {bare ? (
             <span className="flex items-center gap-2">
-              <span className="flex size-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-text)]">
-                A
-              </span>
+              <BrandMark size={28} />
               <span className="text-[14px] font-semibold tracking-tight text-[var(--text-primary)]">{copy.brand}</span>
             </span>
           ) : (
             <Link href="/" className="flex items-center gap-2" aria-label={`${copy.brand} ${copy.brandSuffix}`}>
-              <span className="flex size-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-text)]">
-                A
-              </span>
+              <BrandMark size={28} />
               <span className="flex items-baseline gap-1.5">
                 <span className="text-[14px] font-semibold tracking-tight text-[var(--text-primary)]">{copy.brand}</span>
                 <span className="text-[11.5px] text-[var(--text-tertiary)]">{copy.brandSuffix}</span>

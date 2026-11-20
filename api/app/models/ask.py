@@ -15,6 +15,9 @@ from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base
+from ..logging import get_logger
+
+logger = get_logger("ask_model")
 
 #: `queued` exists only for the instant between INSERT and the task starting.
 ASK_ACTIVE_STATUSES = ("queued", "running", "cancelling")
@@ -51,6 +54,7 @@ class ReportAsk(Base):
     finished_at: Mapped[str | None] = mapped_column(Text)
     #: ★v15（0007_users_auth / §24.6.2）：提问者。`NULL` = 历史追问，仅管理员可见。
     user_id: Mapped[str | None] = mapped_column(String(32))
+    context_ask_ids_json: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         # Covers both the version list and the "24h deep quota" query
@@ -59,6 +63,25 @@ class ReportAsk(Base):
         Index("ix_asks_report_created", "report_id", "created_at"),
         Index("ix_asks_user", "user_id", "report_id"),
     )
+
+    @property
+    def context_ask_ids(self) -> list[str]:
+        """Read legacy NULL as empty; log malformed context without its content."""
+        if self.context_ask_ids_json is None:
+            return []
+        try:
+            ids = json.loads(self.context_ask_ids_json)
+            valid = isinstance(ids, list) and len(ids) <= 6
+            valid = valid and all(
+                isinstance(item, str) and item.strip() and len(item) <= 64
+                for item in ids
+            )
+            if valid and len(set(ids)) == len(ids):
+                return ids
+        except (json.JSONDecodeError, TypeError):
+            pass
+        logger.warning("ask_context_invalid id=%s", self.id)
+        return []
 
     @property
     def answer(self) -> dict[str, Any]:
