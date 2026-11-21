@@ -50,6 +50,8 @@ from .routers import (
     search,
     symbols,
     watchlist,
+    workflows,
+    workflows_assist,
 )
 from .security import csrf, deps, policy
 from .services import (
@@ -62,6 +64,7 @@ from .services import (
     search_index,
     session_service,
     sse_token,
+    workflow_service,
 )
 from .services.run_manager import get_manager
 from .services.scheduler_ticker import get_ticker
@@ -275,6 +278,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bootstrap.ensure_root_admin(session)
         sse_token.load_or_create_secret(session)
         session.commit()
+        # 研究流程图：迁移之后保证"永远有一个可编译的默认"（内置模板，幂等；失败只记日志）。
+        workflow_service.ensure_builtin(session)
         recovered = get_manager().recover_interrupted(session)
         if recovered:
             logger.warning("启动恢复：%s 个中断的 run 已标记 failed(interrupted)", recovered)
@@ -302,6 +307,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("启动恢复：%s 个中断的追问已标记 failed(interrupted)", stale_asks)
         # Ask rows and ask workspaces expire with the same retention window (V4-P2-9).
         ask_service.cleanup_asks(session)
+        workflow_service.cleanup_assist_workspaces()
         # ★v15（§24.3.8(d) 调用点②）：`recover_interrupted()` 把中断的 run/ask 置 failed 之后，
         # 立刻把它们的额度退回（不必等第一轮 60 s 清扫）。
         try:
@@ -462,6 +468,9 @@ def create_app() -> FastAPI:
     app.include_router(me.router, prefix=api_prefix, dependencies=gated)
     # ★v15（M50）：管理后台。每条路由都在策略表里有 `admin.*` 权限；对象级矩阵在 `admin_user_service`。
     app.include_router(admin.router, prefix=api_prefix, dependencies=gated)
+    # 研究流程图：先挂助手路由，使字面量 `/assists/…` 先于 `/{id}/…` 匹配。
+    app.include_router(workflows_assist.router, prefix=api_prefix, dependencies=gated)
+    app.include_router(workflows.router, prefix=api_prefix, dependencies=gated)
     if settings.auth_test_hooks:
         # e2e 钩子：**不进策略表**（`policy.EXEMPT_PREFIXES`），默认配置下该路由 404。
         app.include_router(auth.test_hooks_router, prefix=api_prefix)

@@ -74,6 +74,12 @@ ACTIONS: tuple[str, ...] = (
     "auth.password.recover",
     "user.self_delete",
     "admin.export",
+    # 研究流程图（36 → 41）：草稿编辑与 AI 对话高频低价值，不入审计；发布/回滚/默认/归档/创建入审计。
+    "workflow.create",
+    "workflow.publish",
+    "workflow.rollback",
+    "workflow.default.set",
+    "workflow.archive",
 )
 
 FAILURE_MERGE_WINDOW = timedelta(seconds=60)

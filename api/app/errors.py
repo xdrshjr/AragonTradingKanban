@@ -653,3 +653,79 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=err.envelope(),
             headers={"X-Content-Type-Options": "nosniff"},
         )
+
+
+# ── 研究流程图（report-workflow-graph §5.4）：码稳定、不更名 ─────────────────────────
+
+
+class WorkflowNotFound(NotFound):
+    code = "workflow_not_found"
+    message = "研究流程不存在"
+
+
+class WorkflowRevisionConflict(Conflict):
+    """`baseRevision` / `expectRev` mismatch — or a lost CAS race (RW-1). `detail` carries the
+    authoritative `{currentRevision, doc, conflicts}` so the editor can re-align."""
+
+    code = "workflow_revision_conflict"
+    message = "流程已被他人修改，请刷新后重试"
+
+
+class WorkflowInvalid(AppError):
+    code = "workflow_invalid"
+    status_code = 422
+    message = "流程存在错误，无法发布"
+
+
+class WorkflowInvalidOps(AppError):
+    code = "workflow_invalid_ops"
+    status_code = 422
+    message = "流程修改不合法"
+
+
+class WorkflowUnchanged(Conflict):
+    code = "workflow_unchanged"
+    message = "草稿与最新版本内容相同，无需发布"
+
+
+class WorkflowNotPublished(Conflict):
+    code = "workflow_not_published"
+    message = "该流程尚未发布，不能设为默认"
+
+
+class WorkflowBuiltinReadonly(Conflict):
+    code = "workflow_builtin_readonly"
+    message = "内置流程只读，请复制为可编辑副本"
+
+
+class WorkflowArchived(Conflict):
+    """Writing to an archived template: it stays readable (history), but is no longer editable."""
+
+    code = "workflow_archived"
+    message = "该流程已归档，不能再修改"
+
+
+class WorkflowIsDefault(Conflict):
+    code = "workflow_is_default"
+    message = "默认流程不能归档，请先切换默认"
+
+
+class WorkflowLimitReached(Conflict):
+    code = "workflow_limit_reached"
+    message = "已达到流程或版本数量上限"
+
+
+class WorkflowAssistBusy(Conflict):
+    code = "workflow_assist_busy"
+    message = "该流程已有进行中的 AI 助手任务"
+
+
+class WorkflowAssistUnavailable(Conflict):
+    code = "workflow_assist_unavailable"
+    message = "当前引擎不支持 AI 流程设计助手"
+
+
+class WorkflowDocCorrupt(AppError):
+    code = "workflow_doc_corrupt"
+    status_code = 422
+    message = "流程文档已损坏，可重置草稿"

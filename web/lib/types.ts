@@ -406,6 +406,30 @@ export interface ReportQuality {
    * （v1–v12 的 `quality` 按纪律**不回填**）。读法写死为 `(q.clamp ?? {count: 0})`。
    */
   clamp?: QualityClamp | null;
+  /**
+   * ★v16（研究流程图 §3.6.5）：按哪个流程研究、遵循度如何。`undefined` = 旧报告 / 流程关闭
+   * （**不回填**，界面不显示这一行）。镜像 `schemas/report.py::WorkflowQuality`。
+   */
+  workflow?: QualityWorkflow | null;
+}
+
+export type WorkflowAdherence = 'full' | 'partial' | 'none' | 'unreported';
+
+/** `quality.workflow` —— 与后端 `WorkflowQuality` 同形（生产者 / 响应模型 / 本类型三处同时落地）。 */
+export interface QualityWorkflow {
+  templateId?: string | null;
+  templateName: string;
+  version?: number | null;
+  versionId?: string | null;
+  hash?: string | null;
+  /** `published | builtin-code` */
+  source: 'published' | 'builtin-code';
+  fallbackReason?: string | null;
+  steps?: { total: number; started: number; done: number; skipped: number } | null;
+  gates?: { total: number; done: number } | null;
+  adherence: WorkflowAdherence;
+  markersSeen?: number;
+  unknownMarkers?: number;
 }
 
 /** `quality.clamp` —— 与 `report_validator.clamp_doc()` 的落地计数同形（★v12 S3）。 */
@@ -784,7 +808,48 @@ export interface RunOut {
   costUsdEst?: number | null;
   failureFingerprint?: string | null;
   hint?: string | null;
+  /** ★v16：冻结绑定的流程名与版本，如「标准五段式研究 v3」；对所有用户公开。`null` = 未使用流程。 */
+  workflowLabel?: string | null;
+  /** ★v16：遵循度；仅拥有者/管理员可见，其余为 `null`。 */
+  workflowAdherence?: WorkflowAdherence | null;
 }
+
+/**
+ * ★v16（研究流程图 §5.3）：`run.workflow` 事件载荷。**不含**管理员的 prompt / checklist 正文。
+ * 前端遇到未知 `kind` 一律忽略（向前兼容）。
+ */
+export interface WorkflowPlanItem {
+  key: string;
+  kind: 'step' | 'gate';
+  title: string;
+  role?: string | null;
+  level: number;
+  sections?: string[];
+  upstream: string[];
+}
+
+export interface WorkflowPlanEvent {
+  kind: 'plan';
+  templateName: string;
+  version: number | null;
+  hash?: string | null;
+  fallback: boolean;
+  total: number;
+  items: WorkflowPlanItem[];
+}
+
+export type WorkflowStepState = 'start' | 'done' | 'skip';
+
+export interface WorkflowStepEvent {
+  kind: 'step';
+  key: string;
+  state: WorkflowStepState;
+  note?: string | null;
+  doneCount: number;
+  total: number;
+}
+
+export type RunWorkflowEvent = WorkflowPlanEvent | WorkflowStepEvent;
 
 export interface CreateRunResponse {
   runId: string;

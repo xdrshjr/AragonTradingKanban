@@ -17,6 +17,8 @@ export type RunStreamEventType =
   | 'run.log'
   //: ★v7（V8-P1-3）：CLI 的带抖动退避。`agent.*` 是 CLI 的词汇，`run.*` 是 run 的词汇。
   | 'run.retry'
+  //: ★v16（研究流程图 §5.3 / RW-4）：流程计划与步骤进度。只加类型不订阅，事件永远到不了 `onEvent`。
+  | 'run.workflow'
   | 'run.done'
   | 'run.error'
   //: ★v12（S6 / §22.3.7(c) / AC-131）：服务端保活改成**真实帧**（`event: ping` + `data: {}`）。
@@ -159,6 +161,8 @@ export function subscribeToRun(runId: string, options: StreamOptions): () => voi
         'agent.text',
         'run.log',
         'run.retry',
+        // ★v16（RW-4）：订阅清单与类型联合、`contracts/run_error_codes.json` 三处同时落地。
+        'run.workflow',
         'run.done',
         'run.error',
         // ★v12（S6 / AC-131）：保活帧必须真的被订阅，否则 AC-131 的"发 ping 时不误判"

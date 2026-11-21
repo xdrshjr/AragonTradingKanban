@@ -188,6 +188,9 @@ class ValidationOutcome:
     #: ★v9 H5 / K5: `quality.salvage` —— 抢救记录。`None` = 没走抢救（老报告也是 `None`，
     #: 读路径按"可缺失"处理，**不回填**，沿用 §19.6.3 口径）。
     salvage: SalvageReport | None = None
+    #: report-workflow-graph §3.6.5: `quality.workflow` — built by `workflow_runtime`
+    #: (this module may not import it). `None` = the run did not use a workflow.
+    workflow: dict[str, Any] | None = None
 
     @property
     def quality(self) -> dict[str, Any]:
@@ -210,6 +213,8 @@ class ValidationOutcome:
             payload["prompt"] = self.prompt
         if self.salvage is not None:
             payload["salvage"] = self.salvage.as_payload()
+        if self.workflow is not None:
+            payload["workflow"] = self.workflow
         # ★v12（S3 / C-48）：`clamp` 与 `prunedBlocks` 同类——**派生**，不新增构造参数。
         # 只在实际收敛过时出现：老报告没有这个键（§22.6.3 的"不回填"），前端按
         # `(q.clamp ?? {count: 0})` 读，于是"没有这个键"不会渲染成"收敛了 0 处"的矛盾。
@@ -636,6 +641,7 @@ def validate_doc(
     schema_path: Path | None = None,
     salvage: SalvageReport | None = None,
     pruned_blocks: int | None = None,
+    workflow: dict[str, Any] | None = None,
 ) -> ValidationOutcome:
     """Full validation pipeline for a model-produced document.
 
@@ -732,6 +738,7 @@ def validate_doc(
         cost=cost,
         prompt=prompt,
         salvage=salvage,
+        workflow=workflow,
     )
     logger.info(
         "validate grounded=%.3f missing=%s pruned=%s status=%s errors=%s source=%s fact=%s/%s skipped=%s",

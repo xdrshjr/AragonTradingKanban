@@ -219,8 +219,9 @@ def test_pending_routes_are_only_the_me_and_admin_families() -> None:
     assert {path.split("/")[3] for _method, path in PENDING_ROUTES} <= {"me", "admin"}
     assert all(key in POLICIES for key in PENDING_ROUTES)
     # §25：+3 条 /auth（recover / recovery-key / account）+3 条 /admin（两个导出 + bulk-quota）= 88。
-    assert len(POLICIES) == 88
-    families = {"me": 4, "admin": 25, "auth": 14}
+    # 研究流程图：+24 条 /admin/workflows（20 条管理 + 4 条 AI 助手）= 112。
+    assert len(POLICIES) == 112
+    families = {"me": 4, "admin": 49, "auth": 14}
     for family, expected in families.items():
         assert len([key for key in POLICIES if key[1].startswith(f"/api/v1/{family}/")]) == expected, family
 

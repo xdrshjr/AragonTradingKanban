@@ -42,6 +42,7 @@ _REDACTED_RUN_FIELDS = (
     "agentModel",
     "failureFingerprint",
     "exitCode",
+    "workflowAdherence",
 )
 
 
@@ -90,6 +91,8 @@ def _to_run_out(run: Run) -> RunOut:
         costUsdEst=run.cost_usd_est,
         failureFingerprint=run.failure_fingerprint,
         hint=hint_for(run.error_code) if run.error_code else None,
+        workflowLabel=run.workflow_label,
+        workflowAdherence=run.workflow_adherence,
     )
 
 

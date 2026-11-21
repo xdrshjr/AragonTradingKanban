@@ -180,6 +180,17 @@ def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
 
 
 def current_path_format(request: Request) -> str:
+    # FastAPI >= 0.116: `scope["route"]` is the *original* APIRoute, whose `path_format`
+    # has every `include_router(prefix=...)` stripped — the health route reports
+    # `/health`, not `/api/v1/health`, so no policy row can ever match and every request
+    # 500s with `policy_missing`. The fully prefixed template is handed to the "fastapi"
+    # scope dict as the effective route context for the duration of the request.
+    fastapi_scope = request.scope.get("fastapi")
+    if isinstance(fastapi_scope, dict):
+        context = fastapi_scope.get("effective_route_context")
+        prefixed = getattr(context, "path_format", None)
+        if prefixed:
+            return prefixed
     route = request.scope.get("route")
     return getattr(route, "path_format", None) or getattr(route, "path", None) or request.url.path
 

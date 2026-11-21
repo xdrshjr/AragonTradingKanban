@@ -22,6 +22,7 @@ import shutil
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ from ..logging import get_logger
 from ..models import Instrument, Run, RunEvent
 from ..schemas.run import ACTIVE, STAGE_BOUNDS, STAGE_ORDER, STAGE_START, stage_end_pct, stage_label
 from ..security.principal import SYSTEM, Principal
-from . import cost_service, quota_service, report_service, report_validator, run_diagnostics
+from . import cost_service, quota_service, report_service, report_validator, run_diagnostics, workflow_runtime
 from . import snapshot as snapshot_service
 
 logger = get_logger("run_manager")
@@ -175,6 +176,8 @@ class RunManager:
         self._cancels: dict[str, Callable[[], Any]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._sessions: dict[str, Session] = {}
+        #: report-workflow-graph §3.6.3：进度标记观测器（单 worker，进程内）。
+        self._trackers: dict[str, workflow_runtime.WorkflowTracker] = {}
         self._global_slots = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
     # ── bookkeeping ──────────────────────────────────────────────────────
@@ -364,6 +367,8 @@ class RunManager:
         settings = get_settings()
         run_id = uuid.uuid4().hex
         workspace = settings.runs_dir / run_id
+        # report-workflow-graph §3.6.1（RW-8）：纯读，放在 reservation 之前；从不抛异常。
+        workflow = workflow_runtime.resolve_for_run(session)
         owner_id = actor.user_id if actor is not None and actor.kind == "user" else created_by
 
         # ★v15（RV-9）：`with` 覆盖到 commit/rollback。锁内只允许：同一事务的 SQL + 这一次本地 mkdir。
@@ -384,6 +389,8 @@ class RunManager:
                 cancel_requested=0,
                 cost_known=0,
                 created_by=owner_id,
+                workflow_version_id=workflow.version_id if workflow else None,
+                workflow_label=workflow.label if workflow else None,
             )
             session.add(run)
             try:
@@ -419,6 +426,7 @@ class RunManager:
 
     def _forget(self, run_id: str, task: asyncio.Task[None]) -> None:
         self._tasks.pop(run_id, None)
+        self._trackers.pop(run_id, None)
         try:
             task.result()
         except asyncio.CancelledError:  # pragma: no cover - shutdown
@@ -523,9 +531,10 @@ class RunManager:
         # `prompt.md`），而 `quality.prompt` 记的是**系统提示词** —— 两件事不要混（P0-3）。
         # 摘要必须在 `write_snapshot_files()` **之前**算出来，那是唯一渲染 prompt.md 的地方。
         base_digest, base_version = self._base_digest(session, run, instrument, base_report_id)
+        prepared = workflow_runtime.prepare(session, run, bundle.snapshot)
         try:
             prompt_path = snapshot_service.write_snapshot_files(
-                bundle, workspace, system_path, base_digest=base_digest
+                bundle, workspace, system_path, base_digest=base_digest, workflow=prepared
             )
         except AgentError as exc:
             # ★v7（§20.3.3 / AC-72）：`write_schema_copy()` 在写完副本后立刻做身份断言，
@@ -538,6 +547,7 @@ class RunManager:
             self._finalize_failure(session, run, "internal", f"资料组装失败：{exc}"[:300], bundle.snapshot)
             return
         schema_sha1 = _schema_identity(workspace / "schema.json")
+        workflow_runtime.begin(self._trackers, run, prepared, partial(self._record, session, run))
 
         bars = bundle.bars
         self_check = []
@@ -562,8 +572,8 @@ class RunManager:
             schema_source_path=get_settings().schemas_dir / "report_doc.schema.json",
             instrument_symbol=instrument.symbol,
             instrument_name=instrument.name,
-            max_turns=settings.aragon_max_turns,
-            max_duration_ms=settings.aragon_max_duration_ms,
+            max_turns=prepared.max_turns if prepared else settings.aragon_max_turns,
+            max_duration_ms=prepared.max_duration_ms if prepared else settings.aragon_max_duration_ms,
             # ★评审修正（评审节点 I-131）：**这个调用点认领会话清理**，所以它才有资格
             # 让 CLI 保存会话（`--session-id` + 重试时 `--resume`）。
             # `ask_runner` / `probe` 不在这条 finally 里，它们保持 v11 的
@@ -584,6 +594,7 @@ class RunManager:
         result = await self._drive_agent(session, run, runner, request)
         if result is None:
             return  # cancelled; already finalized
+        self._end_trace(session, run, result)
 
         # ★v8 评审（§20.3.7）：`baseUrl` 只出现在 `exec` 的 `system` 事件里，
         # 写回进程级能力快照，`/capabilities.aragon.baseUrl` 才不会永远是 null。
@@ -696,6 +707,7 @@ class RunManager:
             # ★实施发现（I-91）：未知块是在 `salvage_doc()` 内部裁掉的，把它转交回来，
             # `quality.prunedBlocks` 才不会因为"抢救过一次"而变成 0（AC-102 / AC-109）。
             pruned_blocks=salvage_report.prunedBlocks if salvage_report is not None else None,
+            workflow=tracker.quality_payload() if (tracker := self._trackers.get(run.id)) else None,
         )
         for repair in outcome.repairs[:6]:
             # ★评审修正（评审节点 I-130）：前缀读 `report_validator.CLAMP_PREFIX`，
@@ -870,6 +882,11 @@ class RunManager:
             return "", base.version
         return base_digest_text(doc, version=base.version), base.version
 
+    def _end_trace(self, session: Session, run: Run, result: AgentResult | None) -> None:
+        if (tracker := self._trackers.get(run.id)) is not None:
+            workflow_runtime.end_trace(tracker, run, result, partial(self._record, session, run))
+            session.commit()
+
     def _advance(self, session: Session, run: Run, stage: str) -> None:
         """Emit `run.stage` with a monotonic pct (§7.4)."""
         start_pct = STAGE_START.get(stage, 0)
@@ -965,7 +982,8 @@ class RunManager:
             self._record(session, run, "agent.tool", event.payload, touch_run=False)
             return
         if event.type == AgentEventType.text:
-            self._record(session, run, "agent.text", event.payload, touch_run=False)
+            tracker = self._trackers.get(run.id)
+            workflow_runtime.forward_text(tracker, event.payload, partial(self._record, session, run))
             return
         if event.type == AgentEventType.progress:
             payload = dict(event.payload)
@@ -1006,6 +1024,7 @@ class RunManager:
         """★P1-10: persist a readable provisional report *before* recording the error."""
         session.rollback()
         run = session.get(Run, run.id) or run
+        self._end_trace(session, run, result)  # 失败/取消的 run 也写 workflow_adherence（RW-12）
 
         if code != "cancelled" and snapshot is not None:
             try:

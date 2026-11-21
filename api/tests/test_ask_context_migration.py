@@ -117,7 +117,7 @@ def test_real_old_database_roundtrip_retains_answers(tmp_path, monkeypatch):
 
 def test_context_migration_has_single_head_and_only_nullable_column():
     script = ScriptDirectory.from_config(_config("sqlite://"))
-    assert script.get_heads() == ["0009_ask_context"]
+    assert script.get_heads() == ["0010_workflow_graph"]
     assert (
         script.get_revision("0009_ask_context").down_revision
         == "0008_account_recovery"

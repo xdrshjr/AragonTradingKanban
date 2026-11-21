@@ -93,6 +93,35 @@ const MUST_BE_LOADABLE = [
   'SalvageNotice',
 ];
 
+/**
+ * ★研究流程图（report-workflow-graph §3.10.9 / AC-W34）：
+ *
+ * 1. 首页 `/`、`/[symbol]`、`/reports` 的首屏 JS **不得包含 xyflow**——画布经
+ *    `next/dynamic({ ssr: false })` 只随 `/admin/workflows/[id]` 加载。判据是 chunk 正文里的
+ *    xyflow 专有标识（`react-flow__` 类名族），而不是文件名（哈希后无法认）；
+ * 2. 编辑器路由 `/admin/workflows/[id]`：页面自身 chunk + 懒加载的画布 chunk（gzip 合计，
+ *    不含框架 rootMainFiles）≤ `EDITOR_BUDGET_KB`。数字由 M63 实测后锁定（见常量注释）。
+ */
+const XYFLOW_ROUTES = [
+  { label: '/', keys: ['/page'] },
+  { label: '/[symbol]', keys: ['/[symbol]/page'] },
+  { label: '/reports', keys: ['/reports/page'] },
+];
+const XYFLOW_MARKERS = [/react-flow__/, /@xyflow\//, /xyflow/];
+const EDITOR_ROUTE_KEYS = ['/admin/workflows/[id]/page'];
+/** 画布相关的 next/dynamic 边界：它们的 chunk 计入编辑器预算。 */
+const EDITOR_LAZY_PANELS = ['WorkflowCanvas', 'VersionCanvas', 'VersionsPanel'];
+/**
+ * 编辑器路由预算（kB，gzip）= 页面自身 chunk + 懒加载的画布/版本 chunk（不含框架 rootMainFiles）。
+ *
+ * **锁定值 230**：spec 初值 200，M63 实测 **210.0**（Next 15.5.29 生产构建）。组成：路由专属 + 与别的
+ * 页面共享的 vendor chunk 137.8（其中页面入口 34.8），懒加载的画布 chunk 约 72（xyflow 本体 + d3 依赖 +
+ * 样式 3.1）。初值 200 没有计入"路由 chunk 里本来就有的共享 vendor"，所以按"实测 + 约 10% 余量"锁到 230，
+ * 而不是把一个坏数字悄悄改大。要再抬高，请先说明"还延后了什么"。
+ */
+const EDITOR_BUDGET_KB = 230;
+const LOCKED_EDITOR_BUDGET_NOTE = '实测 210.0，锁定 230';
+
 /** 目标路由在 app-build-manifest 里的几种键形态。 */
 const ROUTE_KEYS = ['/[symbol]/page', '/[symbol]', '/[symbol]/layout', '/[symbol]/route'];
 
@@ -104,6 +133,7 @@ const USAGE = `check-bundle · AC-35 / §11.2 首屏 JS 预算门禁
 选项
   --budget=<kB>     首屏 JS 预算（gzip 后，kB）。默认 ${DEFAULT_BUDGET_KB}
   --budget <kB>     同上，空格分隔的写法也支持
+  --editor-budget=<kB>  编辑器路由（页面 + 懒加载画布）预算，gzip。默认 ${EDITOR_BUDGET_KB}
   --next-dir=<dir>  构建产物目录。默认 .next
   --json            输出机器可读的 JSON（CI 里好接）
   --help, -h        打印本用法并退出 0
@@ -116,6 +146,7 @@ const USAGE = `check-bundle · AC-35 / §11.2 首屏 JS 预算门禁
 断言
   1. /[symbol] 首屏 JS（gzip）≤ --budget（默认 ${DEFAULT_BUDGET_KB} kB）
   2. ${LAZY_PANELS.join(' / ')} 不在首屏 chunk 里
+  3. /、/[symbol]、/reports 的首屏 JS 不含 xyflow；/admin/workflows/[id] 路由 ≤ --editor-budget
 
 退出码
   0 通过 · 1 违规或输入缺失 · 2 参数错误
@@ -124,7 +155,7 @@ const USAGE = `check-bundle · AC-35 / §11.2 首屏 JS 预算门禁
 // ── 参数 ───────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const options = { budgetKb: DEFAULT_BUDGET_KB, nextDir: '.next', json: false, help: false, target: null };
+  const options = { budgetKb: DEFAULT_BUDGET_KB, editorBudgetKb: EDITOR_BUDGET_KB, nextDir: '.next', json: false, help: false, target: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') {
@@ -136,6 +167,8 @@ function parseArgs(argv) {
     } else if (arg === '--budget') {
       i += 1;
       options.budgetKb = Number(argv[i]);
+    } else if (arg.startsWith('--editor-budget=')) {
+      options.editorBudgetKb = Number(arg.slice('--editor-budget='.length));
     } else if (arg.startsWith('--next-dir=')) {
       options.nextDir = arg.slice('--next-dir='.length);
     } else if (arg === '--next-dir') {
@@ -361,6 +394,88 @@ function looksLikeDevBuild(chunks) {
   return chunks.some((chunk) => /main-app\.js$/.test(chunk) || chunk.includes('hot-reloader') || chunk.includes('hmr'));
 }
 
+// ── 研究流程图：首屏零 xyflow + 编辑器路由预算 ─────────────────────────────────
+
+/** 某路由（取多个候选键的并集）的 chunk 列表，已去重。 */
+function routeChunksOf(collected, keys, manifests) {
+  const pages = { ...(manifests.buildPages ?? {}), ...(manifests.appPages ?? {}) };
+  return uniquePaths(keys.flatMap((key) => (Array.isArray(pages[key]) ? pages[key] : [])));
+}
+
+function readManifestsRaw(nextDir) {
+  return {
+    appPages: readJson(join(nextDir, 'app-build-manifest.json'))?.pages ?? {},
+    buildPages: readJson(join(nextDir, 'build-manifest.json'))?.pages ?? {},
+  };
+}
+
+/** 在一组 chunk 的正文里找 xyflow 的专有标识。 */
+function findXyflowIn(nextDir, chunks) {
+  const hits = [];
+  for (const chunk of chunks) {
+    const diskPath = resolve(nextDir, chunk.split('/').join(sep));
+    if (!existsSync(diskPath) || !chunk.endsWith('.js')) continue;
+    const source = readFileSync(diskPath, 'utf8');
+    const marker = XYFLOW_MARKERS.find((pattern) => pattern.test(source));
+    if (marker) hits.push({ chunk, marker: String(marker) });
+  }
+  return hits;
+}
+
+/**
+ * AC-W34。返回违规码数组（空 = 通过）。路由没有出现在 manifest 里时不判违规（例如该特性被裁掉的构建），
+ * 但会明确打印"未找到"，而不是假装通过。
+ */
+function checkWorkflowBundles(nextDir, collected, options) {
+  const violations = [];
+  const manifests = readManifestsRaw(nextDir);
+  const rootChunks = new Set(collected.rootChunks);
+
+  for (const route of XYFLOW_ROUTES) {
+    const chunks = uniquePaths([...collected.rootChunks, ...routeChunksOf(collected, route.keys, manifests)]);
+    if (chunks.length === collected.rootChunks.length) {
+      console.log(`· 研究流程：${route.label} 未出现在 manifest（跳过 xyflow 检查）`);
+      continue;
+    }
+    const hits = findXyflowIn(nextDir, chunks);
+    if (hits.length > 0) {
+      violations.push('xyflow-in-first-load');
+      for (const hit of hits) console.error(`✗ ${route.label} 的首屏 chunk ${hit.chunk} 含 xyflow（${hit.marker}）—— 画布必须经 next/dynamic 懒加载。`);
+    } else {
+      console.log(`✓ ${route.label} 首屏 JS 不含 xyflow`);
+    }
+  }
+
+  const pageChunks = routeChunksOf(collected, EDITOR_ROUTE_KEYS, manifests).filter((chunk) => !rootChunks.has(chunk));
+  const lazyChunks = [];
+  for (const [key, value] of Object.entries(collected.loadableManifest ?? {})) {
+    if (!EDITOR_LAZY_PANELS.some((panel) => key.includes(panel))) continue;
+    for (const file of value?.files ?? []) lazyChunks.push(file.split('\\').join('/'));
+  }
+  const editorChunks = uniquePaths([...pageChunks, ...lazyChunks]).filter((chunk) => chunk.endsWith('.js'));
+  if (pageChunks.length === 0) {
+    console.log('· 研究流程：/admin/workflows/[id] 未出现在 manifest（跳过编辑器预算）');
+    return violations;
+  }
+  // 正控：检测器必须在懒加载的画布 chunk 里**真的**认出 xyflow，否则"首屏不含"只是空转。
+  const canvasLazy = lazyChunks.filter((chunk) => chunk.endsWith('.js'));
+  if (collected.loadableManifest && findXyflowIn(nextDir, canvasLazy).length === 0) {
+    violations.push('xyflow-detector-vacuous');
+    console.error('✗ 懒加载的画布 chunk 里没有认出 xyflow 标识：要么画布没被打进异步 chunk，要么检测标识已失效。');
+  }
+  const rows = measureChunks(nextDir, editorChunks);
+  const editorKb = kb(sumGzip(rows));
+  console.log(`  编辑器路由 chunk（页面 + 懒加载画布）：${editorKb.toFixed(1)} kB gzip / 预算 ${options.editorBudgetKb} kB（${LOCKED_EDITOR_BUDGET_NOTE}）`);
+  if (editorKb > options.editorBudgetKb) {
+    violations.push('editor-budget-exceeded');
+    console.error(`✗ 编辑器路由 ${editorKb.toFixed(1)} kB > 预算 ${options.editorBudgetKb} kB（gzip）`);
+  } else {
+    console.log(`✓ 编辑器路由 ${editorKb.toFixed(1)} kB ≤ 预算 ${options.editorBudgetKb} kB`);
+  }
+  options.editorMeasuredKb = Number(editorKb.toFixed(1));
+  return violations;
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -520,6 +635,10 @@ function main() {
     }
   }
 
+  if (collected.ok && !options.target?.match(/\.(txt|log)$/)) {
+    result.violations.push(...checkWorkflowBundles(manifestDir, collected, options));
+  }
+
   if (options.json) {
     console.log('');
     console.log(
@@ -529,6 +648,8 @@ function main() {
           source: result.source,
           budgetKb: options.budgetKb,
           measuredKb: Number(totalKb.toFixed(1)),
+          editorBudgetKb: options.editorBudgetKb,
+          editorMeasuredKb: options.editorMeasuredKb ?? null,
           chunks: rows.map((row) => ({ chunk: row.chunk, gzipKb: Number(kb(row.gzip).toFixed(1)) })),
           lazyPanels: LAZY_PANELS,
           violations: result.violations,

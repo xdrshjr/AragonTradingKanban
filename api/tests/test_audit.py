@@ -227,7 +227,7 @@ def test_retention_zero_disables_the_purge(session, frozen_now, monkeypatch: pyt
 
 
 def test_the_action_vocabulary_is_the_specified_one() -> None:
-    assert len(audit_service.ACTIONS) == len(set(audit_service.ACTIONS)) == 36  # §25：31 + 5
+    assert len(audit_service.ACTIONS) == len(set(audit_service.ACTIONS)) == 41  # §25：31 + 5；研究流程图 +5
     assert "auth.login.success" in audit_service.ACTIONS and "root.password.cli_reset" in audit_service.ACTIONS
     assert set(audit_service.ACTIONS) >= PENDING_ACTIONS
     # 每个 action 都 ≤ 32 字符（`audit_log.action VARCHAR(32)`）。
@@ -397,7 +397,7 @@ def test_a_full_login_and_registration_never_logs_a_secret(
 def test_every_action_in_the_vocabulary_is_written_by_a_real_flow(
     auth_client, make_user, login_as, solve_captcha, frozen_now, instrument, sample_report, engine
 ) -> None:  # noqa: ANN001
-    """一个场景把 36 个动作各打一遍（经真实 HTTP / CLI / 引导，不是直接调 `record()`）。
+    """一个场景把 41 个动作各打一遍（经真实 HTTP / CLI / 引导，不是直接调 `record()`）。
 
     与"词表反查 grep"互补：grep 证明字符串**写在了**某处，这条证明那处**真的会被执行**。
     """
@@ -568,6 +568,21 @@ def test_every_action_in_the_vocabulary_is_written_by_a_real_flow(
     )  # user.self_delete
     exported = admin.get(f"{admin_url}/users/export.csv")  # admin.export
     assert exported.status_code == 200, exported.text
+
+    # 研究流程图：创建 / 发布 / 设默认 / 回滚 / 归档（草稿编辑不入审计）
+    wf = f"{admin_url}/workflows"
+    wf_a = admin.post(wf, json={"name": "审计甲", "from": "builtin"}).json()["meta"]["id"]
+    wf_b = admin.post(wf, json={"name": "审计乙", "from": "builtin"}).json()["meta"]["id"]
+    assert admin.post(f"{wf}/{wf_a}/publish", json={"baseRevision": 1}).status_code == 201  # workflow.publish
+    assert admin.post(f"{wf}/{wf_a}/set-default").status_code == 200  # workflow.default.set
+    from app.services.workflow_builtin import builtin_doc
+
+    step = next(n.id for n in builtin_doc().nodes if n.kind == "step")
+    edit = {"op": "update_node", "id": step, "expectRev": 1, "patch": {"title": "审计改名"}}
+    assert admin.post(f"{wf}/{wf_a}/ops", json={"baseRevision": 1, "ops": [edit]}).status_code == 200
+    assert admin.post(f"{wf}/{wf_a}/publish", json={"baseRevision": 2}).status_code == 201
+    assert admin.post(f"{wf}/{wf_a}/versions/1/rollback", json={}).status_code == 201  # workflow.rollback
+    assert admin.delete(f"{wf}/{wf_b}").status_code == 200  # workflow.archive
 
     # 离线 CLI
     assert cli.main(["reset-root-password", "--password", "Recovered-Root-Pass-5k"]) == 0

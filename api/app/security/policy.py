@@ -28,6 +28,7 @@ startup error, so the list can only shrink.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -240,6 +241,44 @@ _api("GET", "/admin/featured-watchlist", "admin.featured.manage")
 _api("POST", "/admin/featured-watchlist", "admin.featured.manage", public_note="审计 featured.add")
 _api("DELETE", "/admin/featured-watchlist/{instrument_id}", "admin.featured.manage", public_note="审计 featured.remove")
 
+# ── /admin/workflows（研究流程图，report-workflow-graph §5.1）────────────────────
+# 全站共享的管理资产，无归属 → 无对象级规则；越权/不存在一律 workflow_not_found。
+_WF = "admin.workflow.manage"
+_api("GET", "/admin/workflows", _WF)
+_api("POST", "/admin/workflows", _WF, public_note="审计 workflow.create")
+_api("PUT", "/admin/workflows/enabled", _WF, public_note="审计 settings.update（workflow.enabled）")
+_api("GET", "/admin/workflows/default-summary", _WF)
+_api("GET", "/admin/workflows/{template_id}", _WF)
+_api("PATCH", "/admin/workflows/{template_id}", _WF, object_rule="内置模板不可改名 409")
+_api("DELETE", "/admin/workflows/{template_id}", _WF, public_note="归档；默认/内置 409；审计 workflow.archive")
+_api("POST", "/admin/workflows/{template_id}/ops", _WF, public_note="草稿编辑不入审计；CAS 并发（RW-1）")
+_api("PUT", "/admin/workflows/{template_id}/draft", _WF, public_note="仅用于重置损坏的草稿，不是导入（§1.5）")
+_api("POST", "/admin/workflows/{template_id}/validate", _WF)
+_api("GET", "/admin/workflows/{template_id}/preview", _WF)
+_api("POST", "/admin/workflows/{template_id}/publish", _WF, public_note="审计 workflow.publish")
+_api("POST", "/admin/workflows/{template_id}/set-default", _WF, public_note="审计 workflow.default.set")
+_api("GET", "/admin/workflows/{template_id}/versions", _WF)
+_api("GET", "/admin/workflows/{template_id}/versions/{version}", _WF)
+_api("POST", "/admin/workflows/{template_id}/versions/{version}/restore", _WF)
+_api("POST", "/admin/workflows/{template_id}/versions/{version}/rollback", _WF, public_note="审计 workflow.rollback")
+_api("GET", "/admin/workflows/{template_id}/usage", _WF)
+_api("GET", "/admin/workflows/{template_id}/chat", _WF, object_rule="仅当前管理员自己的对话")
+_api("DELETE", "/admin/workflows/{template_id}/chat", _WF, object_rule="仅清空当前管理员自己的对话")
+_api(
+    "POST",
+    "/admin/workflows/{template_id}/assist",
+    _WF,
+    public_note="限速 admin.workflow_assist（按用户，服务内）；同模板单并发",
+)
+_api("POST", "/admin/workflows/assists/{assist_id}/events-token", _WF, public_note="令牌绑定 assist_id，60 s")
+_api(
+    "GET",
+    "/admin/workflows/assists/{assist_id}/events",
+    _WF,
+    public_note="只验 ?token=（绑定 assist_id，60 s）；令牌即授权（同 /asks/{ask_id}/events）",
+)
+_api("POST", "/admin/workflows/assists/{assist_id}/cancel", _WF)
+
 
 #: ★TEMPORARY. Table rows whose route does not exist yet. Empty since M50 (`/me/*` left with M48,
 #: `/admin/*` with M50); kept as the mechanism for the next milestone that registers rows early. An entry
@@ -255,17 +294,45 @@ def _is_governed(path: str) -> bool:
     return path.startswith(f"{API_PREFIX}/") and not path.startswith(EXEMPT_PREFIXES)
 
 
+def _iter_route_entries(route: Any) -> Iterator[tuple[str | None, Any]]:
+    """Yield `(path_format, methods)` for one entry of `app.routes`.
+
+    FastAPI >= 0.116 stores each `include_router(...)` as a single **lazy**
+    `_IncludedRouter` on `app.routes`; that object carries neither `path` nor
+    `methods`, so a flat scan sees zero governed routes and every row of the table
+    looks stale ("策略表里有真实不存在的路由" — the whole table, not a few rows).
+
+    `effective_route_contexts()` is the supported way to expand it: it recurses into
+    nested includes and already applies the include prefix to `path_format`. Unlike
+    `app.openapi()["paths"]` it also keeps `include_in_schema=False` routes, which
+    matters here — bare `POST /api/v1/runs` is exactly one of those.
+    """
+    expand = getattr(route, "effective_route_contexts", None)
+    if callable(expand):
+        for context in expand():
+            original = getattr(context, "original_route", None)
+            yield (
+                getattr(context, "path_format", None) or getattr(original, "path_format", None),
+                getattr(original, "methods", None),
+            )
+        return
+    # Plain route (Starlette Route / APIRoute / older FastAPI): read it directly.
+    yield (
+        getattr(route, "path_format", None) or getattr(route, "path", None),
+        getattr(route, "methods", None),
+    )
+
+
 def route_keys(app: Any) -> set[RouteKey]:
     """`(METHOD, path_format)` of every governed route on `app` (HEAD/OPTIONS ignored)."""
     keys: set[RouteKey] = set()
     for route in getattr(app, "routes", []):
-        path = getattr(route, "path_format", None) or getattr(route, "path", None)
-        methods = getattr(route, "methods", None)
-        if not path or not methods or not _is_governed(path):
-            continue
-        for method in methods:
-            if method not in _IGNORED_METHODS:
-                keys.add((method, path))
+        for path, methods in _iter_route_entries(route):
+            if not path or not methods or not _is_governed(path):
+                continue
+            for method in methods:
+                if method not in _IGNORED_METHODS:
+                    keys.add((method, path))
     return keys
 
 

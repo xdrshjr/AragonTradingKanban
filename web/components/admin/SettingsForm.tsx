@@ -21,6 +21,7 @@ import { notify } from '../ui/Toast';
 import { AdminCard, AdminPageHeader, EmptyState, ErrorState } from './AdminPrimitives';
 import { adminKeys } from './keys';
 import { notifyFailure } from './UserActionDialogs';
+import { DefaultWorkflowCard } from '../workflow/DefaultWorkflowCard';
 
 const t = copyAdmin.settings;
 
@@ -476,6 +477,7 @@ function FeaturedSection() {
  */
 export function SettingsForm() {
   const isRoot = useCan('admin.admins.manage');
+  const canWorkflow = useCan('admin.workflow.manage');
   const query = useQuery({ queryKey: adminKeys.settings, queryFn: () => adminApi.adminSettings() });
   const settings = query.data;
 
@@ -494,6 +496,7 @@ export function SettingsForm() {
           <RegistrationSection settings={settings} />
           <RecoverySection settings={settings} />
           <QuotaSection settings={settings} />
+          {canWorkflow ? <DefaultWorkflowCard /> : null}
           {isRoot ? <BudgetSection /> : null}
           {isRoot ? <FeaturedSection /> : null}
         </div>

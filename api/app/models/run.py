@@ -67,6 +67,14 @@ class Run(Base):
     # 无 FK：用户只会被匿名化而不会物理删除（见迁移文件头）。
     created_by: Mapped[str | None] = mapped_column(String(32))
 
+    # ── ★v16（0010_workflow_graph / 研究流程图）：本次 run 冻结绑定的流程版本。
+    # 全部可空、不回填；`NULL` = 未使用流程（旧 run，或 `workflow.enabled=0`）。无 FK（版本只追加）。
+    workflow_version_id: Mapped[str | None] = mapped_column(String(32))
+    #: 去规范化的"标准五段式研究 v3"，run 列表与遮罩直接用。
+    workflow_label: Mapped[str | None] = mapped_column(String(80))
+    #: `full | partial | none | unreported`；`NULL` = 未使用流程。
+    workflow_adherence: Mapped[str | None] = mapped_column(String(10))
+
     __table_args__ = (
         # One live run per instrument — including the `cancelling` hand-over state
         # (★P1-9), otherwise a second POST sneaks in during the kill window.
@@ -79,6 +87,7 @@ class Run(Base):
         ),
         Index("ix_runs_instrument_started", "instrument_id", "started_at"),
         Index("ix_runs_created_by", "created_by", "started_at"),
+        Index("ix_runs_workflow", "workflow_version_id", "started_at"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

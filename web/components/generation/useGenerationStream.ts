@@ -8,7 +8,7 @@ import { ME_QUERY_KEY, useAuthUi } from '@/lib/auth';
 import { isQuotaExceeded, isUnauthorized, readQuotaDetail } from '@/lib/authErrors';
 import { copy, fill } from '@/lib/copy';
 import { subscribeToRun, type RunStreamEvent } from '@/lib/sse';
-import type { CostSource, RunStageId } from '@/lib/types';
+import type { CostSource, RunStageId, WorkflowPlanItem } from '@/lib/types';
 
 /**
  * Generation state machine (spec §10.2).
@@ -35,6 +35,23 @@ export interface ToolCallView {
   isError: boolean;
   phase: string;
   outputPreview: string;
+}
+
+/** ★v16（研究流程图 §3.10.9）：计划里一项的当前进度。`pending` 是"待定"，不是失败。 */
+export type WorkflowItemState = 'pending' | 'running' | 'done' | 'skip';
+
+export interface WorkflowItemView extends WorkflowPlanItem {
+  state: WorkflowItemState;
+  note: string | null;
+}
+
+export interface WorkflowProgressView {
+  templateName: string;
+  version: number | null;
+  fallback: boolean;
+  total: number;
+  doneCount: number;
+  items: WorkflowItemView[];
 }
 
 export interface GenerationState {
@@ -74,6 +91,8 @@ export interface GenerationState {
   startedAt: number | null;
   finishedAt: number | null;
   reconnectAttempt: number;
+  /** ★v16：`run.workflow` 的投影；`null` = 本次未使用流程（或 plan 事件还没到）。 */
+  workflow: WorkflowProgressView | null;
 }
 
 const MAX_LOGS = 50;
@@ -101,6 +120,7 @@ export const initialGenerationState: GenerationState = {
   startedAt: null,
   finishedAt: null,
   reconnectAttempt: 0,
+  workflow: null,
 };
 
 export type GenerationAction =
@@ -115,6 +135,46 @@ export type GenerationAction =
 function pushLog(logs: LogLine[], level: LogLine['level'], message: string, at: number): LogLine[] {
   const next = [...logs, { id: logs.length + at, level, message, at }];
   return next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next;
+}
+
+/**
+ * ★v16（§5.3）：`run.workflow` 的纯 reducer。未知 `kind`、缺字段、未知 key 一律**忽略**
+ * （向前兼容）；`doneCount` 以服务端为准，缺省则本地按 done/skip 计数。
+ */
+export function reduceWorkflow(
+  current: WorkflowProgressView | null,
+  payload: Record<string, unknown>,
+): WorkflowProgressView | null {
+  if (payload.kind === 'plan') return buildPlan(payload);
+  if (payload.kind !== 'step' || !current) return current;
+  const key = payload.key;
+  const next: WorkflowItemState | null =
+    payload.state === 'start' ? 'running' : payload.state === 'done' ? 'done' : payload.state === 'skip' ? 'skip' : null;
+  if (typeof key !== 'string' || next === null || !current.items.some((item) => item.key === key)) return current;
+  const items = current.items.map((item) => {
+    if (item.key !== key) return item;
+    // 重复/乱序的 `start` 不得把已完成的项拉回进行中。
+    if (next === 'running' && (item.state === 'done' || item.state === 'skip')) return item;
+    return { ...item, state: next, note: typeof payload.note === 'string' ? payload.note : item.note };
+  });
+  const localDone = items.filter((item) => item.state === 'done' || item.state === 'skip').length;
+  const doneCount = typeof payload.doneCount === 'number' ? Math.max(payload.doneCount, localDone) : localDone;
+  return { ...current, items, doneCount };
+}
+
+function buildPlan(payload: Record<string, unknown>): WorkflowProgressView {
+  const raw = Array.isArray(payload.items) ? (payload.items as WorkflowPlanItem[]) : [];
+  const items = raw
+    .filter((item) => item && typeof item.key === 'string' && typeof item.title === 'string')
+    .map((item): WorkflowItemView => ({ ...item, upstream: item.upstream ?? [], state: 'pending', note: null }));
+  return {
+    templateName: typeof payload.templateName === 'string' ? payload.templateName : '',
+    version: typeof payload.version === 'number' ? payload.version : null,
+    fallback: payload.fallback === true,
+    total: typeof payload.total === 'number' ? payload.total : items.length,
+    doneCount: 0,
+    items,
+  };
 }
 
 export function generationReducer(state: GenerationState, action: GenerationAction): GenerationState {
@@ -216,6 +276,8 @@ export function generationReducer(state: GenerationState, action: GenerationActi
             logs: pushLog(state.logs, 'warn', message, at),
           };
         }
+        case 'run.workflow':
+          return { ...state, workflow: reduceWorkflow(state.workflow, payload) };
         case 'run.done':
           return {
             ...state,

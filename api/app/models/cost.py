@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base
 
-LEDGER_KINDS = ("run", "ask_deep")
+LEDGER_KINDS = ("run", "ask_deep", "workflow_assist")
 
 
 class CostLedger(Base):
@@ -29,7 +29,8 @@ class CostLedger(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     #: `run` | `ask_deep` — one row per paid operation, never updated.
-    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    #: 24 since 0010: `workflow_assist` is 15 characters (SQLite ignores the length, Postgres does not).
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
     #: `runs.id` or `report_asks.id`.
     ref_id: Mapped[str] = mapped_column(String(36), nullable=False)
     symbol: Mapped[str | None] = mapped_column(String(24))

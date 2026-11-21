@@ -16,6 +16,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..logging import get_logger
@@ -91,6 +92,25 @@ class MockRunner:
             source=self.source,
         )
 
+    async def _workflow_markers(self, workspace: Path) -> AsyncIterator[AgentEvent]:
+        """report-workflow-graph §3.6.8：工作区有 `workflow.json` 时，按其 `items` 顺序发进度标记，
+        让 demo / E2E / UI 在无网络下也能看到完整时间线。报告文档本身不变。"""
+        manifest = workspace / "workflow.json"
+        if not manifest.exists():
+            return
+        try:
+            items = json.loads(manifest.read_text(encoding="utf-8")).get("items") or []
+        except (OSError, ValueError):
+            return
+        for item in items:
+            key = item.get("key")
+            if not isinstance(key, str):
+                continue
+            yield AgentEvent(AgentEventType.text, {"delta": f"[[wf:{key}:start]]\n"})
+            await asyncio.sleep(0)
+            yield AgentEvent(AgentEventType.text, {"delta": f"[[wf:{key}:done]]\n"})
+            await asyncio.sleep(0)
+
     async def stream(
         self,
         request: AgentRequest,
@@ -142,6 +162,9 @@ class MockRunner:
             text = self._running_text(snapshot, progress)
             if text:
                 yield AgentEvent(AgentEventType.text, {"delta": text})
+
+        async for event in self._workflow_markers(request.workspace):
+            yield event
 
         await asyncio.sleep(self.stage_delay)
         doc = build_mock_document(snapshot)

@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Aragon Workflow Assist Result v1",
+  "description": "AI 流程设计助手的一次性产出：说明 + 一批对草稿的修改操作。没有发布/设默认的能力。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reply",
+    "ops"
+  ],
+  "properties": {
+    "reply": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "openQuestions": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      }
+    },
+    "ops": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/addNode"
+          },
+          {
+            "$ref": "#/$defs/updateNode"
+          },
+          {
+            "$ref": "#/$defs/deleteNode"
+          },
+          {
+            "$ref": "#/$defs/addEdge"
+          },
+          {
+            "$ref": "#/$defs/deleteEdge"
+          },
+          {
+            "$ref": "#/$defs/setPolicy"
+          },
+          {
+            "$ref": "#/$defs/autoLayout"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nodeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "enum": [
+            "data",
+            "analysis",
+            "synthesis",
+            "review",
+            "custom"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "enum": [
+              "snapshot.json",
+              "bars.csv",
+              "fundamentals.md",
+              "sources.md"
+            ]
+          }
+        },
+        "sections": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "enum": [
+              "thesis",
+              "fundamentals",
+              "valuation",
+              "risks",
+              "catalysts"
+            ]
+          }
+        },
+        "successCriteria": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "effort": {
+          "enum": [
+            "light",
+            "normal",
+            "deep"
+          ]
+        },
+        "checklist": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    },
+    "nodePatchConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "anyOf": [
+            {
+              "enum": [
+                "data",
+                "analysis",
+                "synthesis",
+                "review",
+                "custom"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "files": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "enum": [
+                  "snapshot.json",
+                  "bars.csv",
+                  "fundamentals.md",
+                  "sources.md"
+                ]
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sections": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "enum": [
+                  "thesis",
+                  "fundamentals",
+                  "valuation",
+                  "risks",
+                  "catalysts"
+                ]
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "successCriteria": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 600
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "light",
+                "normal",
+                "deep"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checklist": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 600
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        }
+      }
+    },
+    "addNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "ref",
+        "kind",
+        "title"
+      ],
+      "properties": {
+        "op": {
+          "const": "add_node"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,23}$"
+        },
+        "kind": {
+          "enum": [
+            "step",
+            "gate",
+            "note"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "near": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "config": {
+          "$ref": "#/$defs/nodeConfig"
+        }
+      }
+    },
+    "updateNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "patch"
+      ],
+      "properties": {
+        "op": {
+          "const": "update_node"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "config": {
+              "$ref": "#/$defs/nodePatchConfig"
+            }
+          }
+        }
+      }
+    },
+    "deleteNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id"
+      ],
+      "properties": {
+        "op": {
+          "const": "delete_node"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        }
+      }
+    },
+    "addEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "source",
+        "target"
+      ],
+      "properties": {
+        "op": {
+          "const": "add_edge"
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 30
+        }
+      }
+    },
+    "deleteEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "const": "delete_edge"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 64
+        }
+      }
+    },
+    "setPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "patch"
+      ],
+      "properties": {
+        "op": {
+          "const": "set_policy"
+        },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxTurns": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "maxDurationMinutes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "progressMarkers": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "autoLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "const": "auto_layout"
+        }
+      }
+    }
+  }
+}

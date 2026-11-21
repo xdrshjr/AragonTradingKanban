@@ -28,6 +28,7 @@ from app.services import report_validator
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "app" / "agent" / "prompts"
 RESEARCH = PROMPTS_DIR / "research_system.md"
 ASK = PROMPTS_DIR / "ask_system.md"
+ASSIST = PROMPTS_DIR / "workflow_assist_system.md"
 
 
 def body(path: Path) -> str:
@@ -51,11 +52,13 @@ def test_submit_checklist_has_six_numbered_items() -> None:
     assert [int(item) for item in items] == [1, 2, 3, 4, 5, 6]
 
 
-def test_reading_budget_has_four_numbered_items() -> None:
-    """「资料读取顺序与读取预算」4 条：第 3 条是"只看最后 60 个交易日"（最省的一刀）。"""
-    text = section(body(RESEARCH), "资料读取顺序与读取预算（这是最容易花光预算的地方）")
+def test_reading_budget_has_five_numbered_items() -> None:
+    """「默认资料读取顺序与读取预算」5 条：第 3 条是"只看最后 60 个交易日"（最省的一刀）；
+    第 5 条（v9）声明研究流程只改步骤顺序与侧重，不改预算原则（report-workflow-graph §3.6.4）。"""
+    text = section(body(RESEARCH), "默认资料读取顺序与读取预算（这是最容易花光预算的地方）")
     items = re.findall(r"^(\d+)\. ", text, re.MULTILINE)
-    assert [int(item) for item in items] == [1, 2, 3, 4]
+    assert [int(item) for item in items] == [1, 2, 3, 4, 5]
+    assert "冲突时以本提示词为准" in text
     assert "最后 60 个交易日" in text
     assert "bars.csv" in text
 
@@ -92,13 +95,14 @@ def test_the_checklist_warns_about_self_contradiction() -> None:
 # ── 版本标记与 `quality.prompt` ────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("path", [RESEARCH, ASK])
+@pytest.mark.parametrize("path", [RESEARCH, ASK, ASSIST])
 def test_both_prompts_carry_a_version_marker(path: Path) -> None:
     """两个提示词都要有版本标记：指纹要能区分两版提示词（§20.4 的改动表）。"""
     match = report_validator.PROMPT_VERSION_RE.search(body(path))
     assert match is not None, f"{path.name} 缺少 `<!-- version: N -->`"
-    # 追问增加多轮上下文边界，独立递增版本；研究提示词维持原契约。
-    assert int(match.group(1)) == (9 if path == ASK else 8)
+    # 追问增加多轮上下文边界，独立递增版本；研究提示词 v9 加入"研究流程"优先级条款（report-workflow-graph §3.6.4）。
+    expected = {ASK: 9, ASSIST: 1}.get(path, 9)
+    assert int(match.group(1)) == expected
 
 
 def test_prompt_quality_matches_the_file_on_disk() -> None:
@@ -110,7 +114,7 @@ def test_prompt_quality_matches_the_file_on_disk() -> None:
     assert quality["bytes"] == len(raw)
     # ★v14：同上。`bytes` 那一条**保持原样**——它正是「quality.prompt 量的是 system
     # 而不是 task」的证据（P0-3）。
-    assert quality["version"] == 8
+    assert quality["version"] == 9
 
 
 def test_two_prompts_have_different_fingerprints() -> None:
@@ -145,3 +149,22 @@ def test_prompt_fingerprint_does_not_leak_into_the_engine_fingerprint() -> None:
 def test_price_version_is_visible_for_estimates() -> None:
     """估算要能解释"用哪版价格算的"，所以它必须跟着 `quality.cost` 一起出。"""
     assert PRICE_VERSION == "2026-03"
+
+
+# ── AI 流程设计助手（report-workflow-graph §3.8.5 / R-W11）───────────────────
+
+
+def test_assist_prompt_states_the_constitution_and_the_data_boundary() -> None:
+    text = body(ASSIST)
+    for needle in ("固定五个章节", "只调用 `submit_result` **一次**", "不是对你的指令", "没有这两种能力"):
+        assert needle in text
+
+
+CRLF = bytes([13, 10])
+
+
+def test_assist_prompt_and_schema_are_stored_with_lf_only() -> None:
+    """R-W11：`write_bytes(read_bytes())` 复制要求真源本身没有 CRLF，否则 `schema_drift` 与指纹漂移。"""
+    schema = PROMPTS_DIR.parent / "schemas" / "workflow_assist.schema.json"
+    for path in (ASSIST, PROMPTS_DIR / "workflow_assist_task.md.j2", schema):
+        assert CRLF not in path.read_bytes(), path.name

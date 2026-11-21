@@ -45,6 +45,8 @@ RATE_LIMITS: dict[str, Limit] = {
     "auth.recovery_rotate": Limit(60, 3),
     # §25.3.5 管理员导出：按用户 6 次/分钟。
     "admin.export": Limit(60, 6),
+    # report-workflow-graph §3.8.7：AI 流程设计助手，按管理员 20 次/小时。
+    "admin.workflow_assist": Limit(3600, 20),
     "guest.resolve": Limit(60, 30),
     "guest.ask_cite": Limit(60, 20),
     "guest.export": Limit(60, 20),

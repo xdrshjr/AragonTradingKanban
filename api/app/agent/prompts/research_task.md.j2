@@ -6,6 +6,10 @@ as-of: {{ as_of_local }}（{{ instrument.tz }}）
 
 {{ base_digest }}
 {% endif %}
+{% if workflow_index %}
+
+{{ workflow_index }}
+{% endif %}
 
 # 你可以读到的资料（只读，全部在本目录，路径相对于当前工作目录）
 

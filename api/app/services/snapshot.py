@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy.orm import Session
@@ -30,6 +30,15 @@ from .market_data.base import BarRow, FundamentalPeriod, ProviderError, QuoteRow
 from .market_data.registry import get_registry
 
 logger = get_logger("snapshot")
+
+
+class WorkflowFiles(Protocol):
+    """What `write_snapshot_files` needs from a compiled research workflow (duck-typed so this
+    module never imports the workflow package — `workflow_runtime` owns the concrete class)."""
+
+    plan_md: str
+    inline_index: str
+    manifest: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -422,6 +431,7 @@ def render_prompt(
     *,
     timeframe_label: str = "日线",
     base_digest: str = "",
+    workflow_index: str = "",
 ) -> str:
     settings = get_settings()
     environment = Environment(
@@ -442,6 +452,8 @@ def render_prompt(
         # ★v14（U3 / §23.3.4b）：空串 ⇒ 模板里的 `{% if base_digest %}` 整段不渲染，
         # **不留占位符痕迹**（`prompt.md` 与没有 base 的版本逐字节相同）。
         base_digest=base_digest,
+        # report-workflow-graph §3.6.2：空串 ⇒ 整段不渲染，`prompt.md` 与未启用流程时逐字节相同。
+        workflow_index=workflow_index,
     )
     path.write_text(prompt, encoding="utf-8")
     system_source = settings.prompts_dir / "research_system.md"
@@ -481,8 +493,12 @@ def write_snapshot_files(
     system_path: Path,
     *,
     base_digest: str = "",
+    workflow: WorkflowFiles | None = None,
 ) -> Path:
     """Persist the whole §8.2 workspace and return the prompt path.
+
+    `workflow`（report-workflow-graph §3.6.2）：编译好的研究流程；非空时额外写
+    `workflow.md` / `workflow.json`，并把 ≤2KB 的内联索引渲染进 `prompt.md`。
 
     ★v14：`base_digest` 是可选的（默认空串 ⇒ 模板整段不渲染）。它是"基于此版本更新"注入的
     那一段结构摘要，上限 2048 B 由 `run_manager.base_digest_text()` 保证。
@@ -501,7 +517,18 @@ def write_snapshot_files(
     )
     write_sources_md(workspace / "sources.md", bundle.sources, bundle.warnings)
     prompt_path = workspace / "prompt.md"
-    render_prompt(prompt_path, system_path, bundle.snapshot, base_digest=base_digest)
+    render_prompt(
+        prompt_path,
+        system_path,
+        bundle.snapshot,
+        base_digest=base_digest,
+        workflow_index=workflow.inline_index if workflow is not None else "",
+    )
+    if workflow is not None:
+        (workspace / "workflow.md").write_text(workflow.plan_md, encoding="utf-8")
+        (workspace / "workflow.json").write_text(
+            json.dumps(workflow.manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     write_schema_copy(workspace / "schema.json")
     return prompt_path
 

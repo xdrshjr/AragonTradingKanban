@@ -13,6 +13,7 @@ from .run import ACTIVE_STATUSES, TERMINAL_STATUSES, Run, RunEvent
 from .schedule import Schedule
 from .user import AuditLog, InviteCode, User, UserSession, UserWatchlistItem
 from .watchlist import Setting, WatchlistItem
+from .workflow import WorkflowChatMessage, WorkflowTemplate, WorkflowVersion
 
 __all__ = [
     "ACTIVE_STATUSES",
@@ -44,4 +45,7 @@ __all__ = [
     "UserSession",
     "UserWatchlistItem",
     "WatchlistItem",
+    "WorkflowChatMessage",
+    "WorkflowTemplate",
+    "WorkflowVersion",
 ]

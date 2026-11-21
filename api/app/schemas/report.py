@@ -370,6 +370,36 @@ class ClampQuality(BaseModel):
     fields: list[str] = Field(default_factory=list)
 
 
+class WorkflowStepCounts(BaseModel):
+    total: int = 0
+    started: int = 0
+    done: int = 0
+    skipped: int = 0
+
+
+class WorkflowGateCounts(BaseModel):
+    total: int = 0
+    done: int = 0
+
+
+class WorkflowQuality(BaseModel):
+    """report-workflow-graph §3.6.5: `quality.workflow` — which research flow produced this report
+    and how closely the agent reported following it (an observation, never a gate)."""
+
+    templateId: str | None = None
+    templateName: str
+    version: int | None = None
+    versionId: str | None = None
+    hash: str
+    source: Literal["published", "builtin-code"] = "published"
+    fallbackReason: str | None = None
+    steps: WorkflowStepCounts = Field(default_factory=WorkflowStepCounts)
+    gates: WorkflowGateCounts = Field(default_factory=WorkflowGateCounts)
+    adherence: Literal["full", "partial", "none", "unreported"] = "none"
+    markersSeen: int = 0
+    unknownMarkers: int = 0
+
+
 class ReportQuality(BaseModel):
     groundedRatio: float = 1.0
     missingSections: list[str] = Field(default_factory=list)
@@ -391,6 +421,8 @@ class ReportQuality(BaseModel):
     #: ★v12（S3 / AC-117 / C-48）：格式收敛记录。`None` = 没有收敛（或老报告）。
     #: 反射守卫 `test_every_quality_key_has_a_response_field` 会盯住这个键。
     clamp: ClampQuality | None = None
+    #: report-workflow-graph: absent on reports made before the feature / with `workflow.enabled=0`.
+    workflow: WorkflowQuality | None = None
 
 
 class ReportSummary(BaseModel):

@@ -13,6 +13,7 @@ import type { RunStageId } from '@/lib/types';
 import { Badge } from '../ui/Badge';
 import { Button, IconButton } from '../ui/Button';
 import type { GenerationState } from './useGenerationStream';
+import { WorkflowTimeline } from './WorkflowTimeline';
 
 const STAGES: { id: RunStageId; pct: number }[] = [
   { id: 'resolve', pct: 5 },
@@ -243,6 +244,8 @@ export function GenerationOverlay({
               );
             })}
           </ol>
+
+          {state.workflow ? <WorkflowTimeline workflow={state.workflow} /> : null}
 
           <div className="max-h-[168px] overflow-y-auto px-3 py-2">
             {state.streamText ? (

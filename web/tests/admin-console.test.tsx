@@ -164,6 +164,7 @@ describe('AdminShell', () => {
       '/admin/users',
       '/admin/invites',
       '/admin/quota',
+      '/admin/workflows',
       '/admin/audit',
       '/admin/settings',
     ]);
@@ -778,6 +779,8 @@ describe('copyAdmin', () => {
       'root.bootstrap', 'root.password.cli_reset',
       // ★Y3–Y5（§25.4.1）：31 → 36
       'auth.recovery.rotate', 'auth.recovery.failure', 'auth.password.recover', 'user.self_delete', 'admin.export',
+      // 研究流程图（report-workflow-graph §3.9）：36 → 41
+      'workflow.create', 'workflow.publish', 'workflow.rollback', 'workflow.default.set', 'workflow.archive',
     ];
     for (const action of vocabulary) {
       expect(copyAdmin.audit.actions[action], action).toBeTruthy();

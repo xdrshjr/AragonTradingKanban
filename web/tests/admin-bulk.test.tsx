@@ -427,7 +427,7 @@ describe('设置：authRecoveryEnabled 开关（AC-243 前端）', () => {
 
   it('审计动作词表含 5 个新动作（31 → 36）的中文标签', async () => {
     const { copyAdmin } = await import('@/lib/copy.admin');
-    expect(Object.keys(copyAdmin.audit.actions)).toHaveLength(36);
+    expect(Object.keys(copyAdmin.audit.actions)).toHaveLength(41);
   });
 });
 

@@ -39,6 +39,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 FIXTURES = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(FIXTURES, "sample_report.json")
@@ -244,6 +245,36 @@ def _system_event() -> dict:
     }
 
 
+#: report-workflow-graph §3.6.8：四种遵循度。读取 cwd 下的 `workflow.json`（工作区）按 items 发进度标记。
+WORKFLOW_MODES = {"ok_workflow", "ok_workflow_partial", "ok_workflow_split", "ok_workflow_none"}
+
+
+def emit_workflow_markers(mode: str) -> str:
+    """Emit marker `text_delta`s for the workspace's plan and return the final `result.text`
+    (which carries the same markers, so the "strip markers from `result.text`" path is exercised)."""
+    if mode == "ok_workflow_none":
+        return "报告已完成。"
+    try:
+        items = json.loads(Path("workflow.json").read_text(encoding="utf-8")).get("items") or []
+    except (OSError, ValueError):
+        return "报告已完成。"
+    keys = [item["key"] for item in items]
+    if mode == "ok_workflow_partial":
+        keys = keys[: max(1, len(keys) // 2)]
+    lines: list[str] = []
+    for index, key in enumerate(keys):
+        for state in ("start", "done"):
+            marker = f"[[wf:{key}:{state}]]"
+            lines.append(marker)
+            if mode == "ok_workflow_split" and index == 0 and state == "done":
+                cut = len(marker) // 2
+                emit({"type": "text_delta", "delta": marker[:cut]})
+                emit({"type": "text_delta", "delta": marker[cut:] + "\n"})
+            else:
+                emit({"type": "text_delta", "delta": marker + "\n"})
+    return "报告已完成。\n" + "\n".join(lines)
+
+
 def handle_exec(argv: list[str]) -> int:
     argv_log(argv)
     mode = os.environ.get("FAKE_ARAGON_MODE", "ok")
@@ -439,6 +470,7 @@ def handle_exec(argv: list[str]) -> int:
 
     doc = load_sample()
     emit(_system_event())
+    result_text = emit_workflow_markers(mode) if mode in WORKFLOW_MODES else "报告已完成。"
     emit(
         {
             "type": "result",
@@ -446,7 +478,7 @@ def handle_exec(argv: list[str]) -> int:
             "error": None,
             "stopReason": "end_turn",
             "exitCode": 0,
-            "text": "报告已完成。",
+            "text": result_text,
             "result": json.dumps(doc, ensure_ascii=False),
             "structured": {
                 "value": doc,

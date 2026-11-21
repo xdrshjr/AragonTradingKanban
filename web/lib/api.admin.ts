@@ -6,7 +6,7 @@
  * （AC-206 的扫描同时覆盖这个文件）：这里没有任何服务凭据，身份只来自 Cookie 会话。
  */
 
-import { apiBase, makeRequest, queryString, type ApiContext } from './api';
+import { apiBase, makeRequest, queryString, sseBase, type ApiContext } from './api';
 import type {
   AdminBulkQuotaBody,
   AdminBulkQuotaResult,
@@ -28,6 +28,24 @@ import type {
   QuotaStatus,
   WatchlistEntry,
 } from './types';
+import type {
+  AssistBody,
+  ChatMessage,
+  CreateTemplateBody,
+  DefaultSummary,
+  OpsResponse,
+  PlanPreview,
+  PublishBody,
+  TemplateDetail,
+  TemplateList,
+  TemplateSummary,
+  UsageResponse,
+  ValidationReport,
+  VersionDetail,
+  VersionSummary,
+  WorkflowDoc,
+  WorkflowOp,
+} from './workflow/types';
 
 export function createAdminApi(ctx: ApiContext = {}) {
   const request = makeRequest(ctx);
@@ -175,6 +193,88 @@ export function createAdminApi(ctx: ApiContext = {}) {
 
     adminRemoveFeatured: (instrumentId: string) =>
       request<void>(`/admin/featured-watchlist/${encodeURIComponent(instrumentId)}`, { method: 'DELETE' }),
+
+    /** 研究流程（report-workflow-graph §5.1）：只有 `admin.workflow.manage` 能调用，服务端按策略表判定。 */
+    workflows: {
+      list: (status?: 'archived') =>
+        request<TemplateList>(`/admin/workflows${queryString({ status })}`),
+      create: (body: CreateTemplateBody) =>
+        request<TemplateDetail>('/admin/workflows', { method: 'POST', body }),
+      get: (id: string) => request<TemplateDetail>(`/admin/workflows/${encodeURIComponent(id)}`),
+      patch: (id: string, body: { name?: string; description?: string }) =>
+        request<TemplateSummary>(`/admin/workflows/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+      archive: (id: string) =>
+        request<{ status: 'archived' }>(`/admin/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      ops: (id: string, baseRevision: number, ops: WorkflowOp[]) =>
+        request<OpsResponse>(`/admin/workflows/${encodeURIComponent(id)}/ops`, {
+          method: 'POST',
+          body: { baseRevision, ops },
+        }),
+      /** 唯一用途：重置损坏的草稿（不是导入功能）。 */
+      replaceDraft: (id: string, baseRevision: number, doc: WorkflowDoc) =>
+        request<OpsResponse>(`/admin/workflows/${encodeURIComponent(id)}/draft`, {
+          method: 'PUT',
+          body: { baseRevision, doc },
+        }),
+      validate: (id: string, doc?: WorkflowDoc) =>
+        request<ValidationReport>(`/admin/workflows/${encodeURIComponent(id)}/validate`, {
+          method: 'POST',
+          body: doc ? { doc } : {},
+        }),
+      preview: (id: string) => request<PlanPreview>(`/admin/workflows/${encodeURIComponent(id)}/preview`),
+      publish: (id: string, body: PublishBody) =>
+        request<VersionSummary>(`/admin/workflows/${encodeURIComponent(id)}/publish`, { method: 'POST', body }),
+      setDefault: (id: string) =>
+        request<{ defaultTemplateId: string; version: number }>(
+          `/admin/workflows/${encodeURIComponent(id)}/set-default`,
+          { method: 'POST' },
+        ),
+      versions: (id: string, params: { limit?: number; cursor?: string } = {}) =>
+        request<{ items: VersionSummary[]; next: string | null }>(
+          `/admin/workflows/${encodeURIComponent(id)}/versions${queryString({ limit: params.limit, cursor: params.cursor })}`,
+        ),
+      version: (id: string, version: number) =>
+        request<VersionDetail>(`/admin/workflows/${encodeURIComponent(id)}/versions/${version}`),
+      restore: (id: string, version: number) =>
+        request<{ revision: number }>(
+          `/admin/workflows/${encodeURIComponent(id)}/versions/${version}/restore`,
+          { method: 'POST' },
+        ),
+      rollback: (id: string, version: number, changeNote?: string) =>
+        request<VersionSummary>(`/admin/workflows/${encodeURIComponent(id)}/versions/${version}/rollback`, {
+          method: 'POST',
+          body: changeNote ? { changeNote } : {},
+        }),
+      usage: (id: string, days = 30) =>
+        request<UsageResponse>(`/admin/workflows/${encodeURIComponent(id)}/usage${queryString({ days })}`),
+      setEnabled: (enabled: boolean) =>
+        request<{ enabled: boolean }>('/admin/workflows/enabled', { method: 'PUT', body: { enabled } }),
+      defaultSummary: () => request<DefaultSummary>('/admin/workflows/default-summary'),
+      assist: (id: string, body: AssistBody) =>
+        request<{ assistId: string }>(`/admin/workflows/${encodeURIComponent(id)}/assist`, {
+          method: 'POST',
+          body,
+        }),
+      assistToken: (assistId: string) =>
+        request<{ token: string; expiresIn: number }>(
+          `/admin/workflows/assists/${encodeURIComponent(assistId)}/events-token`,
+          { method: 'POST' },
+        ),
+      /** SSE 直链：令牌即授权（`useAssistStream` 用它开 EventSource）。 */
+      assistEventsUrl: (assistId: string, token: string, after?: number) =>
+        `${sseBase()}/api/v1/admin/workflows/assists/${encodeURIComponent(assistId)}/events${queryString({
+          token,
+          after,
+        })}`,
+      assistCancel: (assistId: string) =>
+        request<{ status: string }>(`/admin/workflows/assists/${encodeURIComponent(assistId)}/cancel`, {
+          method: 'POST',
+        }),
+      chat: (id: string) =>
+        request<{ items: ChatMessage[] }>(`/admin/workflows/${encodeURIComponent(id)}/chat`),
+      clearChat: (id: string) =>
+        request<void>(`/admin/workflows/${encodeURIComponent(id)}/chat`, { method: 'DELETE' }),
+    },
   };
 }
 

@@ -14,4 +14,6 @@ export const adminKeys = {
   settings: ['admin', 'settings'] as const,
   featured: ['admin', 'featured'] as const,
   budget: ['admin', 'budget'] as const,
+  workflows: ['admin', 'workflows'] as const,
+  workflowDefault: ['admin', 'workflows', 'default-summary'] as const,
 };

@@ -53,7 +53,7 @@ def test_the_payload_survives_the_response_model() -> None:
     payload = report_validator.prompt_quality(_research_prompt(), base_version=3)
     model = PromptQuality.model_validate(payload)
     assert model.bytes > 0
-    assert model.version == 8
+    assert model.version == 9
     assert model.baseVersion == 3
 
 

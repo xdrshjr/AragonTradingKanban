@@ -20,6 +20,7 @@ import { DiffBadge } from './DiffBadge';
 import { ReportRenderer } from './ReportRenderer';
 import { SourceDrawer } from './SourceDrawer';
 import { VersionSwitcher } from './VersionSwitcher';
+import { WorkflowMeta } from './WorkflowMeta';
 import { MetricGrid } from './blocks/MetricsBlock';
 import { GenerateButton } from '../generation/GenerateButton';
 import { ReportAssistant } from '../ask/ReportAssistant';
@@ -415,6 +416,9 @@ export function ReportPanel({
           ) : null}
           {/* ★v9（K5）：抢救可见。`used === false` 或老报告没有这个键 ⇒ 什么都不渲染。 */}
           {summary ? <SalvageNotice salvage={summary.quality.salvage ?? null} /> : null}
+
+          {/* ★v16：按哪个研究流程生成的；旧报告无 `quality.workflow` ⇒ 不渲染。 */}
+          {summary ? <WorkflowMeta workflow={summary.quality.workflow ?? null} /> : null}
 
           <div className="ml-auto flex items-center gap-1">
             {/* ★v6 G2b：模式切换。`router.replace` 只改 `view`，不动 `range`（AC-64）。 */}

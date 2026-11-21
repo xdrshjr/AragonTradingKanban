@@ -87,6 +87,11 @@ class RunOut(BaseModel):
     failureFingerprint: str | None = None
     #: 服务端下发的一句"下一步做什么"（前端不拼文案，H-12）。
     hint: str | None = None
+    #: report-workflow-graph：本次 run 冻结绑定的研究流程（"标准五段式研究 v3"）。公开——它显示在
+    #: 报告元信息里，所以模板**名称**对所有用户可见（描述不对外）。
+    workflowLabel: str | None = None
+    #: `full | partial | none | unreported`；运营信息，仅拥有者/管理员可见（其余脱敏为 null）。
+    workflowAdherence: str | None = None
 
 
 class RunEventOut(BaseModel):

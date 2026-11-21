@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "schemaVersion": 1,
+  "limits": {
+    "MAX_NODES": 60,
+    "MAX_STEPS": 30,
+    "MAX_EDGES": 120,
+    "MAX_DOC_BYTES": 131072,
+    "TITLE_MAX": 40,
+    "PROMPT_MAX": 2000,
+    "CRITERIA_MAX": 600,
+    "CHECKLIST_MAX": 600,
+    "NOTE_MAX": 2000,
+    "EDGE_LABEL_MAX": 30,
+    "NAME_MAX": 60,
+    "DESCRIPTION_MAX": 400,
+    "CHANGE_NOTE_MAX": 200,
+    "MAX_ACTIVE_TEMPLATES": 50,
+    "MAX_VERSIONS_PER_TEMPLATE": 200,
+    "MAX_PLAN_BYTES": 49152,
+    "WARN_PLAN_BYTES": 24576,
+    "INLINE_INDEX_MAX_BYTES": 2048,
+    "ASSIST_MAX_OPS": 40,
+    "ASSIST_MESSAGE_MAX": 2000,
+    "CHAT_KEPT": 100,
+    "ZOOM_MIN": 0.2,
+    "ZOOM_MAX": 2.5,
+    "HIGH_FANOUT": 6,
+    "LONG_PROMPT": 1200,
+    "MAX_FOCUS_NODES": 20,
+    "POLICY_MAX_TURNS_MIN": 1,
+    "POLICY_MAX_DURATION_MIN": 1,
+    "PLACEHOLDER_VALUE_MAX": 80
+  },
+  "nodeKinds": [
+    "start",
+    "step",
+    "gate",
+    "note",
+    "end"
+  ],
+  "roles": [
+    "data",
+    "analysis",
+    "synthesis",
+    "review",
+    "custom"
+  ],
+  "efforts": [
+    "light",
+    "normal",
+    "deep"
+  ],
+  "effortWeights": {
+    "light": 2,
+    "normal": 4,
+    "deep": 8
+  },
+  "gateWeight": 1,
+  "budgetTightRatio": 0.8,
+  "files": [
+    {
+      "name": "snapshot.json",
+      "label": "行情与指标快照",
+      "hint": "标的、报价、技术指标与数据质量警告"
+    },
+    {
+      "name": "bars.csv",
+      "label": "日线行情",
+      "hint": "date,open,high,low,close,volume；只读最后 60 行"
+    },
+    {
+      "name": "fundamentals.md",
+      "label": "基本面资料",
+      "hint": "财务与估值数据"
+    },
+    {
+      "name": "sources.md",
+      "label": "来源清单",
+      "hint": "可引用的数据来源"
+    }
+  ],
+  "sections": [
+    {
+      "id": "thesis",
+      "label": "核心论点"
+    },
+    {
+      "id": "fundamentals",
+      "label": "基本面"
+    },
+    {
+      "id": "valuation",
+      "label": "估值与情景"
+    },
+    {
+      "id": "risks",
+      "label": "风险"
+    },
+    {
+      "id": "catalysts",
+      "label": "催化剂"
+    }
+  ],
+  "placeholders": [
+    "instrument.symbol",
+    "instrument.name",
+    "instrument.market",
+    "instrument.currency",
+    "instrument.sector",
+    "asOf",
+    "timeframe"
+  ],
+  "reservedIds": [
+    "__proto__",
+    "constructor",
+    "prototype"
+  ],
+  "idPattern": "^[A-Za-z0-9_-]{1,64}$",
+  "marker": {
+    "pattern": "\\[\\[wf:([SG]\\d{1,2}):(start|done|skip)(?: ([^\\]\n]{0,80}))?\\]\\]",
+    "bufferMax": 128,
+    "states": [
+      "start",
+      "done",
+      "skip"
+    ],
+    "noteMax": 80
+  },
+  "adherence": [
+    "full",
+    "partial",
+    "none",
+    "unreported"
+  ],
+  "templateStatuses": [
+    "active",
+    "archived"
+  ],
+  "issueCodes": {
+    "errors": [
+      "no_start",
+      "multiple_start",
+      "no_end",
+      "no_step",
+      "cycle",
+      "self_loop",
+      "dangling_edge",
+      "duplicate_edge",
+      "note_has_edge",
+      "start_has_input",
+      "end_has_output",
+      "unreachable_node",
+      "empty_prompt",
+      "invalid_file",
+      "invalid_section",
+      "section_not_covered",
+      "undefined_placeholder",
+      "node_limit_exceeded",
+      "edge_limit_exceeded",
+      "step_limit_exceeded",
+      "doc_too_large",
+      "plan_too_large",
+      "policy_out_of_range"
+    ],
+    "warnings": [
+      "node_not_reaching_end",
+      "orphan_note",
+      "high_fanout",
+      "long_prompt",
+      "missing_success_criteria",
+      "isolated_step",
+      "empty_gate",
+      "duplicate_title",
+      "plan_large",
+      "budget_tight"
+    ]
+  },
+  "opNames": [
+    "add_node",
+    "update_node",
+    "move_node",
+    "delete_node",
+    "add_edge",
+    "update_edge",
+    "delete_edge",
+    "set_policy",
+    "set_viewport"
+  ],
+  "opRejectReasons": [
+    "unknown_node",
+    "unknown_edge",
+    "duplicate_id",
+    "immutable_field",
+    "bad_patch",
+    "reserved_id",
+    "limit_exceeded",
+    "invalid_edge",
+    "protected_node",
+    "bad_kind",
+    "rev_conflict"
+  ],
+  "layout": {
+    "originX": 80,
+    "stepX": 300,
+    "originY": 60,
+    "stepY": 150
+  },
+  "sampleContext": {
+    "symbol": "600519",
+    "name": "示例标的",
+    "market": "CN",
+    "currency": "CNY",
+    "sector": "示例行业",
+    "asOf": "2026-01-01",
+    "timeframe": "日线"
+  },
+  "builtin": {
+    "templateId": "wf_builtin_standard",
+    "name": "标准五段式研究",
+    "versionNote": "随应用更新"
+  },
+  "global": {
+    "aragonMaxTurns": 40,
+    "aragonMaxDurationMinutes": 15
+  }
+}

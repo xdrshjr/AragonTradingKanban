@@ -28,6 +28,7 @@ export const copyAdmin = {
     quota: '额度申请',
     audit: '审计日志',
     settings: '系统设置',
+    workflows: '研究流程',
     pendingBadge: '{n} 条待处理',
   },
   /** 共用原语（ConfirmDialog / RoleBadge / StatusDot）用到的通用词。 */
@@ -420,6 +421,11 @@ export const copyAdmin = {
       'auth.password.recover': '凭恢复码重置密码',
       'user.self_delete': '自助注销账号',
       'admin.export': '导出数据',
+      'workflow.create': '创建研究流程',
+      'workflow.publish': '发布研究流程',
+      'workflow.rollback': '回滚研究流程',
+      'workflow.default.set': '设置默认研究流程',
+      'workflow.archive': '归档研究流程',
     } as Record<string, string>,
   },
 

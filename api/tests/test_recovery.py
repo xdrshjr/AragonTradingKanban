@@ -490,7 +490,7 @@ def test_the_cli_clears_a_recovery_key_and_audits_as_system(  # noqa: ANN001
 def test_recovery_failures_are_audited_merged_and_shape_blind(  # noqa: ANN001
     auth_client, solve_captcha, relaxed_ip, engine, make_user, frozen_now
 ) -> None:
-    assert "auth.recovery.failure" in ACTIONS and len(ACTIONS) == 36
+    assert "auth.recovery.failure" in ACTIONS and len(ACTIONS) == 41
     register(auth_client, solve_captcha, "real_one")
     auth_client.post(f"{AUTH}/logout")
 

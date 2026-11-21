@@ -1,0 +1,106 @@
+/*
+ * 画布样式（M63）。随画布 chunk 一起懒加载，**不进首屏**：
+ * `WorkflowCanvas` 是 `next/dynamic({ ssr: false })` 引入的，本文件只由它 import。
+ * 颜色一律取既有 token，亮/暗两套自动适配，不新增调色板。
+ */
+
+.wf-canvas .react-flow {
+  --xy-background-color: var(--bg-canvas);
+  --xy-background-pattern-dots-color-default: var(--border-strong);
+  --xy-edge-stroke-default: var(--text-tertiary);
+  --xy-edge-stroke-selected-default: var(--accent);
+  --xy-connectionline-stroke-default: var(--accent);
+  --xy-minimap-background-color-default: var(--bg-surface-1);
+  --xy-minimap-mask-background-color-default: rgba(0, 0, 0, 0.35);
+  --xy-minimap-node-background-color-default: var(--border-strong);
+  --xy-selection-background-color-default: var(--accent-weak);
+  --xy-selection-border-default: 1px dashed var(--accent);
+  --xy-handle-background-color-default: var(--bg-surface-3);
+  --xy-handle-border-color-default: var(--text-tertiary);
+  font-family: var(--font-sans);
+}
+
+.wf-canvas .react-flow__node:focus-visible,
+.wf-canvas .react-flow__node:focus {
+  outline: none;
+}
+
+.wf-canvas .react-flow__node:focus-visible .wf-node {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.wf-canvas .wf-handle {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--text-tertiary);
+  background: var(--bg-surface-3);
+}
+
+.wf-canvas .wf-handle:hover,
+.wf-canvas .react-flow__handle.connectingto {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* 连线过程中：合法目标高亮，非法目标禁止光标（isValidConnection 驱动） */
+.wf-canvas .react-flow__handle.connectingto:not(.valid) {
+  border-color: var(--danger);
+  background: var(--danger);
+  cursor: not-allowed;
+}
+
+.wf-canvas .react-flow__handle.valid {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* 检查点：六边形切角（窄卡，不靠颜色区分——另有图标与"检查点"字样） */
+.wf-canvas .wf-gate {
+  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 10px 100%, 0 50%);
+  border-radius: 0;
+  border-width: 1px;
+}
+
+.wf-canvas .react-flow__edge.selected .react-flow__edge-path,
+.wf-canvas .react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.wf-canvas .react-flow__edge-path {
+  stroke-width: 1.4;
+}
+
+.wf-canvas .react-flow__controls {
+  display: none;
+}
+
+/* AI 变更高亮：脉冲，reduced-motion 下改为静态描边 */
+@keyframes wf-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-ring);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.wf-canvas .wf-pulse {
+  border-color: var(--accent);
+  animation: wf-pulse-ring 0.9s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-canvas .wf-pulse {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+}
+
+.wf-canvas .wf-readonly .react-flow__node {
+  cursor: default;
+}

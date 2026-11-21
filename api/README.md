@@ -53,6 +53,26 @@ python -m app.cli clear-recovery <username>            # 吊销某账号的恢�
 
 **迭代 2（v16）**：`security/recovery.py`（恢复码：生成 / 归一化 / `sha256`，纯函数）· `services/account_lifecycle.py`（管理员注销与自助注销**副作用的唯一实现**，授权由调用方先做）· `services/export_service.py`（CSV：BOM、`csv_safe` 公式转义、500 行一块、自开短会话）· `session_service.purge_dead`（死会话清扫，`asyncio.to_thread`，不在事件循环线程上）。`recover` 的固定顺序（限速 → 验证码 → 新密码策略 → 码校验 → CAS 轮换）本身就是安全设计，见 spec §25.3.3。迁移 `0008_account_recovery` 只加 2 列 + 2 个索引。
 
+## 研究流程图（report-workflow-graph，M59–M65）
+
+管理员可在后台把"生成一份研报的过程"配置成**图工作流**；之后每个用户的每次生成都按默认模板执行。
+
+- **软约束，不是状态机。** 图被 `workflow_compiler` 编译成 `workflow.md`（写给 Agent 的计划）+ ≤2 KB 的内联索引（进 `prompt.md`）；
+  Python 侧**不**判断"这一步做完没有"。**过程**归流程图（读什么、几步、完成标准），**契约**归代码与系统提示词 v9
+  （事实边界、来源标注、输出 Schema、接地校验、五个固定章节）——流程不能放宽后者，冲突时以系统提示词为准。
+- **数据面**：`workflow_templates`（草稿 + `draft_revision`）→ `workflow_versions`（只追加、不可变）→ 默认指针（偏唯一索引 `ux_workflow_default` 保证全站至多一个）。
+  `RunManager.start()` 把默认版本**冻结**进 `runs.workflow_version_id`；之后改默认/发布新版本都不影响在飞的 run。
+- **并发**：路由是同步 `def`、在线程池里真并发，SQLite 忽略 `FOR UPDATE`——所以一切写入靠 `UPDATE … WHERE draft_revision=:rev` 的 CAS
+  + `UNIQUE(template_id, version)` + 偏唯一索引；`IntegrityError` 映射为 409，绝不 500。
+- **回退而不失败**：版本文档损坏 / 编译失败 / `plan_md` 超 48 KiB → 回退到**代码内置**标准流程（`quality.workflow.source="builtin-code"`，
+  `run.log code=workflow_fallback`），用户的生成照常成功。"无默认行"同属回退，**不是**关闭；唯一走旧提示词的条件是 `workflow.enabled=0`。
+- **观测而非强制**：Agent 输出 `[[wf:S2:done]]` 进度标记，`workflow_trace.TraceParser` 流式解析成 `run.workflow` SSE 事件并从展示文本与 `AgentResult.text`
+  里剔除；漏标只会让 `quality.workflow.adherence` 变成 `partial/none`，**不会**使生成失败。
+- **AI 助手**（`workflow_assist_service`）：一次 `aragon exec` 结构化提交一批 op，服务端分配 id、盖章 `expectRev`、整批原子应用到**草稿**；
+  它没有发布/设默认的能力（C-6）。`AGENT_MODE=mock` 时由 `MockAssistRunner` 确定性出 op。
+- **运维要点**：`PUT /admin/workflows/enabled` 立即生效（无需重启）；API 仍须**单 worker**（`AssistRegistry` 与 `RunManager._trackers` 都是进程内内存）；
+  `usage` 接口可看每版本的遵循度分布与回退次数。AC-W37：上线前须在**真实引擎**下做 `workflow.enabled=0/1` 的 A/B 对照，未达标则出厂默认值保持 `"0"`。
+
 ## 数据库迁移
 
 ```text

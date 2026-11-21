@@ -49,7 +49,7 @@ describe('AC-206①：令牌不进浏览器可达的源码', () => {
     expect(source).not.toMatch(/Bearer\s*\$\{/);
   });
 
-  it('AC-216：api.admin 只被 components/admin 与 app/admin 引用（首屏代码不 import 它）', () => {
+  it('AC-216：api.admin 只被 components/admin、components/workflow、lib/workflow 与 app/admin 引用（首屏代码不 import 它）', () => {
     const importers: string[] = [];
     for (const dir of ['lib', 'components', 'app']) {
       for (const file of walk(join(ROOT, dir))) {
@@ -62,7 +62,9 @@ describe('AC-206①：令牌不进浏览器可达的源码', () => {
     }
     expect(importers.length).toBeGreaterThan(0);
     for (const file of importers) {
-      expect(file, `${file} 不应在首屏路径里 import api.admin`).toMatch(/^\/(components\/admin\/|app\/admin\/)/);
+      expect(file, `${file} 不应在首屏路径里 import api.admin`).toMatch(
+        /^\/(components\/admin\/|components\/workflow\/|lib\/workflow\/|app\/admin\/)/,
+      );
     }
   });
 

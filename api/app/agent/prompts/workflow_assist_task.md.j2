@@ -1,0 +1,29 @@
+# 流程设计任务
+
+## 管理员的要求
+{{ message }}
+
+{% if focus %}
+## 当前选中的节点（"这一步"指它们）
+{% for node in focus %}
+- `{{ node.id }}` · {{ node.kind }} · {{ node.title }}
+{% endfor %}
+
+{% endif %}
+## 可用资料（工作区文件，用读取工具查看）
+{% for name in available_files %}
+- `{{ name }}`：{{ descriptions.get(name, "") }}
+{% endfor %}
+
+当前草稿：{{ stats.steps }} 个步骤、{{ stats.gates }} 个检查点、{{ stats.edges }} 条连线；校验：{{ stats.errors }} 个错误、{{ stats.warnings }} 个警告。
+{% if repair %}
+
+## 上一轮产出未能应用（只有这一次修复机会）
+原因：{{ repair.reason }}
+{% for line in repair.lines %}
+- {{ line }}
+{% endfor %}
+请修正后重新提交一整批操作；不要重复上一轮已经出错的写法。
+{% endif %}
+
+读完上述文件后，只调用 `submit_result` 一次。

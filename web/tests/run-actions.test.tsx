@@ -36,6 +36,8 @@ function failedState(code: string, message = '出错了'): GenerationState {
     version: null,
     // ★v14（U3）：`GenerationState` 新增 `deduped`（`run.done` 的"未新增版本"标记）。
     deduped: false,
+    // ★v16：`run.workflow` 的投影；这些用例不涉及研究流程。
+    workflow: null,
     costUsd: null,
     costKnown: false,
     costSource: null,

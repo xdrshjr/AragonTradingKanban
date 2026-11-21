@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Gauge, History, KeyRound, Settings2, Ticket, Users } from 'lucide-react';
+import { ArrowLeft, Gauge, History, KeyRound, Settings2, Ticket, Users, Workflow } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -46,9 +46,16 @@ function currentLabel(pathname: string | null, items: NavItem[]): string {
  *
  * 页面自己滚动：`body { overflow: hidden }` 是工作台的设定，这里让内容区成为唯一的滚动容器。
  */
-export function AdminShell({ children }: { children: React.ReactNode }) {
+/** 编辑器页（`/admin/workflows/<id>`）是全出血的 70/30 工作台：去掉 `max-w` 容器，占满视口高度。 */
+function isFullBleedPath(pathname: string | null): boolean {
+  return pathname !== null && /^\/admin\/workflows\/[^/]+\/?$/.test(pathname);
+}
+
+export function AdminShell({ children, fullBleed }: { children: React.ReactNode; fullBleed?: boolean }) {
   const pathname = usePathname();
   const canRead = useCan('admin.quota.manage');
+  const canWorkflow = useCan('admin.workflow.manage');
+  const bleed = fullBleed ?? isFullBleedPath(pathname);
 
   // 待处理额度申请的红点数字：失败就安静（它只是个提示，不该让整个外壳报错）。
   const pending = useQuery({
@@ -70,6 +77,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       icon: <KeyRound className={ICON} aria-hidden="true" />,
       badge: pendingCount,
     },
+    ...(canWorkflow
+      ? [
+          {
+            href: '/admin/workflows',
+            label: copyAdmin.nav.workflows,
+            icon: <Workflow className={ICON} aria-hidden="true" />,
+          },
+        ]
+      : []),
     { href: '/admin/audit', label: copyAdmin.nav.audit, icon: <History className={ICON} aria-hidden="true" /> },
     { href: '/admin/settings', label: copyAdmin.nav.settings, icon: <Settings2 className={ICON} aria-hidden="true" /> },
   ];
@@ -126,7 +142,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-h-0 flex-1 flex-col min-[900px]:flex-row">
         <nav
           aria-label={copyAdmin.nav.label}
-          className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-1)] min-[900px]:w-[200px] min-[900px]:border-b-0 min-[900px]:border-r"
+          className={cn(
+            'shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-1)] min-[900px]:w-[200px] min-[900px]:border-b-0 min-[900px]:border-r',
+            // 全出血的编辑器自带返回入口：收起 200px 导航，让 70/30 工作台占满视口宽度（AC-W26）。
+            bleed && 'hidden',
+          )}
         >
           <ul className="flex gap-0.5 overflow-x-auto px-2 min-[900px]:flex-col min-[900px]:overflow-visible min-[900px]:p-3">
             {items.map((item) => {
@@ -162,8 +182,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </ul>
         </nav>
 
-        <main id="admin-main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto outline-none">
-          <div className="mx-auto w-full max-w-[1120px] px-4 py-6 min-[900px]:px-6">{children}</div>
+        <main
+          id="admin-main"
+          tabIndex={-1}
+          data-full-bleed={bleed || undefined}
+          className={cn('min-h-0 flex-1 outline-none', bleed ? 'overflow-hidden' : 'overflow-y-auto')}
+        >
+          {bleed ? (
+            children
+          ) : (
+            <div className="mx-auto w-full max-w-[1120px] px-4 py-6 min-[900px]:px-6">{children}</div>
+          )}
         </main>
       </div>
     </div>

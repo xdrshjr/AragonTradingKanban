@@ -30,6 +30,8 @@ KEY_SIGNUP_BONUS = "quota.signup_bonus"
 KEY_SITE_DAILY_CAP = "quota.site_daily_cap"
 KEY_RECOVERY_ENABLED = "auth.recovery_enabled"
 KEY_WATCHLIST_SEEDED_PREFIX = "watchlist.seeded:"
+#: 研究流程图总开关（report-workflow-graph §3.6.1 / §3.9）。`"0"` 是**唯一**走旧提示词的条件。
+KEY_WORKFLOW_ENABLED = "workflow.enabled"
 
 RegistrationMode = Literal["open", "invite", "closed"]
 REGISTRATION_MODES: tuple[str, ...] = ("open", "invite", "closed")
@@ -40,6 +42,8 @@ DEFAULTS: dict[str, str] = {
     KEY_DEFAULT_DAILY_DEEP_ASK: "10",
     KEY_SIGNUP_BONUS: "0",
     KEY_SITE_DAILY_CAP: "60",
+    # AC-W37：真实引擎对照通过之前，默认值由 M65 定稿；此处是出厂默认。
+    KEY_WORKFLOW_ENABLED: "1",
 }
 
 
@@ -136,6 +140,11 @@ def recovery_enabled(db: Session) -> bool:
     if raw is None:
         return bool(get_settings().auth_recovery_enabled)
     return str(raw) == "1"
+
+
+def workflow_enabled(db: Session) -> bool:
+    """`workflow.enabled`: read fresh on every call (changes apply to the next run, no restart)."""
+    return get_str(db, KEY_WORKFLOW_ENABLED) == "1"
 
 
 def validate_field(field: str, value: object) -> str:

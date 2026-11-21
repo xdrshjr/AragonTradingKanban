@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     aragon_max_turns: int = 40
     aragon_max_duration_ms: int = 900_000
     aragon_idle_timeout_ms: int = 180_000
+    #: AI 流程设计助手（report-workflow-graph §3.9）：一次结构化提交，回合/时长远小于生成。
+    workflow_assist_max_turns: int = 10
+    workflow_assist_max_duration_ms: int = 120_000
     aragon_tool_timeout_ms: int = 60_000
     aragon_home: str = ""
     #: Extra environment variable NAMES to pass to the child process, comma
@@ -291,6 +294,11 @@ class Settings(BaseSettings):
         return self.workspace_dir / "asks"
 
     @property
+    def assists_dir(self) -> Path:
+        """AI workflow-assistant workspaces; expire with the run workspaces."""
+        return self.workspace_dir / "assists"
+
+    @property
     def data_dir(self) -> Path:
         return API_DIR / "data"
 
@@ -320,6 +328,7 @@ def get_settings() -> Settings:
     # Make sure the runtime directories exist before anything writes to them.
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     settings.asks_dir.mkdir(parents=True, exist_ok=True)
+    settings.assists_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     return settings
 

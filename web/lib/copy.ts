@@ -154,6 +154,29 @@ export const copy = {
     mockNotice: '示例模式：未连接生成引擎，报告由本地规则生成',
     realNotice: '真实模式：由 aragon 生成引擎撰写',
     reconnect: '连接中断，正在重连…',
+    /** ★v16（研究流程图 §3.10.9）：研究流程时间线。运营信息，克制措辞：无标记时保持"待定"，绝不说失败。 */
+    workflow: {
+      title: '研究流程',
+      fallbackTitle: '标准流程',
+      progress: '{done}/{total}',
+      pending: '待定',
+      running: '进行中',
+      done: '已完成',
+      skipped: '已跳过',
+      gate: '检查点',
+      listLabel: '研究流程步骤',
+    },
+  },
+
+  /** ★v16（研究流程图 §3.10.9）：报告元信息里的"按某流程研究"。 */
+  workflowMeta: {
+    label: '按『{name}』研究',
+    labelVersion: '按『{name} v{version}』研究',
+    builtinFallback: '标准流程',
+    adherence: 'AI 汇报了 {done}/{total} 步',
+    adherenceNone: 'AI 未汇报步骤进度',
+    adherenceUnreported: '该流程未要求步骤汇报',
+    fallback: '已使用标准流程',
   },
 
   capabilities: {
@@ -635,7 +658,7 @@ export const copy = {
     gateOverride: '仍然生成',
     gateCancel: '取消',
     overridden: '已按预算覆盖继续生成',
-    kinds: { run: '生成', ask_deep: '深度追问' },
+    kinds: { run: '生成', ask_deep: '深度追问', workflow_assist: '流程设计助手' },
     state: { ok: '额度充足', near: '接近上限', exceeded: '已超上限', unlimited: '不限额' },
     /** ★v7（H7）：成本三态的三个标签 —— **永不合并成一个数**（R-31）。 */
     confirmed: '已确认成本',

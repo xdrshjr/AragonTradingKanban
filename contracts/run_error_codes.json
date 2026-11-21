@@ -43,6 +43,7 @@
     "agent.text",
     "run.log",
     "run.retry",
+    "run.workflow",
     "run.done",
     "run.error",
     "ping"
